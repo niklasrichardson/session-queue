@@ -15,6 +15,16 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## cq-top on macOS, 27 October 2026
+
+`cq-top` is a read-only terminal view of the queue (see [cq-top](CQ-TOP.md)). It was built and checked on macOS 27.0.1 (Apple silicon) with Rust 1.99.1. The `cq` package itself was not changed. Its four required checks (cargo build, cargo fmt --check, cargo clippy --all-targets -- -D warnings and cargo test) also passed on this Mac: 62 tests in 6 test programs, no failures.
+
+- In `tools/cq-top`: cargo build, cargo fmt --check, cargo clippy --all-targets -- -D warnings and cargo test passed. The suite has 5 tests. They read a temporary queue root and check that a snapshot moves no file. They also draw both screens in all three themes into a test buffer.
+- The program ran against a throwaway queue made with `cq init` and `cq send`. The Overview screen showed the two queued messages. A missing `CQ_ROOT` and a relative `CQ_ROOT` both printed `cq`'s own message and exited with code 70.
+- An earlier standalone version of `cq-top` ran for about an hour beside four Claude Code sessions in the desktop app (Code tab) on the same Mac. Each session ran `cq watch` under the Monitor tool. It showed their heartbeats, claims and replies.
+
+Not verified: the keys `b`, `Tab`, `1`, `2` and `t` were not pressed in a real terminal, and the saved view file was tested only through its read and write functions. Windows and Linux were not built.
+
 ## Codex on Windows, 26 October 2026
 
 The native dispatcher was built and tested in an isolated clone, with a separate build directory and TEMP/TMP inside that clone. No live queue was used.
