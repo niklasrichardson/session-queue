@@ -17,15 +17,22 @@ use ratatui::{
 use serde_json::Value;
 
 mod draw;
+mod html;
+mod screens;
 use draw::{THEMES, draw};
 
 /// Watchers write a heartbeat every 30 s; three missed beats means the watcher is gone.
 const STALE_AFTER: i64 = 90;
 const RECENT_LIMIT: usize = 40;
+/// Rejected and dead-lettered messages read for their own table, newest first.
+const PROBLEM_LIMIT: usize = 40;
 /// The Flow screen covers the last hour.
 const WINDOW_SECS: i64 = 3600;
-/// Exit code for any other error, as in `docs/COMMANDS.md`.
+/// Exit codes for bad arguments and for any other error, as in `docs/COMMANDS.md`.
+const EXIT_USAGE: i32 = 64;
 const EXIT_ERROR: i32 = 70;
+/// The size of an exported screen, in terminal cells.
+const SCREEN_SIZE: (u16, u16) = (140, 42);
 
 #[derive(Clone)]
 struct Msg {
@@ -38,6 +45,33 @@ struct Msg {
     reply_to: String,
     body: String,
     bucket: &'static str,
+    /// Why it was rejected or dead-lettered, from `<id>.reason.json`; empty otherwise.
+    reason: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Screen {
+    Overview,
+    Flow,
+    Rejected,
+}
+
+impl Screen {
+    const ALL: [Screen; 3] = [Screen::Overview, Screen::Flow, Screen::Rejected];
+
+    /// The name in the saved view and in exported file names.
+    fn name(self) -> &'static str {
+        match self {
+            Screen::Overview => "overview",
+            Screen::Flow => "flow",
+            Screen::Rejected => "rejected",
+        }
+    }
+
+    fn next(self) -> Screen {
+        let i = Screen::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Screen::ALL[(i + 1) % Screen::ALL.len()]
+    }
 }
 
 struct Watcher {
@@ -52,6 +86,41 @@ struct Watcher {
     dead: usize,
 }
 
+impl Watcher {
+    fn stale(&self) -> bool {
+        self.beat_age.is_none_or(|a| a > STALE_AFTER)
+    }
+
+    fn busy(&self) -> Busy {
+        match (self.stale(), self.claimed + self.queued) {
+            (true, _) => Busy::Stale,
+            (false, 0) => Busy::Idle,
+            _ if self.queued > 0 => Busy::Backlog,
+            _ => Busy::Working,
+        }
+    }
+}
+
+/// What a watcher is doing right now, for the Busy bars.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Busy {
+    Stale,
+    Idle,
+    Backlog,
+    Working,
+}
+
+impl Busy {
+    fn label(self) -> &'static str {
+        match self {
+            Busy::Stale => "STALE",
+            Busy::Idle => "idle",
+            Busy::Backlog => "backlog",
+            Busy::Working => "working",
+        }
+    }
+}
+
 struct Snapshot {
     now: i64,
     paused: bool,
@@ -60,17 +129,34 @@ struct Snapshot {
     recent: Vec<Msg>,
     /// Every message sent in the last hour (finished and in flight), for the Flow screen.
     window: Vec<Msg>,
+    /// The newest rejected and dead-lettered messages, with their reasons, newest first.
+    problems: Vec<Msg>,
+    /// How many rejected and dead-lettered messages there are in all.
+    problems_total: usize,
 }
 
 fn main() -> std::io::Result<()> {
-    if env::args().skip(1).any(|a| a == "-h" || a == "--help") {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
             "cq-top: live, read-only view of a cq queue.\n\
              The queue root is CQ_ROOT, or cq's per-user default.\n\
-             Keys: q quit, b bodies, tab or 1/2 switch screen, t next theme."
+             Keys: q quit, b bodies, tab or 1/2/3 switch screen, t next theme.\n\
+             \n\
+             --html PATH          write one snapshot as an HTML dashboard to PATH, then exit\n\
+             --html-screens DIR   write the three screens as HTML pages (overview.html,\n\
+             \x20                    flow.html, rejected.html) to DIR, then exit\n\
+             Neither may point inside the queue root. Message bodies are never exported."
         );
         return Ok(());
     }
+    let exports = match parse_exports(&args) {
+        Ok(e) => e,
+        Err(msg) => {
+            eprintln!("cq-top: {msg}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
     let root = match cq::Root::open() {
         Ok(root) => root,
         Err(e) => {
@@ -78,6 +164,13 @@ fn main() -> std::io::Result<()> {
             std::process::exit(EXIT_ERROR);
         }
     };
+    if exports.html.is_some() || exports.screens.is_some() {
+        if let Err(e) = export(&root, &exports) {
+            eprintln!("cq-top: {e}");
+            std::process::exit(EXIT_ERROR);
+        }
+        return Ok(());
+    }
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &root);
     ratatui::restore();
@@ -86,11 +179,11 @@ fn main() -> std::io::Result<()> {
 
 fn run(terminal: &mut DefaultTerminal, root: &cq::Root) -> std::io::Result<()> {
     let mut show_bodies = false;
-    let (mut flow, mut theme) = load_view();
+    let (mut screen, mut theme) = load_view();
     let mut beats = Beats::new();
     loop {
         let snap = snapshot(root, &mut beats);
-        terminal.draw(|f| draw(f, root.path(), &snap, show_bodies, flow, &THEMES[theme]))?;
+        terminal.draw(|f| draw(f, root.path(), &snap, show_bodies, screen, &THEMES[theme]))?;
         if event::poll(Duration::from_millis(500))?
             && let Event::Key(k) = event::read()?
         {
@@ -102,19 +195,21 @@ fn run(terminal: &mut DefaultTerminal, root: &cq::Root) -> std::io::Result<()> {
                 KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
                 KeyCode::Char('b') => show_bodies = !show_bodies,
                 KeyCode::Char('t') => theme = (theme + 1) % THEMES.len(),
-                KeyCode::Tab => flow = !flow,
-                KeyCode::Char('1') => flow = false,
-                KeyCode::Char('2') => flow = true,
+                KeyCode::Tab => screen = screen.next(),
+                KeyCode::Char('1') => screen = Screen::Overview,
+                KeyCode::Char('2') => screen = Screen::Flow,
+                KeyCode::Char('3') => screen = Screen::Rejected,
                 _ => continue,
             }
-            save_view(flow, theme);
+            save_view(screen, theme);
         }
     }
 }
 
 // ---------- the remembered view ----------
 
-/// The last screen and theme are kept in `<config dir>/cq-top/state` as `<flow|overview> <theme>`.
+/// The last screen and theme are kept in `<config dir>/cq-top/state` as `<screen> <theme>`,
+/// for example `flow neon`.
 /// The queue root is never written. With no saved choice: Overview screen, first theme (classic).
 fn view_path() -> Option<PathBuf> {
     let var = |k: &str| env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
@@ -129,38 +224,179 @@ fn view_path() -> Option<PathBuf> {
     Some(dir.join("cq-top").join("state"))
 }
 
-fn parse_view(text: &str) -> (bool, usize) {
+fn parse_view(text: &str) -> (Screen, usize) {
     let mut words = text.split_whitespace();
-    let flow = words.next() == Some("flow");
+    let screen = words
+        .next()
+        .and_then(|n| Screen::ALL.into_iter().find(|s| s.name() == n))
+        .unwrap_or(Screen::Overview);
     let theme = words
         .next()
         .and_then(|n| THEMES.iter().position(|t| t.name == n))
         .unwrap_or(0);
-    (flow, theme)
+    (screen, theme)
 }
 
-fn format_view(flow: bool, theme: usize) -> String {
-    format!(
-        "{} {}\n",
-        if flow { "flow" } else { "overview" },
-        THEMES[theme].name
-    )
+fn format_view(screen: Screen, theme: usize) -> String {
+    format!("{} {}\n", screen.name(), THEMES[theme].name)
 }
 
-fn load_view() -> (bool, usize) {
+fn load_view() -> (Screen, usize) {
     let text = view_path()
         .and_then(|p| fs::read_to_string(p).ok())
         .unwrap_or_default();
     parse_view(&text)
 }
 
-fn save_view(flow: bool, theme: usize) {
+fn save_view(screen: Screen, theme: usize) {
     let Some(path) = view_path() else { return };
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
     // LAZY: a failed save is ignored; the view just is not remembered next run.
-    let _ = fs::write(path, format_view(flow, theme));
+    let _ = fs::write(path, format_view(screen, theme));
+}
+
+// ---------- one-shot exports ----------
+
+#[derive(Default, Debug, PartialEq)]
+struct Exports {
+    html: Option<PathBuf>,
+    screens: Option<PathBuf>,
+}
+
+fn parse_exports(args: &[String]) -> Result<Exports, String> {
+    let mut e = Exports::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let slot = match a.as_str() {
+            "--html" => &mut e.html,
+            "--html-screens" => &mut e.screens,
+            _ => return Err(format!("unknown argument {a:?}; see --help")),
+        };
+        let Some(v) = it.next().filter(|v| !v.is_empty()) else {
+            return Err(format!("{a} needs a path"));
+        };
+        *slot = Some(PathBuf::from(v));
+    }
+    Ok(e)
+}
+
+/// The full path for an export, refused when it is the queue root or inside it: an export
+/// must never write to the queue. The deepest folder that exists is resolved, so a link or
+/// a different spelling of the root is caught too.
+fn export_path(root: &Path, path: &Path) -> std::io::Result<PathBuf> {
+    let refuse = |why: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, why);
+    let abs = std::path::absolute(path)?;
+    let mut base = abs.as_path();
+    let mut rest = Vec::new();
+    while !base.exists() {
+        match (base.file_name(), base.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name.to_owned());
+                base = parent;
+            }
+            _ => return Err(refuse(format!("cannot resolve {}", path.display()))),
+        }
+    }
+    let mut full = base.canonicalize()?;
+    for name in rest.iter().rev() {
+        full.push(name);
+    }
+    if full.starts_with(root.canonicalize()?) {
+        return Err(refuse(format!(
+            "refusing to write {} inside the queue root {}",
+            path.display(),
+            root.display()
+        )));
+    }
+    Ok(full)
+}
+
+/// Takes one snapshot and writes the exports asked for. Every path is checked before
+/// anything is written.
+fn export(root: &cq::Root, e: &Exports) -> std::io::Result<()> {
+    let check = |p: &Option<PathBuf>| {
+        p.as_deref()
+            .map(|p| export_path(root.path(), p))
+            .transpose()
+    };
+    let (html, screens) = (check(&e.html)?, check(&e.screens)?);
+    let snap = snapshot(root, &mut Beats::new());
+    // Writes go to the checked full path; messages show the path as given.
+    if let (Some(path), Some(given)) = (html, &e.html) {
+        fs::write(&path, html::dashboard(root.path(), &snap))?;
+        println!("wrote {}", given.display());
+    }
+    if let (Some(dir), Some(given)) = (screens, &e.screens) {
+        fs::create_dir_all(&dir)?;
+        let (_, theme) = load_view();
+        let (w, h) = SCREEN_SIZE;
+        for screen in Screen::ALL {
+            let name = screen.name();
+            let path = dir.join(format!("{name}.html"));
+            fs::write(
+                &path,
+                screens::page(root.path(), &snap, screen, &THEMES[theme], w, h),
+            )?;
+            println!("wrote {}", given.join(format!("{name}.html")).display());
+        }
+    }
+    Ok(())
+}
+
+// ---------- figures shared by the screens and the dashboard ----------
+
+fn age(secs: i64) -> String {
+    let s = secs.max(0);
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+fn median(v: &mut [i64]) -> i64 {
+    v.sort_unstable();
+    v[v.len() / 2]
+}
+
+/// Messages sent in each of `n` equal slices of the last hour, oldest first.
+fn slices(s: &Snapshot, n: usize) -> Vec<u64> {
+    let n = n.max(1);
+    let mut slices = vec![0u64; n];
+    for m in &s.window {
+        let ago = (s.now - m.ts).clamp(0, WINDOW_SECS - 1);
+        slices[n - 1 - (ago as usize * n / WINDOW_SECS as usize)] += 1;
+    }
+    slices
+}
+
+/// Messages per (sender, receiver) in the last hour, most first.
+fn pairs(s: &Snapshot) -> Vec<((String, String), u64)> {
+    let mut pairs: BTreeMap<(String, String), u64> = BTreeMap::new();
+    for m in &s.window {
+        *pairs.entry((m.from.clone(), m.to.clone())).or_default() += 1;
+    }
+    let mut pairs: Vec<_> = pairs.into_iter().collect();
+    pairs.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    pairs
+}
+
+/// Task -> reply turnaround per worker in the last hour: reply send time minus task send
+/// time. Each entry is (worker, replies, median seconds).
+fn turnaround(s: &Snapshot) -> Vec<(String, usize, i64)> {
+    let mut turn: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    for m in s.window.iter().filter(|m| m.kind == "result") {
+        if let Some(task_ts) = parse_ts(&m.reply_to) {
+            turn.entry(m.from.clone())
+                .or_default()
+                .push((m.ts - task_ts).max(0));
+        }
+    }
+    turn.into_iter()
+        .map(|(w, mut v)| (w, v.len(), median(&mut v)))
+        .collect()
 }
 
 // ---------- reading the queue ----------
@@ -245,7 +481,48 @@ fn read_msg(path: &Path, mtime: i64, bucket: &'static str) -> Option<Msg> {
         reply_to: s("reply_to"),
         body: s("body"),
         bucket,
+        reason: String::new(),
     })
+}
+
+/// A rejected or dead-lettered message with the reason from its sidecar. A message that
+/// cannot be read (often why it was dead-lettered) still gets a row: its time and sender
+/// come from the file name `<time>-<sender>-<suffix>.json`, its receiver from the folder.
+fn read_problem(path: &Path, mtime: i64, bucket: &'static str) -> Msg {
+    let mut m = read_msg(path, mtime, bucket).unwrap_or_else(|| {
+        let id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let from = match (id.find('-'), id.rfind('-')) {
+            (Some(a), Some(b)) if a < b => id[a + 1..b].to_string(),
+            _ => String::new(),
+        };
+        let to = path
+            .parent()
+            .and_then(Path::file_name)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Msg {
+            ts: parse_ts(&id).unwrap_or(mtime),
+            from,
+            to,
+            kind: String::new(),
+            subject: "(unreadable message)".into(),
+            status: String::new(),
+            reply_to: String::new(),
+            body: String::new(),
+            bucket,
+            reason: String::new(),
+        }
+    });
+    // `<id>.json` -> `<id>.reason.json`. A missing or unreadable sidecar leaves no reason.
+    m.reason = fs::read_to_string(path.with_extension("reason.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("reason").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_default();
+    m
 }
 
 /// The last good heartbeat time for each name. `cq watch` rewrites the file in place, so a
@@ -357,6 +634,14 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
             .filter(|m| m.bucket != "dead" && m.ts >= now - WINDOW_SECS)
             .cloned(),
     );
+    let problem_files: Vec<_> = files.iter().filter(|f| f.2 != "done").collect();
+    let problems_total = problem_files.len();
+    let mut problems: Vec<Msg> = problem_files
+        .into_iter()
+        .take(PROBLEM_LIMIT)
+        .map(|(p, m, b)| read_problem(p, *m, b))
+        .collect();
+    problems.sort_by_key(|m| std::cmp::Reverse(m.ts));
     let mut recent: Vec<Msg> = files
         .into_iter()
         .take(RECENT_LIMIT)
@@ -371,6 +656,8 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
         in_flight,
         recent,
         window,
+        problems,
+        problems_total,
     }
 }
 
@@ -397,14 +684,17 @@ mod tests {
 
     #[test]
     fn saved_view_round_trips_and_falls_back() {
-        for flow in [false, true] {
+        for screen in Screen::ALL {
             for theme in 0..THEMES.len() {
-                assert_eq!(parse_view(&format_view(flow, theme)), (flow, theme));
+                assert_eq!(parse_view(&format_view(screen, theme)), (screen, theme));
             }
         }
-        assert_eq!(parse_view(""), (false, 0));
-        assert_eq!(parse_view("flow no-such-theme"), (true, 0));
-        assert_eq!(parse_view("garbage"), (false, 0));
+        assert_eq!(parse_view(""), (Screen::Overview, 0));
+        assert_eq!(parse_view("flow no-such-theme"), (Screen::Flow, 0));
+        assert_eq!(parse_view("garbage"), (Screen::Overview, 0));
+        // Tab goes round all three screens.
+        assert_eq!(Screen::Rejected.next(), Screen::Overview);
+        assert_eq!(Screen::Overview.next().next(), Screen::Rejected);
     }
 
     /// A fixed "now" so ages do not depend on the clock: 2026-10-27T11:30:00Z.
@@ -520,20 +810,25 @@ mod tests {
         assert_eq!(age(&snap(&root, &mut beats), "w2"), None);
     }
 
-    #[test]
-    fn every_theme_draws_both_screens() {
+    /// A message whose subject tries HTML injection and whose body must never be shown.
+    const EVIL_SUBJECT: &str = "<script>alert('x')</script> & \"Scan lane\"";
+    const BODY: &str = "BODY-TEXT-must-not-appear";
+    const EVIL_REASON: &str = "<img src=x onerror=alert(1)> not my job";
+
+    fn sample() -> Snapshot {
         let msg = |bucket: &'static str, kind: &str| Msg {
             ts: 1_793_100_000,
             from: "lead".into(),
             to: "w1".into(),
             kind: kind.into(),
-            subject: "Scan lane".into(),
+            subject: EVIL_SUBJECT.into(),
             status: "ok".into(),
             reply_to: "20261027T111421Z-lead-6256".into(),
-            body: "the body".into(),
+            body: BODY.into(),
             bucket,
+            reason: String::new(),
         };
-        let snap = Snapshot {
+        Snapshot {
             now: 1_793_100_400,
             paused: false,
             watchers: vec![Watcher {
@@ -550,11 +845,21 @@ mod tests {
             in_flight: vec![msg("queued", "task"), msg("claimed", "task")],
             recent: vec![msg("done", "result")],
             window: vec![msg("done", "result"), msg("queued", "task")],
-        };
+            problems: vec![Msg {
+                reason: EVIL_REASON.into(),
+                ..msg("rejected", "task")
+            }],
+            problems_total: 3,
+        }
+    }
+
+    #[test]
+    fn every_theme_draws_both_screens() {
+        let snap = sample();
         for theme in &THEMES {
-            for flow in [false, true] {
+            for screen in Screen::ALL {
                 let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-                term.draw(|f| draw(f, Path::new("/queue"), &snap, false, flow, theme))
+                term.draw(|f| draw(f, Path::new("/queue"), &snap, false, screen, theme))
                     .unwrap();
                 let text: String = term
                     .backend()
@@ -563,9 +868,189 @@ mod tests {
                     .iter()
                     .map(|c| c.symbol())
                     .collect();
-                assert!(text.contains("cq-top"), "{} flow={flow}", theme.name);
-                assert!(text.contains(if flow { "Turnaround" } else { "Watchers" }));
+                assert!(text.contains("cq-top"), "{} {screen:?}", theme.name);
+                assert!(text.contains(match screen {
+                    Screen::Overview => "Watchers",
+                    Screen::Flow => "Turnaround",
+                    Screen::Rejected => "not my job",
+                }));
+                assert!(!text.contains(BODY));
             }
         }
+    }
+
+    #[test]
+    fn export_arguments_parse() {
+        let args = |a: &[&str]| parse_exports(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(args(&[]), Ok(Exports::default()));
+        let e = args(&["--html", "a.html", "--html-screens", "shots"]).unwrap();
+        assert_eq!(e.html, Some(PathBuf::from("a.html")));
+        assert_eq!(e.screens, Some(PathBuf::from("shots")));
+        assert!(args(&["--html"]).is_err());
+        assert!(args(&["--html", ""]).is_err());
+        assert!(args(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn exports_refuse_the_queue_root() {
+        let (dir, root) = temp_queue();
+        let out = tempfile::tempdir().unwrap();
+        let r = root.path();
+        for inside in [
+            r.to_path_buf(),
+            r.join("dash.html"),
+            r.join("inbox").join("dash.html"),
+            r.join("new-dir").join("deeper").join("dash.html"),
+            r.parent()
+                .unwrap()
+                .join("no-such")
+                .join("..")
+                .join(r.file_name().unwrap())
+                .join("dash.html"),
+            r.join("tmp").join("..").join("dash.html"),
+        ] {
+            assert!(export_path(r, &inside).is_err(), "{}", inside.display());
+        }
+        let ok = export_path(r, &out.path().join("sub").join("dash.html")).unwrap();
+        assert!(!ok.starts_with(dir.path().canonicalize().unwrap()));
+
+        // A refused export writes nothing, not even the other, allowed path.
+        let e = Exports {
+            html: Some(out.path().join("dash.html")),
+            screens: Some(r.join("shots")),
+        };
+        assert!(export(&root, &e).is_err());
+        assert!(!out.path().join("dash.html").exists());
+        assert!(!r.join("shots").exists());
+    }
+
+    #[test]
+    fn export_writes_the_dashboard_and_both_screens() {
+        let (_dir, root) = temp_queue();
+        put(&root.inbox("w1"), "20261027T112500Z-lead-0001", "task");
+        let out = tempfile::tempdir().unwrap();
+        let e = Exports {
+            html: Some(out.path().join("dash.html")),
+            screens: Some(out.path().join("shots")),
+        };
+        export(&root, &e).unwrap();
+        for f in [
+            "dash.html",
+            "shots/overview.html",
+            "shots/flow.html",
+            "shots/rejected.html",
+        ] {
+            let text = fs::read_to_string(out.path().join(f)).unwrap();
+            assert!(text.starts_with("<!doctype html>"), "{f}");
+            // `put` writes the body "secret".
+            assert!(!text.contains("secret"), "{f}");
+        }
+        // The queue itself is unchanged.
+        assert_eq!(json_files(&root.inbox("w1")).len(), 1);
+    }
+
+    #[test]
+    fn dashboard_escapes_queue_text_and_hides_bodies() {
+        let mut snap = sample();
+        snap.watchers[0].name = "w<1>".into();
+        let page = html::dashboard(Path::new("/queue/<root>"), &snap);
+        assert!(!page.contains("<script"));
+        assert!(page.contains(
+            "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt; &amp; &quot;Scan lane&quot;"
+        ));
+        assert!(page.contains("w&lt;1&gt;"));
+        assert!(!page.contains("w<1>"));
+        assert!(page.contains("/queue/&lt;root&gt;"));
+        assert!(!page.contains(BODY));
+        // Self-contained: nothing is fetched.
+        for external in ["http://", "https://", "<link", "@import", "src=\""] {
+            assert!(!page.contains(external), "{external}");
+        }
+        for section in [
+            "Watchers",
+            "In flight",
+            "Recent",
+            "Who talks to whom",
+            "Busy now",
+        ] {
+            assert!(page.contains(section), "{section}");
+        }
+    }
+
+    #[test]
+    fn screen_pages_escape_cells_and_hide_bodies() {
+        let snap = sample();
+        for screen in Screen::ALL {
+            let page = screens::page(Path::new("/queue"), &snap, screen, &THEMES[0], 140, 42);
+            assert!(!page.contains("<script"));
+            assert!(!page.contains(BODY));
+            // One row per terminal line.
+            assert_eq!(page.matches("<div>").count(), 42);
+        }
+        let overview = screens::page(
+            Path::new("/queue"),
+            &snap,
+            Screen::Overview,
+            &THEMES[0],
+            140,
+            42,
+        );
+        assert!(overview.contains("&lt;"));
+    }
+
+    #[test]
+    fn rejected_and_dead_messages_carry_their_reasons() {
+        let (_dir, root) = temp_queue();
+        put(&root.rejected("w1"), "20261027T112504Z-lead-0005", "task");
+        fs::write(
+            root.rejected("w1")
+                .join("20261027T112504Z-lead-0005.reason.json"),
+            r#"{"id":"20261027T112504Z-lead-0005","reason":"out of scope","time":"x"}"#,
+        )
+        .unwrap();
+        // Unreadable, as dead-lettered messages often are; the sender has a hyphen.
+        fs::write(
+            root.dlq("w1").join("20261027T112506Z-photo-lead-0007.json"),
+            "{not json",
+        )
+        .unwrap();
+        fs::write(
+            root.dlq("w1")
+                .join("20261027T112506Z-photo-lead-0007.reason.json"),
+            r#"{"reason":"invalid JSON"}"#,
+        )
+        .unwrap();
+        // No sidecar at all.
+        put(&root.dlq("w1"), "20261027T112505Z-lead-0006", "task");
+        put(&root.done("w1"), "20261027T112507Z-lead-0008", "task");
+
+        let s = snap(&root, &mut Beats::new());
+        assert_eq!(s.problems_total, 3);
+        let rows: Vec<_> = s
+            .problems
+            .iter()
+            .map(|m| (m.bucket, m.from.as_str(), m.to.as_str(), m.reason.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("dead", "photo-lead", "w1", "invalid JSON"),
+                ("dead", "lead", "w1", ""),
+                ("rejected", "lead", "w1", "out of scope"),
+            ]
+        );
+        // Sidecars are still not counted as messages.
+        let w = s.watchers.iter().find(|w| w.name == "w1").unwrap();
+        assert_eq!((w.rejected, w.dead, w.done), (1, 2, 1));
+    }
+
+    #[test]
+    fn dashboard_lists_rejected_and_dead_with_escaped_reasons() {
+        let page = html::dashboard(Path::new("/queue"), &sample());
+        assert!(page.contains("Rejected and dead-lettered"));
+        assert!(page.contains("&lt;img src=x onerror=alert(1)&gt; not my job"));
+        assert!(!page.contains("<img"));
+        // The total is shown even when only some rows are.
+        assert!(page.contains("1 of 3"));
     }
 }

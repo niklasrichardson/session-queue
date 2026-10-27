@@ -18,7 +18,7 @@ pub struct Theme {
     pub name: &'static str,
     border: BorderType,
     /// Painted over the whole screen when set; `None` keeps the terminal's own background.
-    bg: Option<Color>,
+    pub bg: Option<Color>,
     text: Style,
     dim: Style,
     accent: Style,
@@ -135,28 +135,23 @@ impl Theme {
     }
 }
 
-fn age(secs: i64) -> String {
-    let s = secs.max(0);
-    match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m{:02}s", s / 60, s % 60),
-        _ => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
-    }
+/// The widest name in a name column, so names are not cut: at least the header, at most 24.
+fn name_width<'a>(header: &str, names: impl Iterator<Item = &'a str>) -> u16 {
+    names
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(header.len(), 24) as u16
 }
 
-fn median(v: &mut [i64]) -> i64 {
-    v.sort_unstable();
-    v[v.len() / 2]
-}
-
-pub fn draw(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, flow: bool, t: &Theme) {
+pub fn draw(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, screen: Screen, t: &Theme) {
     if let Some(bg) = t.bg {
         f.render_widget(Block::new().style(t.text.bg(bg)), f.area());
     }
-    if flow {
-        draw_flow(f, root, s, bodies, t);
-    } else {
-        draw_overview(f, root, s, bodies, t);
+    match screen {
+        Screen::Overview => draw_overview(f, root, s, bodies, t),
+        Screen::Flow => draw_flow(f, root, s, bodies, t),
+        Screen::Rejected => draw_rejected(f, root, s, bodies, t),
     }
 }
 
@@ -166,7 +161,7 @@ fn header(
     root: &Path,
     s: &Snapshot,
     bodies: bool,
-    flow: bool,
+    screen: Screen,
     t: &Theme,
 ) {
     let (state, style) = if s.paused {
@@ -181,11 +176,12 @@ fn header(
             Span::styled(format!(" {}  ", root.display()), t.text),
             Span::styled(state, style),
             Span::raw("  "),
-            tab(" 1 Overview ", !flow),
-            tab(" 2 Flow ", flow),
+            tab(" 1 Overview ", screen == Screen::Overview),
+            tab(" 2 Flow ", screen == Screen::Flow),
+            tab(" 3 Rejected ", screen == Screen::Rejected),
             Span::styled(
                 format!(
-                    "  bodies:{} [b]  theme:{} [t]  [tab] switch  [q] quit",
+                    "  bodies:{} [b]  theme:{} [t]  [q] quit",
                     if bodies { "on" } else { "off" },
                     t.name
                 ),
@@ -204,15 +200,11 @@ fn draw_flow(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) 
         Constraint::Length(s.watchers.len() as u16 + 2),
     ])
     .areas(f.area());
-    header(f, head, root, s, bodies, true, t);
+    header(f, head, root, s, bodies, Screen::Flow, t);
 
     // Messages sent per time slice over the last hour; one slice per column.
     let n = spark.width.saturating_sub(2).max(1) as usize;
-    let mut slices = vec![0u64; n];
-    for m in &s.window {
-        let ago = (s.now - m.ts).clamp(0, WINDOW_SECS - 1);
-        slices[n - 1 - (ago as usize * n / WINDOW_SECS as usize)] += 1;
-    }
+    let slices = slices(s, n);
     let peak = slices.iter().copied().max().unwrap_or(0);
     f.render_widget(
         Sparkline::default()
@@ -232,13 +224,7 @@ fn draw_flow(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) 
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(mid);
 
     // Who talks to whom.
-    let mut pairs: BTreeMap<(String, String), u64> = BTreeMap::new();
-    for m in &s.window {
-        *pairs.entry((m.from.clone(), m.to.clone())).or_default() += 1;
-    }
-    let mut pairs: Vec<_> = pairs.into_iter().collect();
-    pairs.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
-    let bars: Vec<Bar> = pairs
+    let bars: Vec<Bar> = pairs(s)
         .iter()
         .take(12)
         .map(|((a, b), c)| {
@@ -261,21 +247,12 @@ fn draw_flow(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) 
         pairs_area,
     );
 
-    // Task -> reply turnaround per worker: reply send time minus task send time.
-    let mut turn: BTreeMap<String, Vec<i64>> = BTreeMap::new();
-    for m in s.window.iter().filter(|m| m.kind == "result") {
-        if let Some(task_ts) = parse_ts(&m.reply_to) {
-            turn.entry(m.from.clone())
-                .or_default()
-                .push((m.ts - task_ts).max(0));
-        }
-    }
-    let bars: Vec<Bar> = turn
-        .iter_mut()
-        .map(|(w, v)| {
-            let med = median(v);
+    // Task -> reply turnaround per worker.
+    let bars: Vec<Bar> = turnaround(s)
+        .into_iter()
+        .map(|(w, replies, med)| {
             Bar::default()
-                .label(format!("{w} ({})", v.len()))
+                .label(format!("{w} ({replies})"))
                 .value(med as u64)
                 .text_value(age(med))
                 .style(t.ok)
@@ -300,19 +277,22 @@ fn draw_flow(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) 
     let rows = Layout::vertical(vec![Constraint::Length(1); s.watchers.len()]).split(inner);
     for (w, area) in s.watchers.iter().zip(rows.iter()) {
         let backlog = w.claimed + w.queued;
-        let stale = w.beat_age.is_none_or(|a| a > STALE_AFTER);
-        let (state, style) = match (stale, backlog) {
-            (true, _) => ("STALE", t.bad),
-            (false, 0) => ("idle", t.dim),
-            _ if w.queued > 0 => ("backlog", t.warn),
-            _ => ("working", t.info),
+        let busy = w.busy();
+        let style = match busy {
+            Busy::Stale => t.bad,
+            Busy::Idle => t.dim,
+            Busy::Backlog => t.warn,
+            Busy::Working => t.info,
         };
         f.render_widget(
             LineGauge::default()
                 .label(Span::styled(
                     format!(
                         "{:<8} {:<8} claimed {} queued {}",
-                        w.name, state, w.claimed, w.queued
+                        w.name,
+                        busy.label(),
+                        w.claimed,
+                        w.queued
                     ),
                     style,
                 ))
@@ -335,7 +315,7 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
     ])
     .areas(f.area());
 
-    header(f, head, root, s, bodies, false, t);
+    header(f, head, root, s, bodies, Screen::Overview, t);
 
     let rows = s.watchers.iter().map(|w| {
         let (txt, style) = match w.beat_age {
@@ -355,11 +335,12 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             Cell::from(w.dead.to_string()).style(if w.dead > 0 { t.bad } else { t.text }),
         ])
     });
+    let name_w = name_width("watcher", s.watchers.iter().map(|w| w.name.as_str()));
     f.render_widget(
         Table::new(
             rows,
             [
-                Constraint::Length(14),
+                Constraint::Length(name_w),
                 Constraint::Length(14),
                 Constraint::Length(8),
                 Constraint::Length(10),
@@ -428,23 +409,167 @@ fn msg_table(
         };
         Row::new(vec![
             Cell::from(age(now - m.ts)),
-            Cell::from(format!("{} -> {}", m.from, m.to)),
+            Cell::from(m.from.clone()),
+            Cell::from(m.to.clone()),
             Cell::from(m.kind.clone()),
             Cell::from(state).style(style),
             Cell::from(text),
         ])
     });
+    // The subject has the lowest priority: in a narrow terminal it shrinks first.
     Table::new(
         rows,
         [
             Constraint::Length(8),
-            Constraint::Length(20),
+            Constraint::Length(name_width("from", msgs.iter().map(|m| m.from.as_str()))),
+            Constraint::Length(name_width("to", msgs.iter().map(|m| m.to.as_str()))),
             Constraint::Length(7),
-            Constraint::Length(16),
-            Constraint::Min(20),
+            Constraint::Length(if state_col { 10 } else { 14 }),
+            Constraint::Fill(1),
         ],
     )
-    .header(Row::new(["age", "from -> to", "type", "state", "subject"]).style(t.table_header()))
+    .header(Row::new(["age", "from", "to", "type", "state", "subject"]).style(t.table_header()))
     .style(t.text)
     .block(t.block(title))
+}
+
+/// Rejected and dead-lettered messages, newest first, with the reason from each sidecar.
+/// Bodies are never shown here, whatever `b` says.
+fn draw_rejected(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
+    let [head, table] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(4)]).areas(f.area());
+    header(f, head, root, s, bodies, Screen::Rejected, t);
+
+    let from_w = name_width("from", s.problems.iter().map(|m| m.from.as_str()));
+    let to_w = name_width("to", s.problems.iter().map(|m| m.to.as_str()));
+    // Subject and reason share what is left after the borders, the fixed columns and the
+    // six one-cell gaps; each wraps onto up to three lines.
+    let fixed = 2 + 8 + 10 + from_w + to_w + 7 + 6;
+    let text_w = (table.width.saturating_sub(fixed) / 2).max(8) as usize;
+
+    let widths = [
+        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Length(from_w),
+        Constraint::Length(to_w),
+        Constraint::Length(7),
+        Constraint::Length(text_w as u16),
+        Constraint::Fill(1),
+    ];
+
+    // Border and header take three rows; list rows while they fit.
+    let mut room = table.height.saturating_sub(3);
+    let mut rows = Vec::new();
+    for m in &s.problems {
+        let (style, glyph) = t.bucket(m.bucket);
+        let subject = wrap(&m.subject, text_w, 3);
+        let (reason, reason_style) = if m.reason.is_empty() {
+            (vec!["(no reason file)".to_string()], t.dim)
+        } else {
+            (wrap(&m.reason, text_w, 3), t.text)
+        };
+        let height = subject.len().max(reason.len()) as u16;
+        if height > room {
+            break;
+        }
+        room -= height;
+        rows.push(
+            Row::new(vec![
+                Cell::from(age(s.now - m.ts)),
+                Cell::from(format!("{glyph} {}", m.bucket)).style(style),
+                Cell::from(m.from.clone()),
+                Cell::from(m.to.clone()),
+                Cell::from(m.kind.clone()),
+                Cell::from(subject.join("\n")),
+                Cell::from(reason.join("\n")).style(reason_style),
+            ])
+            .height(height),
+        );
+    }
+    let title = format!(
+        " Rejected and dead-lettered, newest first: {} of {} ",
+        rows.len(),
+        s.problems_total
+    );
+    f.render_widget(
+        Table::new(rows, widths)
+            .header(
+                Row::new(["age", "state", "from", "to", "type", "subject", "reason"])
+                    .style(t.table_header()),
+            )
+            .style(t.text)
+            .block(t.block(title)),
+        table,
+    );
+}
+
+/// Word-wraps text to `width` characters and at most `max_lines`
+/// lines. A word longer than a line is split; text that does not fit ends in an ellipsis.
+fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let width = width.max(2);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let mut words: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    words.reverse();
+    while let Some(word) = words.pop() {
+        let (used, len) = (line.chars().count(), word.chars().count());
+        if len > width {
+            // Split a long word at the end of this line (or of a fresh one).
+            let room = if used == 0 {
+                width
+            } else {
+                width.saturating_sub(used + 1)
+            };
+            if room == 0 {
+                lines.push(std::mem::take(&mut line));
+                words.push(word);
+                continue;
+            }
+            let head: String = word.chars().take(room).collect();
+            let rest: String = word.chars().skip(room).collect();
+            if used > 0 {
+                line.push(' ');
+            }
+            line.push_str(&head);
+            lines.push(std::mem::take(&mut line));
+            words.push(rest);
+        } else if used == 0 {
+            line = word;
+        } else if used + 1 + len <= width {
+            line.push(' ');
+            line.push_str(&word);
+        } else {
+            lines.push(std::mem::replace(&mut line, word));
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        let last = &mut lines[max_lines - 1];
+        let mut cut: String = last.chars().take(width - 1).collect();
+        cut.push('…');
+        *last = cut;
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap;
+
+    #[test]
+    fn wrap_fits_words_splits_long_ones_and_marks_a_cut() {
+        assert_eq!(
+            wrap("sender not in scope", 10, 3),
+            ["sender not", "in scope"]
+        );
+        assert_eq!(wrap("", 10, 3), [""]);
+        assert_eq!(wrap("ab abcdefghijkl", 6, 3), ["ab abc", "defghi", "jkl"]);
+        assert_eq!(wrap("one two three four", 5, 2), ["one", "two…"]);
+        for line in wrap("x".repeat(100).as_str(), 7, 3) {
+            assert!(line.chars().count() <= 7);
+        }
+    }
 }
