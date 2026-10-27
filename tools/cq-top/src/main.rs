@@ -87,8 +87,9 @@ fn main() -> std::io::Result<()> {
 fn run(terminal: &mut DefaultTerminal, root: &cq::Root) -> std::io::Result<()> {
     let mut show_bodies = false;
     let (mut flow, mut theme) = load_view();
+    let mut beats = Beats::new();
     loop {
-        let snap = snapshot(root);
+        let snap = snapshot(root, &mut beats);
         terminal.draw(|f| draw(f, root.path(), &snap, show_bodies, flow, &THEMES[theme]))?;
         if event::poll(Duration::from_millis(500))?
             && let Event::Key(k) = event::read()?
@@ -117,9 +118,14 @@ fn run(terminal: &mut DefaultTerminal, root: &cq::Root) -> std::io::Result<()> {
 /// The queue root is never written. With no saved choice: Overview screen, first theme (classic).
 fn view_path() -> Option<PathBuf> {
     let var = |k: &str| env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    let dir = var("XDG_CONFIG_HOME")
-        .or_else(|| var("HOME").map(|h| h.join(".config")))
-        .or_else(|| var("APPDATA"))?;
+    let xdg = || var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")));
+    // Git Bash sets HOME on Windows, so prefer %APPDATA% there: the file is the same
+    // whichever shell started cq-top.
+    let dir = if cfg!(windows) {
+        var("APPDATA").or_else(xdg)?
+    } else {
+        xdg().or_else(|| var("APPDATA"))?
+    };
     Some(dir.join("cq-top").join("state"))
 }
 
@@ -199,12 +205,18 @@ fn subdirs(p: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The message files in a folder. `<id>.reason.json` files sit beside the messages in
+/// `dlq/` and `rejected/`; they are not messages.
 fn json_files(p: &Path) -> Vec<(PathBuf, i64)> {
     fs::read_dir(p)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".json") && !name.ends_with(".reason.json")
+        })
         .map(|e| {
             let mtime = e
                 .metadata()
@@ -236,9 +248,17 @@ fn read_msg(path: &Path, mtime: i64, bucket: &'static str) -> Option<Msg> {
     })
 }
 
-fn snapshot(root: &cq::Root) -> Snapshot {
-    let now = now_epoch();
+/// The last good heartbeat time for each name. `cq watch` rewrites the file in place, so a
+/// read can catch it empty or half written; that read keeps the previous value.
+type Beats = BTreeMap<String, i64>;
 
+fn snapshot(root: &cq::Root, beats: &mut Beats) -> Snapshot {
+    snapshot_at(root, beats, now_epoch())
+}
+
+/// A message moving between folders during a refresh can be counted twice or missed once;
+/// the next refresh is right again (see `docs/CQ-TOP.md`).
+fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
     // name -> Claude Code session key, from members/<key> (line 1 is the name).
     let mut sessions: BTreeMap<String, String> = BTreeMap::new();
     for e in fs::read_dir(root.members()).into_iter().flatten().flatten() {
@@ -274,11 +294,15 @@ fn snapshot(root: &cq::Root) -> Snapshot {
         let claimed = json_files(&root.processing(name));
         let dead = json_files(&root.dlq(name));
 
-        let beat_age = fs::read_to_string(root.heartbeat(name))
+        let beat = fs::read_to_string(root.heartbeat(name))
             .ok()
-            .and_then(|t| parse_ts(t.trim()))
-            .map(|t| now - t);
-        // LAZY: liveness is heartbeat age only; the .pid file is shown, not probed.
+            .and_then(|t| parse_ts(t.trim()));
+        if let Some(t) = beat {
+            beats.insert(name.clone(), t);
+        }
+        let beat_age = beats.get(name).map(|t| now - t);
+        // Liveness is heartbeat age only. cq-top never opens the lock file (opening it
+        // creates it, and a probe could stop a starting watcher); the .pid file is a hint.
         let pid = fs::read_to_string(root.pid_file(name))
             .map(|t| t.trim().to_string())
             .unwrap_or_default();
@@ -325,7 +349,14 @@ fn snapshot(root: &cq::Root) -> Snapshot {
         .filter(|f| f.1 >= now - WINDOW_SECS)
         .filter_map(|(p, m, b)| read_msg(p, *m, b))
         .collect();
-    window.extend(in_flight.iter().cloned());
+    // Dead messages are already in `files`; queued and claimed ones count only when sent
+    // within the window, so an old stuck message is not "last hour" traffic.
+    window.extend(
+        in_flight
+            .iter()
+            .filter(|m| m.bucket != "dead" && m.ts >= now - WINDOW_SECS)
+            .cloned(),
+    );
     let mut recent: Vec<Msg> = files
         .into_iter()
         .take(RECENT_LIMIT)
@@ -376,57 +407,117 @@ mod tests {
         assert_eq!(parse_view("garbage"), (false, 0));
     }
 
-    #[test]
-    fn snapshot_reads_a_queue_without_changing_it() {
+    /// A fixed "now" so ages do not depend on the clock: 2026-10-27T11:30:00Z.
+    const NOW: i64 = 1_793_100_600;
+
+    /// A temporary queue root. `Root` can only be made from `CQ_ROOT`, so tests take a lock
+    /// while they set it; the root keeps its own copy of the path afterwards.
+    fn temp_queue() -> (tempfile::TempDir, cq::Root) {
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        // SAFETY: this is the only test that touches the environment.
+        // SAFETY: every test that sets CQ_ROOT holds `ENV`, and nothing else reads it.
         unsafe { env::set_var("CQ_ROOT", dir.path()) };
         let root = cq::Root::from_env().unwrap();
         root.init().unwrap();
         root.ensure_session_dirs("w1").unwrap();
+        (dir, root)
+    }
 
-        let msg = |id: &str, kind: &str| {
-            format!(
-                r#"{{"id":"{id}","from":"lead","to":"w1","type":"{kind}","subject":"s","body":"secret"}}"#
-            )
-        };
-        fs::write(
-            root.inbox("w1").join("20261027T112500Z-lead-0001.json"),
-            msg("20261027T112500Z-lead-0001", "task"),
-        )
-        .unwrap();
-        fs::write(
-            root.processing("w1")
-                .join("20261027T112501Z-lead-0002.json"),
-            msg("20261027T112501Z-lead-0002", "info"),
-        )
-        .unwrap();
-        fs::write(
-            root.done("w1").join("20261027T112502Z-lead-0003.json"),
-            msg("20261027T112502Z-lead-0003", "task"),
-        )
-        .unwrap();
-        fs::write(
-            root.dlq("w1").join("20261027T112503Z-lead-0004.json"),
-            "not json",
-        )
-        .unwrap();
+    fn put(dir: &Path, id: &str, kind: &str) {
+        let body = format!(
+            r#"{{"id":"{id}","from":"lead","to":"w1","type":"{kind}","subject":"s","body":"secret"}}"#
+        );
+        fs::write(dir.join(format!("{id}.json")), body).unwrap();
+    }
+
+    fn snap(root: &cq::Root, beats: &mut Beats) -> Snapshot {
+        snapshot_at(root, beats, NOW)
+    }
+
+    #[test]
+    fn snapshot_reads_a_queue_without_changing_it() {
+        let (_dir, root) = temp_queue();
+        put(&root.inbox("w1"), "20261027T112500Z-lead-0001", "task");
+        put(&root.processing("w1"), "20261027T112501Z-lead-0002", "info");
+        put(&root.done("w1"), "20261027T112502Z-lead-0003", "task");
         fs::write(root.heartbeat("w1"), "2026-10-27T11:26:32Z\n").unwrap();
 
-        let s = snapshot(&root);
+        let s = snap(&root, &mut Beats::new());
         assert!(!s.paused);
         let w = s.watchers.iter().find(|w| w.name == "w1").unwrap();
-        assert_eq!((w.queued, w.claimed, w.done, w.dead), (1, 1, 1, 1));
-        assert!(w.beat_age.is_some());
+        assert_eq!((w.queued, w.claimed, w.done, w.dead), (1, 1, 1, 0));
+        assert_eq!(w.beat_age, Some(NOW - 1_793_100_392));
         let buckets: Vec<_> = s.in_flight.iter().map(|m| m.bucket).collect();
         assert_eq!(buckets, ["queued", "claimed"]);
         assert_eq!(s.recent.len(), 1);
 
         fs::write(root.pause(), "").unwrap();
-        assert!(snapshot(&root).paused);
+        assert!(snap(&root, &mut Beats::new()).paused);
         // The snapshot left every message where it was.
         assert_eq!(json_files(&root.inbox("w1")).len(), 1);
         assert_eq!(json_files(&root.processing("w1")).len(), 1);
+    }
+
+    #[test]
+    fn reason_files_are_not_messages() {
+        let (_dir, root) = temp_queue();
+        put(&root.dlq("w1"), "20261027T112503Z-lead-0004", "task");
+        fs::write(
+            root.dlq("w1")
+                .join("20261027T112503Z-lead-0004.reason.json"),
+            r#"{"reason":"bad"}"#,
+        )
+        .unwrap();
+        put(&root.rejected("w1"), "20261027T112504Z-lead-0005", "task");
+        fs::write(
+            root.rejected("w1")
+                .join("20261027T112504Z-lead-0005.reason.json"),
+            r#"{"reason":"no"}"#,
+        )
+        .unwrap();
+
+        let s = snap(&root, &mut Beats::new());
+        let w = s.watchers.iter().find(|w| w.name == "w1").unwrap();
+        assert_eq!((w.dead, w.rejected), (1, 1));
+        assert_eq!(s.recent.len(), 2);
+        assert!(s.recent.iter().all(|m| !m.from.is_empty()));
+    }
+
+    #[test]
+    fn window_skips_old_in_flight_and_counts_each_message_once() {
+        let (_dir, root) = temp_queue();
+        // Stuck for 23 hours: still in flight, but not "last hour" traffic.
+        put(&root.inbox("w1"), "20261026T103000Z-lead-0001", "task");
+        put(&root.inbox("w1"), "20261027T112500Z-lead-0002", "task");
+        // Dead and recent: listed in flight, counted once in the window.
+        put(&root.dlq("w1"), "20261027T112503Z-lead-0003", "task");
+
+        let s = snap(&root, &mut Beats::new());
+        assert_eq!(s.in_flight.len(), 3);
+        assert_eq!(s.window.len(), 2);
+        assert!(s.window.iter().all(|m| m.ts >= NOW - WINDOW_SECS));
+    }
+
+    #[test]
+    fn a_bad_heartbeat_read_keeps_the_last_good_value() {
+        let (_dir, root) = temp_queue();
+        root.ensure_session_dirs("w2").unwrap();
+        let mut beats = Beats::new();
+        let age = |s: &Snapshot, n: &str| s.watchers.iter().find(|w| w.name == n).unwrap().beat_age;
+
+        fs::write(root.heartbeat("w1"), "2026-10-27T11:29:00Z\n").unwrap();
+        assert_eq!(age(&snap(&root, &mut beats), "w1"), Some(60));
+        // Caught half written: empty, then garbage. The age keeps growing from the last good time.
+        for bad in ["", "2026-10-27T1"] {
+            fs::write(root.heartbeat("w1"), bad).unwrap();
+            assert_eq!(
+                age(&snapshot_at(&root, &mut beats, NOW + 30), "w1"),
+                Some(90)
+            );
+        }
+        // A watcher that never wrote a heartbeat has none.
+        assert_eq!(age(&snap(&root, &mut beats), "w2"), None);
     }
 
     #[test]

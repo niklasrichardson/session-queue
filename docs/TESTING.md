@@ -17,13 +17,14 @@ Tested live in the desktop app on Windows: re-arming after each 30-minute watche
 
 ## cq-top on macOS, 27 October 2026
 
-`cq-top` is a read-only terminal view of the queue (see [cq-top](CQ-TOP.md)). It was built and checked on macOS 27.0.1 (Apple silicon) with Rust 1.99.1. The `cq` package itself was not changed. Its four required checks (cargo build, cargo fmt --check, cargo clippy --all-targets -- -D warnings and cargo test) also passed on this Mac: 62 tests in 6 test programs, no failures.
+`cq-top` is a read-only terminal view of the queue (see [cq-top](CQ-TOP.md)). It was built and checked on macOS 27.0.1 (Apple silicon) with Rust 1.99.1. No `cq` source file was changed. The root `Cargo.toml` gained a workspace table, so `cq-top` is a workspace member and a default member.
 
-- In `tools/cq-top`: cargo build, cargo fmt --check, cargo clippy --all-targets -- -D warnings and cargo test passed. The suite has 5 tests. They read a temporary queue root and check that a snapshot moves no file. They also draw both screens in all three themes into a test buffer.
+- At the repo root, the four required checks (cargo build, cargo fmt --check, cargo clippy --all-targets -- -D warnings and cargo test) passed: 70 tests in 7 test programs, no failures. 62 are the tests of `cq`, and 8 are the tests of `cq-top`.
+- The `cq-top` tests read a temporary queue root and check that a snapshot moves no file. They check that `.reason.json` files are not counted as messages, that the last-hour count skips old queued and claimed messages and counts each message once, and that a bad heartbeat read keeps the last good value. They also draw both screens in all three themes into a test buffer. Each of these checks fails when its fix is removed.
 - The program ran against a throwaway queue made with `cq init` and `cq send`. The Overview screen showed the two queued messages. A missing `CQ_ROOT` and a relative `CQ_ROOT` both printed `cq`'s own message and exited with code 70.
 - An earlier standalone version of `cq-top` ran for about an hour beside four Claude Code sessions in the desktop app (Code tab) on the same Mac. Each session ran `cq watch` under the Monitor tool. It showed their heartbeats, claims and replies.
 
-Not verified: the keys `b`, `Tab`, `1`, `2` and `t` were not pressed in a real terminal, and the saved view file was tested only through its read and write functions. Windows and Linux were not built.
+Not verified: the keys `b`, `Tab`, `1`, `2` and `t` were not pressed in a real terminal, and the saved view file was tested only through its read and write functions. I did not build `cq-top` on Windows or Linux. The maintainer tested the first commit on Windows 11 (see the pull request).
 
 ## Codex on Windows, 26 October 2026
 

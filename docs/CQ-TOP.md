@@ -31,7 +31,7 @@ The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#
 | `b` | Show or hide message bodies. They are hidden at start. |
 | `q`, `Esc`, `Ctrl-C` | Quit. |
 
-`cq-top` remembers the last screen and theme in a one-line file, such as `overview classic`. The file is `cq-top/state` in `$XDG_CONFIG_HOME`, or in `~/.config`, or in `%APPDATA%`. Without a saved choice, `cq-top` starts on Overview with the classic theme. If no config folder is known, nothing is saved.
+`cq-top` remembers the last screen and theme in a one-line file, such as `overview classic`. The file is `cq-top/state` in `%APPDATA%` on Windows, and in `$XDG_CONFIG_HOME` or `~/.config` on other systems. Without a saved choice, `cq-top` starts on Overview with the classic theme. If no config folder is known, nothing is saved.
 
 ## Overview screen
 
@@ -61,6 +61,10 @@ A theme is one entry in `THEMES` in `tools/cq-top/src/draw.rs`.
 ## Limits
 
 - A watcher counts as alive when its heartbeat is less than 90 seconds old. The process ID is shown, but `cq-top` does not check that the process exists.
+- `cq-top` never opens a watcher's lock file. Opening it creates the file, and a probe at the wrong moment could stop a starting watcher from starting.
+- `cq watch` rewrites the heartbeat file in place, so `cq-top` can read it half written. It then keeps the last good value instead of showing the watcher as stale.
+- A message that moves between folders while `cq-top` reads them can be counted twice, or missed, for one refresh. The next refresh is correct.
+- The Flow screen counts a queued or claimed message in "last hour" only if it was sent in that hour. An older message that is stuck still shows on the Overview screen.
 - The Recent list reads only the 40 newest files on each refresh.
 - Turnaround includes the time the worker takes to write its reply.
 - An `info` message that nobody claims counts as work in the Busy bar.
@@ -68,7 +72,7 @@ A theme is one entry in `THEMES` in `tools/cq-top/src/draw.rs`.
 
 ## Build and test
 
-Run these in `tools/cq-top`. The tests use a temporary queue root and never touch a real one.
+`tools/cq-top` is a member of the repo's Cargo workspace, and a default member. The four required checks at the repo root build and test it with `cq`:
 
 ```bash
 cargo build
@@ -76,3 +80,5 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+To check only `cq-top`, add `-p cq-top` to each command. The tests use a temporary queue root and never touch a real one.
