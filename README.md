@@ -55,6 +55,7 @@ Every session must use the same absolute CQ_ROOT. [Setup configuration](docs/SET
 | [`CLAUDE-snippets.md`](CLAUDE-snippets.md) | CLAUDE.md blocks and session prompts to paste |
 | [Session protocol](docs/PROTOCOL.md) | How a session watches, claims, replies and rejoins; send limits |
 | [Commands](docs/COMMANDS.md) | Every command, exit codes, the queue folder layout |
+| [cq-top](docs/CQ-TOP.md) | A live, read-only terminal view of the queue |
 | [Design decisions](docs/DESIGN.md) | Why `cq` behaves as it does |
 | [Test status](docs/TESTING.md) | What has been tested live, and what has not |
 | [Specification](docs/SPEC.md) | The original requirements, architecture and test plan |

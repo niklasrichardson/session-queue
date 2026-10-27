@@ -1,0 +1,15 @@
+[package]
+name = "cq-top"
+version = "0.1.0"
+edition = "2024"
+description = "Live, read-only terminal view of a cq queue"
+license = "MIT"
+publish = false
+
+[dependencies]
+cq = { path = "../.." }
+ratatui = "0.30.2"
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3.27.0"

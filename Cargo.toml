@@ -6,6 +6,11 @@ description = "File-based message queue for AI coding sessions"
 license = "MIT"
 publish = false
 
+[workspace]
+members = ["tools/cq-top"]
+# A plain `cargo build`, `cargo test` and `cargo clippy` cover cq-top too.
+default-members = [".", "tools/cq-top"]
+
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 jiff = "0.2.38"
