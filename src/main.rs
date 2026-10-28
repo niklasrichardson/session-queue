@@ -12,12 +12,15 @@ use serde::de::DeserializeOwned;
 
 use cq::done::{self, DoneRequest};
 use cq::error::{CqError, Result, exit};
+use cq::inbox::Inbox;
 use cq::message::{
     DoneInput, MAX_BODY_BYTES, MAX_HOPS, MsgType, RATE_LIMIT, RATE_WINDOW, RECIPIENT_LIMIT,
     SENDER_LIMIT, SendInput, Status,
 };
 use cq::send::{self, Hops, Outgoing};
-use cq::watch::{self, DEFAULT_MAX_SECONDS, DEFAULT_RESCAN_SECONDS, WatchOptions};
+use cq::watch::{
+    self, DEFAULT_MAX_SECONDS, DEFAULT_RESCAN_SECONDS, Ended, Lines, Sink, WatchOptions,
+};
 use cq::{Root, claim, list, members, platform, sleep, timefmt};
 
 const EXIT_CODES: &str = "\
@@ -31,6 +34,7 @@ Exit codes:
       running, sleeping another name without being a coordinator)
   6   done: the message is not claimed by this session
   7   watch: the name is asleep; do not re-arm
+  8   watch --to-inbox: the session's inbox cannot be reached (session gone)
   64  bad arguments or bad JSON input
   70  any other error (I/O, CQ_ROOT missing or not initialised)";
 
@@ -122,7 +126,8 @@ enum Cmd {
     /// Monitor. Never prints message bodies. While your name is asleep, it
     /// prints CQ-SLEEP and exits 7. A coordinator's watcher also prints one
     /// CQ-WAKE line per message that has waited 2 minutes for a sleeping
-    /// name.
+    /// name. Experimental: --to-inbox posts the lines into this Claude Code
+    /// session's inbox instead.
     #[command(after_help = exit_help())]
     Watch {
         /// Your session name.
@@ -131,10 +136,17 @@ enum Cmd {
         /// Stop the running watcher for this name first.
         #[arg(long)]
         takeover: bool,
-        /// Exit after this many seconds (just under the Monitor's 1800 s cap).
-        #[arg(long, default_value_t = DEFAULT_MAX_SECONDS,
-              value_parser = clap::value_parser!(u64).range(1..))]
-        max_seconds: u64,
+        /// Exit after this many seconds. Default 1790, just under the
+        /// Monitor's 1800 s cap; no limit with --to-inbox.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        max_seconds: Option<u64>,
+        /// Experimental. Post the lines into this Claude Code session's own
+        /// inbox (CLAUDE_CODE_MESSAGING_SOCKET and CLAUDE_CODE_MESSAGING_TOKEN)
+        /// instead of stdout, batched, and post a last message when the
+        /// watcher stops. Start it once in the background with the Bash
+        /// tool, not under a Monitor.
+        #[arg(long)]
+        to_inbox: bool,
         /// Full rescan interval (for tests).
         #[arg(long, hide = true, default_value_t = DEFAULT_RESCAN_SECONDS,
               value_parser = clap::value_parser!(u64).range(1..))]
@@ -307,6 +319,23 @@ fn main() -> ExitCode {
     }
 }
 
+/// `cq watch --to-inbox`. An error that the session can still hear about
+/// (not exit 8, which means the inbox is gone) is posted as the stopped
+/// message, so the session knows it has no watcher.
+fn watch_to_inbox(opts: &WatchOptions) -> Result<Ended> {
+    let mut inbox = Inbox::from_env(&opts.name)?;
+    if let Err(e) = platform::install_interrupt_handler() {
+        eprintln!("cq watch: a signal will stop the watcher without a stopped message ({e})");
+    }
+    let result = Root::open().and_then(|root| watch::watch(&root, opts, &mut inbox));
+    if let Err(e) = &result
+        && e.code != exit::INBOX_GONE
+    {
+        inbox.stopped(&format!("error: {e}"), Ended::Normal);
+    }
+    result
+}
+
 /// Run one command. Returns the exit code of a run that did not fail:
 /// 0, or 7 for a watcher that stopped because its name is asleep.
 fn run(cmd: Cmd) -> Result<i32> {
@@ -355,17 +384,24 @@ fn run(cmd: Cmd) -> Result<i32> {
             max_seconds,
             rescan_seconds,
             no_fs_events,
+            to_inbox,
         } => {
-            let root = Root::open()?;
             let opts = WatchOptions {
                 name,
                 takeover,
-                max_seconds,
+                max_seconds: max_seconds.or((!to_inbox).then_some(DEFAULT_MAX_SECONDS)),
                 rescan: Duration::from_secs(rescan_seconds),
                 fs_events: !no_fs_events,
                 member_key: members::session_key(),
+                to_inbox,
             };
-            if watch::watch(&root, &opts, &mut io::stdout().lock())? == watch::Ended::Asleep {
+            let ended = if to_inbox {
+                watch_to_inbox(&opts)?
+            } else {
+                let root = Root::open()?;
+                watch::watch(&root, &opts, &mut Lines(io::stdout().lock()))?
+            };
+            if ended == Ended::Asleep {
                 return Ok(exit::ASLEEP);
             }
         }
@@ -520,32 +556,43 @@ fn run(cmd: Cmd) -> Result<i32> {
 fn session_start(debug: bool) {
     drain_hook_input();
     let key = members::session_key();
-    let name = match (&key, Root::from_env()) {
-        (Some(k), Ok(root)) => members::name_for(&root, k),
+    let root = Root::from_env().ok();
+    let name = match (&key, &root) {
+        (Some(k), Some(root)) => members::name_for(root, k),
+        _ => None,
+    };
+    let mode = match (&key, &root, &name) {
+        (Some(k), Some(root), Some(_)) => Some(members::mode_for(root, k)),
         _ => None,
     };
     if debug {
-        eprintln!("cq session-start: key={key:?} name={name:?}");
+        eprintln!("cq session-start: key={key:?} name={name:?} mode={mode:?}");
     }
-    let asleep = match (&name, Root::from_env()) {
-        (Some(n), Ok(root)) => sleep::read(&root, n),
-        _ => None,
+    let (Some(root), Some(name), Some(mode)) = (root, name, mode) else {
+        return;
     };
-    if let (Some(name), Some(rec)) = (&name, asleep) {
-        // Ignore a failed write, as stdout may already be closed.
-        let _ = writeln!(
-            io::stdout(),
+    let runtime_rules = std::env::var(ENV_RULES).ok();
+    let rules = rules_ref(runtime_rules.as_deref(), BUILD_RULES_PATH);
+    let text = if let Some(rec) = sleep::read(&root, &name) {
+        format!(
             "You are in the cq session queue as {name}, and {name} is asleep ({}). Do not start a watcher. Messages wait in your inbox. To wake, run /cq-start when the user or a coordinator's message asks you to.",
             rec.describe()
-        );
-    } else if let Some(name) = name {
-        // Ignore a failed write, as stdout may already be closed.
-        let _ = writeln!(
-            io::stdout(),
-            "You are in the cq session queue as {name}. Before anything else this turn: re-read {} and follow it as {name} (skip choosing a name). Start your watcher Monitor (timeout_ms 1800000) on: cq watch --as {name} 2>&1. If it exits 5, your previous watcher belonged to the conversation before the clear: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages.",
-            rules_ref(std::env::var(ENV_RULES).ok().as_deref(), BUILD_RULES_PATH)
-        );
-    }
+        )
+    } else if mode == members::Mode::Inbox && watch::is_running(&root, &name) {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Your inbox watcher (cq watch --as {name} --to-inbox) still runs and posts queue events into this session's inbox: do not start a watcher Monitor and do not use --takeover. Run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else if mode == members::Mode::Inbox {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Your inbox watcher has stopped. Start it again in the background with the Bash tool (not the Monitor tool): cq watch --as {name} --to-inbox. If it exits 5, an old watcher still holds the name: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Start your watcher Monitor (timeout_ms 1800000) on: cq watch --as {name} 2>&1. If it exits 5, your previous watcher belonged to the conversation before the clear: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    };
+    // Ignore a failed write, as stdout may already be closed.
+    let _ = writeln!(io::stdout(), "{text}");
 }
 
 /// The session rules file named in the `session-start` reminder: `CQ_RULES`

@@ -146,6 +146,14 @@ fn heartbeat_chip(w: &Watcher) -> String {
     }
 }
 
+/// The watcher's mode, or a dim dash when neither its process nor its record shows one.
+fn mode_cell(s: &Snapshot, w: &Watcher) -> String {
+    match s.mode(w) {
+        Some(m) => mode_label(m).to_string(),
+        None => "<span class=\"dim\">-</span>".to_string(),
+    }
+}
+
 fn busy_tone(b: Busy) -> (Tone, &'static str) {
     match b {
         Busy::Asleep => (Tone::Muted, "z"),
@@ -263,18 +271,19 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
     let _ = write!(
         b,
         "<section class=\"card\"><h2>Watchers</h2><div class=\"scroll\"><table>\
-         <thead><tr><th>Name</th><th>Heartbeat</th><th class=\"n\">Queued</th>\
+         <thead><tr><th>Name</th><th>Heartbeat</th><th>Mode</th><th class=\"n\">Queued</th>\
          <th class=\"n\">Claimed</th><th class=\"n\">Done</th><th class=\"n\">Rejected</th>\
          <th class=\"n\">Dead</th><th>PID</th><th>Session</th></tr></thead><tbody>"
     );
     for w in &s.watchers {
         let _ = write!(
             b,
-            "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\">{}</td><td class=\"n\">{}</td>\
-             <td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
+            "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\">{}</td><td>{}</td>\
+             <td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
              <td class=\"n\">{}</td><td class=\"dim\">{}</td><td class=\"dim\">{}</td></tr>",
             esc(&w.name),
             heartbeat_chip(w),
+            mode_cell(s, w),
             w.queued,
             w.claimed,
             w.done,
@@ -289,7 +298,7 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
         );
     }
     if s.watchers.is_empty() {
-        b.push_str("<tr><td colspan=\"9\" class=\"dim\">No watchers.</td></tr>");
+        b.push_str("<tr><td colspan=\"10\" class=\"dim\">No watchers.</td></tr>");
     }
     b.push_str("</tbody></table></div></section>");
 
@@ -638,7 +647,7 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
          <th>Session</th><th>State</th><th>Model</th><th class=\"n\">Context</th>\
          <th class=\"n\">Tokens today</th><th class=\"n\">Est. cost today</th>\
          <th class=\"n\">CPU %</th><th class=\"n\">Memory</th><th class=\"n\">Sub</th>\
-         <th>cq</th><th class=\"n\">Waiting</th><th class=\"n\">Claimed</th>\
+         <th>cq</th><th>Mode</th><th class=\"n\">Waiting</th><th class=\"n\">Claimed</th>\
          <th>Last commit or edit</th><th class=\"n\">Age</th></tr></thead><tbody>",
         r.rows.len()
     );
@@ -662,7 +671,7 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
             "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\">{state_chip}</td>\
              <td class=\"nowrap\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
              <td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
-             <td class=\"n\">{}</td><td class=\"nowrap\">{beat}</td><td class=\"n\">{}</td>\
+             <td class=\"n\">{}</td><td class=\"nowrap\">{beat}</td><td>{}</td><td class=\"n\">{}</td>\
              <td class=\"n\">{}</td><td class=\"nowrap\">{}</td><td class=\"n\">{}</td></tr>",
             esc(&row.name),
             opt(Some(row.model.clone()).filter(|m| !m.is_empty())),
@@ -672,6 +681,7 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
             opt(row.cpu.map(|c| format!("{c:.1}"))),
             opt(row.mem.map(bytes)),
             row.subagents,
+            w.map_or_else(dash, |w| mode_cell(s, w)),
             opt(w.map(|w| w.queued.to_string())),
             opt(w.map(|w| w.claimed.to_string())),
             opt(row
@@ -682,7 +692,7 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
     }
     if r.rows.is_empty() {
         b.push_str(
-            "<tr><td colspan=\"14\" class=\"dim\">No sessions in the last 24 hours.</td></tr>",
+            "<tr><td colspan=\"15\" class=\"dim\">No sessions in the last 24 hours.</td></tr>",
         );
     }
     b.push_str("</tbody></table></div></section>");

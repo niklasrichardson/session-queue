@@ -10,6 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use cq::members::Mode;
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -90,6 +91,9 @@ struct Watcher {
     /// The folder key of the watcher's working folder, from line 3 of its `members/` record,
     /// so the Sessions screen can find a sleeping name, whose watcher has no process.
     folder: Option<String>,
+    /// Line 4 of its `members/` record: `inbox` for `cq watch --to-inbox`, else `monitor`.
+    /// `None` without a record. `Snapshot::mode` prefers the process's own arguments.
+    mode: Option<Mode>,
     pid: String,
     session: String,
     queued: usize,
@@ -127,6 +131,15 @@ enum Busy {
     Working,
 }
 
+/// A watcher's mode as the tables show it. A Monitor watcher restarts every 30 minutes; an
+/// inbox watcher runs until it stops. Nothing in cq-top depends on either.
+fn mode_label(m: Mode) -> &'static str {
+    match m {
+        Mode::Monitor => "monitor",
+        Mode::Inbox => "inbox",
+    }
+}
+
 impl Busy {
     fn label(self) -> &'static str {
         match self {
@@ -153,6 +166,14 @@ struct Snapshot {
     problems_total: usize,
     /// Claude Code sessions, collected apart from the queue (see `sessions.rs`).
     sessions: sessions::Report,
+}
+
+impl Snapshot {
+    /// The watcher's mode: `--to-inbox` in its process's arguments while cq-top can see the
+    /// process, else its `members/` record. `None` with neither.
+    fn mode(&self, w: &Watcher) -> Option<Mode> {
+        self.sessions.modes.get(&w.name).copied().or(w.mode)
+    }
 }
 
 fn main() -> std::io::Result<()> {
@@ -566,10 +587,12 @@ fn snapshot(root: &cq::Root, beats: &mut Beats) -> Snapshot {
 /// A message moving between folders during a refresh can be counted twice or missed once;
 /// the next refresh is right again (see `docs/CQ-TOP.md`).
 fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
-    // name -> Claude Code session key, from members/<key> (line 1 is the name), and
-    // name -> the watcher's working folder (line 3, written by newer cq).
+    // name -> Claude Code session key, from members/<key> (line 1 is the name),
+    // name -> the watcher's working folder (line 3, written by newer cq), and
+    // name -> the watcher's mode (line 4; an older record without it is a Monitor watcher).
     let mut sessions: BTreeMap<String, String> = BTreeMap::new();
     let mut folders: BTreeMap<String, String> = BTreeMap::new();
+    let mut modes: BTreeMap<String, Mode> = BTreeMap::new();
     for e in fs::read_dir(root.members()).into_iter().flatten().flatten() {
         if let Ok(t) = fs::read_to_string(e.path())
             && let Some(name) = t.lines().next()
@@ -578,6 +601,11 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
             if let Some(dir) = t.lines().nth(2).map(str::trim).filter(|d| !d.is_empty()) {
                 folders.insert(name.clone(), sessions::folder_key(Path::new(dir)));
             }
+            let mode = match t.lines().nth(3).map(str::trim) {
+                Some("inbox") => Mode::Inbox,
+                _ => Mode::Monitor,
+            };
+            modes.insert(name.clone(), mode);
             sessions.insert(name, e.file_name().to_string_lossy().into_owned());
         }
     }
@@ -628,6 +656,7 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
             beat_age,
             asleep: asleep.contains(name),
             folder: folders.get(name).cloned(),
+            mode: modes.get(name).copied(),
             pid,
             session,
             queued: queued.len(),
@@ -877,6 +906,7 @@ mod tests {
                     beat_age: Some(10),
                     asleep: false,
                     folder: None,
+                    mode: Some(Mode::Monitor),
                     pid: "42".into(),
                     session: "abcd1234".into(),
                     queued: 1,
@@ -891,6 +921,7 @@ mod tests {
                     beat_age: Some(4000),
                     asleep: true,
                     folder: Some("d--code-nap".into()),
+                    mode: None,
                     pid: String::new(),
                     session: "nap12345".into(),
                     queued: 2,
@@ -950,6 +981,7 @@ mod tests {
                 ],
                 projects: PathBuf::from("/home/me/.claude/projects"),
                 history: Vec::new(),
+                modes: Default::default(),
             },
         }
     }
@@ -1081,6 +1113,67 @@ mod tests {
         ] {
             assert!(page.contains(section), "{section}");
         }
+    }
+
+    /// Line 4 of a `members/` record gives the mode; a record without it is a Monitor
+    /// watcher, and a name without a record has none. A process's arguments win.
+    #[test]
+    fn snapshot_reads_the_watcher_mode() {
+        let (_dir, root) = temp_queue();
+        fs::create_dir_all(root.members()).unwrap();
+        fs::write(
+            root.members().join("local_a"),
+            "w1\n2026-10-27T11:00:00Z\nD:\\Code\\a\ninbox\n",
+        )
+        .unwrap();
+        fs::write(
+            root.members().join("local_b"),
+            "w2\n2026-10-27T11:00:00Z\nD:\\Code\\b\n",
+        )
+        .unwrap();
+        fs::write(root.heartbeat("w3"), "2026-10-27T11:29:00Z\n").unwrap();
+
+        let mut s = snap(&root, &mut Beats::new());
+        let mode = |s: &Snapshot, n: &str| s.mode(s.watchers.iter().find(|w| w.name == n).unwrap());
+        assert_eq!(mode(&s, "w1"), Some(Mode::Inbox));
+        assert_eq!(mode(&s, "w2"), Some(Mode::Monitor));
+        assert_eq!(mode(&s, "w3"), None);
+
+        s.sessions.modes.insert("w1".into(), Mode::Monitor);
+        s.sessions.modes.insert("w3".into(), Mode::Inbox);
+        assert_eq!(mode(&s, "w1"), Some(Mode::Monitor));
+        assert_eq!(mode(&s, "w3"), Some(Mode::Inbox));
+    }
+
+    /// The mode shows on the Overview and Sessions screens and in the dashboard.
+    #[test]
+    fn watcher_mode_is_shown_on_screens_and_exports() {
+        let mut snap = sample();
+        // The record says monitor; the running process says inbox.
+        snap.sessions.modes.insert("w1".into(), Mode::Inbox);
+        for screen in [Screen::Overview, Screen::Sessions] {
+            let mut term = Terminal::new(TestBackend::new(140, 42)).unwrap();
+            term.draw(|f| draw(f, Path::new("/queue"), &snap, false, screen, &THEMES[0]))
+                .unwrap();
+            let text: String = term
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("mode"), "{screen:?}");
+            assert!(text.contains("inbox"), "{screen:?}");
+            assert!(!text.contains("monitor"), "{screen:?}");
+        }
+
+        let page = html::dashboard(Path::new("/queue"), &snap);
+        assert!(page.contains("<th>Mode</th>"));
+        assert!(page.contains("<td>inbox</td>"));
+        snap.sessions.modes.clear();
+        let page = html::dashboard(Path::new("/queue"), &snap);
+        assert!(page.contains("<td>monitor</td>"));
+        assert!(!page.contains("<td>inbox</td>"));
     }
 
     #[test]

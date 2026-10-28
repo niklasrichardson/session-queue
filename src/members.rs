@@ -6,10 +6,12 @@
 //! looks the key up and reminds it. A name belongs to one session at a time.
 //!
 //! The file holds the name on line 1, the UTC time it was written on
-//! line 2, and the watcher's working folder on line 3 (cq-top uses it to
-//! show a sleeping name beside its session). Readers of the name use line 1
-//! only, so a two-line record from an older `cq` still works. `members/` is
-//! created on demand, so an older root without it still works.
+//! line 2, the watcher's working folder on line 3 (cq-top uses it to show a
+//! sleeping name beside its session), and the watcher's mode on line 4:
+//! `monitor`, or `inbox` for `cq watch --to-inbox`, whose watcher outlives
+//! `/clear`. Readers of the name use line 1 only, so a record from an older
+//! `cq` still works; a missing or unknown mode reads as `monitor`.
+//! `members/` is created on demand, so an older root without it still works.
 
 use std::fs;
 use std::path::Path;
@@ -26,6 +28,24 @@ pub const ENV_GENERIC_SESSION: &str = "CQ_SESSION_ID";
 pub const ENV_HOST_SESSION: &str = "CLAUDE_CODE_HOST_SESSION_ID";
 pub const ENV_SESSION: &str = "CLAUDE_CODE_SESSION_ID";
 pub const MAX_KEY_LEN: usize = 64;
+
+/// How the name's watcher delivers its lines: line 4 of the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Under a Claude Code Monitor, which ends with the conversation.
+    Monitor,
+    /// `--to-inbox`: a background process that survives `/clear`.
+    Inbox,
+}
+
+impl Mode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Mode::Monitor => "monitor",
+            Mode::Inbox => "inbox",
+        }
+    }
+}
 
 /// The first non-empty key: CQ_SESSION_ID, Claude host ID, Claude session ID.
 pub fn session_key() -> Option<String> {
@@ -53,16 +73,20 @@ pub fn sanitise_key(raw: &str) -> Option<String> {
     (!key.is_empty()).then_some(key)
 }
 
-/// Record that `key` owns `name`, and remove any other key's record of
-/// `name`.
-pub fn record(root: &Root, key: &str, name: &str) -> Result<()> {
+/// Record that `key` owns `name` with a watcher in `mode`, and remove any
+/// other key's record of `name`.
+pub fn record(root: &Root, key: &str, name: &str, mode: Mode) -> Result<()> {
     let dir = root.members();
     fs::create_dir_all(&dir).map_err(|e| CqError::io(format!("create {}", dir.display()), e))?;
     let path = dir.join(key);
     let folder = std::env::current_dir()
         .map(|d| d.display().to_string().replace(['\r', '\n'], ""))
         .unwrap_or_default();
-    let text = format!("{name}\n{}\n{folder}\n", rfc3339(timefmt::now()));
+    let text = format!(
+        "{name}\n{}\n{folder}\n{}\n",
+        rfc3339(timefmt::now()),
+        mode.as_str()
+    );
     fsutil::write_atomic(&root.tmp(), &path, text.as_bytes())
         .map_err(|e| CqError::io(format!("write {}", path.display()), e))?;
     for (other, n) in members(root) {
@@ -76,6 +100,16 @@ pub fn record(root: &Root, key: &str, name: &str) -> Result<()> {
 /// The name `key` owns, if any.
 pub fn name_for(root: &Root, key: &str) -> Option<String> {
     read_name(&root.members().join(key))
+}
+
+/// The watcher mode `key` last recorded. `Monitor` when the record has no
+/// mode line (an older `cq`) or no record exists.
+pub fn mode_for(root: &Root, key: &str) -> Mode {
+    let text = fs::read_to_string(root.members().join(key)).unwrap_or_default();
+    match text.lines().nth(3).map(str::trim) {
+        Some("inbox") => Mode::Inbox,
+        _ => Mode::Monitor,
+    }
 }
 
 /// Remove every record of `name`. Returns the keys removed.

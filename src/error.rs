@@ -24,6 +24,9 @@ pub mod exit {
     /// `cq watch`: the name is asleep (`sleep/<name>` exists). The session
     /// does not re-arm.
     pub const ASLEEP: i32 = 7;
+    /// `cq watch --to-inbox`: the session's inbox could not be reached
+    /// after every retry. The session has probably ended.
+    pub const INBOX_GONE: i32 = 8;
     /// Bad command-line arguments or bad JSON input.
     pub const USAGE: i32 = 64;
     /// Any other error (I/O, `CQ_ROOT` missing).

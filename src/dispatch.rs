@@ -121,7 +121,7 @@ pub fn dispatch(root: &Root, opts: &Options) -> Result<()> {
     if rules.trim().is_empty() {
         return Err(CqError::usage("dispatch instructions are empty"));
     }
-    platform::install_dispatch_interrupt_handler()?;
+    platform::install_interrupt_handler()?;
     root.ensure_session_dirs(&opts.name)?;
     let _lock = watch::take_lock(root, &opts.name, false)?;
     let pid_file = PidFile {
@@ -164,7 +164,7 @@ pub fn dispatch(root: &Root, opts: &Options) -> Result<()> {
         }
     }
     loop {
-        if platform::dispatch_interrupted() {
+        if platform::interrupted() {
             return Ok(());
         }
         heartbeat.tick();
@@ -174,7 +174,7 @@ pub fn dispatch(root: &Root, opts: &Options) -> Result<()> {
             }
         } else {
             for id in fsutil::json_stems(&root.inbox(&opts.name), is_valid_id) {
-                if platform::dispatch_interrupted() {
+                if platform::interrupted() {
                     return Ok(());
                 }
                 if root.pause().exists() {
@@ -280,7 +280,7 @@ fn handle(
     };
     while root.pause().exists() {
         heartbeat.tick();
-        if platform::dispatch_interrupted() {
+        if platform::interrupted() {
             state(
                 root,
                 &job,
@@ -406,7 +406,7 @@ Do not spawn other agents. Report failures accurately. Keep reply under 20480 UT
                 return Err(io("wait for Codex; task remains claimed", e));
             }
         }
-        if platform::dispatch_interrupted() {
+        if platform::interrupted() {
             platform::stop_agent(&mut agent)?;
             return Err(CqError::error(
                 "dispatch interrupted; task remains claimed for review",

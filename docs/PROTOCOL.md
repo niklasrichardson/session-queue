@@ -16,13 +16,30 @@ How a Claude Code session uses `cq`: owning a name, keeping the watcher armed, h
 10. Start worker sessions detached. A linked side session sends turn-end notices to the session that started it.
 
 
+## Inbox mode (experimental)
+
+Instead of a Monitor, a session can run `cq watch --to-inbox`. The watcher then posts its lines into the session's own Claude Code inbox, as a cross-session message from `cq`. This saves the turn that each 30-minute re-arm costs. The details are in [Commands](COMMANDS.md#watch-into-the-inbox-experimental), and the reasons and open questions in [Design](DESIGN.md#inbox-mode-experimental). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
+
+1. Start the watcher once, in the background, with the Bash tool (not the Monitor tool): `cq watch --as NAME --to-inbox`. Do not re-arm it on a timer: it has no time limit.
+2. Queue events arrive as a message from `cq`. The first line is `cq watch (NAME): queue events`; the lines after it are the usual `CQ-NEW`, `CQ-WAKE` and `CQ-SLEEP` lines. Handle each line as under the Monitor (steps 3 to 9 above, and [Sleep and wake](#sleep-and-wake)).
+3. A message whose last line is `cq watch (NAME) stopped: ... Run /cq-start to re-arm.` means the watcher has ended. Run `/cq-start` to start it again.
+4. If the stopped line says NAME is asleep, do not re-arm. Run `/cq-stop` as for `CQ-SLEEP`.
+5. If the watcher exits 5 at start, an old watcher still holds the name: start it again with `--takeover`. The stopped message reports this error too.
+6. Exit 8 means the watcher could not reach the inbox. Only a session that has ended should see it.
+
 ## Rejoin after /clear
 
 After `/clear` or a compaction, a session forgets its queue name and rules, so it stops claiming messages and re-arming its watcher. `cq` remembers the owner of each name:
 
-- When `cq watch --as NAME` takes the lock, it writes `members/<key>`: the name, the UTC time, and the watcher's working folder (used by [cq-top](CQ-TOP.md) to find a sleeping session). The key is `CQ_SESSION_ID` if set and non-empty, else `CLAUDE_CODE_HOST_SESSION_ID` (the Desktop app's `local_...` ID) if set and non-empty, else `CLAUDE_CODE_SESSION_ID`. With neither, nothing is written. Characters outside `[A-Za-z0-9_-]` become `_`, and the key is cut to 64 characters.
+- When `cq watch --as NAME` takes the lock, it writes `members/<key>`: the name, the UTC time, the watcher's working folder (used by [cq-top](CQ-TOP.md) to find a sleeping session), and the watcher's mode: `inbox` with `--to-inbox`, else `monitor`. A record without a mode (from an older `cq`) counts as `monitor`. A watcher that exits 5 writes nothing, so it keeps the mode of the watcher that holds the lock. The key is `CQ_SESSION_ID` if set and non-empty, else `CLAUDE_CODE_HOST_SESSION_ID` (the Desktop app's `local_...` ID) if set and non-empty, else `CLAUDE_CODE_SESSION_ID`. With neither, nothing is written. Characters outside `[A-Za-z0-9_-]` become `_`, and the key is cut to 64 characters.
 - A name belongs to one session at a time: recording NAME removes any other key's record of NAME.
-- `cq session-start` runs from the SessionStart hook ([Setup](SETUP.md) step 8). If the session's key owns a name that is asleep, it says so: do not start a watcher, and run `/cq-start` to wake when asked. If the session's key owns a name that is awake, it prints a reminder, which Claude Code adds to the new context: re-read its session rules (the file named by `CQ_RULES`, if set) as NAME, start the watcher Monitor (with `--takeover` if it exits 5), then run `cq list` and handle any `UNCLAIMED` messages. Otherwise it prints nothing.
+- `cq session-start` runs from the SessionStart hook ([Setup](SETUP.md) step 8). If the session's key owns a name that is asleep, it says so: do not start a watcher, and run `/cq-start` to wake when asked. If the session's key owns a name that is awake, it prints a reminder, which Claude Code adds to the new context. The reminder always says: re-read the session rules (the file named by `CQ_RULES`, if set) as NAME, then run `cq list --as NAME` and handle any `UNCLAIMED` messages. What it says about the watcher depends on the recorded mode:
+  - `inbox`, and a watcher or dispatcher for NAME is alive: the inbox watcher survived the `/clear` and still posts into this session. Do not start a watcher Monitor and do not use `--takeover`, which would stop it.
+  - `inbox`, and nothing for NAME is alive: the inbox watcher has stopped. Start `cq watch --as NAME --to-inbox` again in the background with the Bash tool, with `--takeover` if it exits 5.
+  - `monitor`: start the watcher Monitor, with `--takeover` if it exits 5. The Monitor ended with the old conversation.
+
+  `cq session-start` uses the same rule as [cq-top](CQ-TOP.md#limits): NAME is alive when `heartbeat/NAME.pid` exists and the heartbeat is less than 90 seconds old. It never opens the lock file, so it cannot stop a watcher that is starting. A watcher that exits cleanly removes its pid file, so it counts as stopped at once. A watcher that was killed leaves its pid file, so it counts as alive until its heartbeat is 90 seconds old.
+- Otherwise `cq session-start` prints nothing.
 - `cq session-start` always exits 0 and writes nothing to stderr (except with `--debug`). It finds the key from the environment only. It drains the hook's JSON from stdin without using it, and waits at most 100 ms for an empty open pipe and 100 ms more for a pipe that holds bytes but never closes. It needs no `cq init`: an uninitialised root gives no output.
 - A session that leaves the queue runs `cq leave --as NAME`.
 - `members/` is created by `cq init` and on demand, so a root made before it existed still works.
