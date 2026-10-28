@@ -44,6 +44,9 @@ use crate::timefmt::{self, local_hhmm, rfc3339};
 pub const DEFAULT_MAX_SECONDS: u64 = 1790;
 pub const DEFAULT_RESCAN_SECONDS: u64 = 60;
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
+/// A heartbeat this many seconds old or older means the watcher is gone:
+/// three missed beats.
+pub const ALIVE_SECS: i64 = 90;
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 const PRUNE_AFTER: Duration = Duration::from_secs(14 * 24 * 3600);
 /// Rescan interval when file-system events are not available.
@@ -337,18 +340,23 @@ pub(crate) fn take_lock(root: &Root, name: &str, takeover: bool) -> Result<File>
     }
 }
 
-/// True while a watcher or dispatcher for `name` holds its lock. Takes the
-/// lock for a moment when it is free, so a watcher that starts in that
-/// moment exits 5. Creates no file: a missing lock file means no watcher.
+/// True while a watcher or dispatcher for `name` looks alive: its pid file
+/// exists and its heartbeat is less than `ALIVE_SECS` old, the rule cq-top
+/// uses. It never opens the lock file, so it cannot stop a watcher that is
+/// starting. A clean exit removes the pid file, so it reads as stopped at
+/// once; a killed watcher still looks alive until its heartbeat is too old.
 pub fn is_running(root: &Root, name: &str) -> bool {
-    let Ok(file) = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(root.lock_file(name))
-    else {
+    if !root.pid_file(name).is_file() {
         return false;
-    };
-    matches!(file.try_lock(), Err(TryLockError::WouldBlock))
+    }
+    let path = root.heartbeat(name);
+    // `heartbeat` rewrites the file in place, so a read can catch it half
+    // written; the modified time is then the beat.
+    let beat = fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| timefmt::parse_rfc3339_z(t.trim()))
+        .or_else(|| fsutil::modified(&path).and_then(timefmt::from_system_time));
+    beat.is_some_and(|t| timefmt::now().as_second() - t.as_second() < ALIVE_SECS)
 }
 
 /// Any change in the inbox triggers a scan; the scan decides what is new.

@@ -390,6 +390,48 @@ fn session_start_restarts_a_stopped_inbox_watcher() {
     );
 }
 
+/// `session-start` judges an inbox watcher by its pid file and heartbeat, as
+/// cq-top does, and never opens the lock file.
+#[test]
+fn session_start_reads_the_heartbeat_not_the_lock() {
+    let env = Env::new();
+    fs::create_dir_all(env.path("members")).unwrap();
+    fs::write(
+        env.path("members/local_aaa"),
+        "b\n2026-10-01T00:00:00Z\n/somewhere\ninbox\n",
+    )
+    .unwrap();
+    let says = |env: &Env| stdout(&session_start(env, "local_aaa"));
+    let fresh = || format!("{}\n", cq::timefmt::rfc3339(cq::timefmt::now()));
+
+    // No pid file: stopped, even with a fresh heartbeat.
+    fs::write(env.path("heartbeat/b"), fresh()).unwrap();
+    assert!(says(&env).contains("has stopped"));
+
+    // Pid file and a fresh heartbeat: still runs.
+    fs::write(env.path("heartbeat/b.pid"), "4242\n").unwrap();
+    assert!(says(&env).contains("still runs"));
+
+    // Caught half written: the file's modified time counts.
+    fs::write(env.path("heartbeat/b"), "2026-10-").unwrap();
+    assert!(says(&env).contains("still runs"));
+
+    // A killed watcher leaves its pid file; 90 seconds without a beat is
+    // stopped.
+    let old = cq::timefmt::now() - jiff::SignedDuration::from_secs(91);
+    fs::write(
+        env.path("heartbeat/b"),
+        format!("{}\n", cq::timefmt::rfc3339(old)),
+    )
+    .unwrap();
+    assert!(says(&env).contains("has stopped"));
+
+    assert!(
+        !env.path("heartbeat/b.lock").exists(),
+        "a lock file was made"
+    );
+}
+
 /// A Monitor watcher replaces the inbox mark, and a record from an older
 /// `cq` (no mode line) gets the Monitor reminder.
 #[test]
