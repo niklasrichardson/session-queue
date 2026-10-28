@@ -498,7 +498,7 @@ pub fn stop_agent(agent: &mut Agent) -> Result<()> {
 static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// True once Ctrl+C (Windows console) or SIGINT, SIGTERM or SIGHUP (Unix)
 /// arrived after `install_interrupt_handler`. Used by `dispatch` and by
-/// `watch --to-inbox`.
+/// `watch --to-inbox` and `--to-codex`.
 pub fn interrupted() -> bool {
     INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed)
 }

@@ -10,7 +10,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | --- | --- |
 | `cq init` | Create the layout under `CQ_ROOT`. |
 | `cq send --from A --to B --type task\|result\|info [--reply-to ID] [--parent ID] [--status ok\|failed\|rejected] [--input FILE]` | Read `{"subject": "...", "body": "..."}`, write the message, print its ID. |
-| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)). `--to-inbox` posts the lines into the session's own Claude Code inbox instead, the default for Claude Code sessions (see [Watch into the inbox](#watch-into-the-inbox)). |
+| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)). `--to-inbox` posts the lines into the session's own Claude Code inbox instead, the default for Claude Code sessions (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` wakes a Codex chat instead (see [Wake a Codex chat](#wake-a-codex-chat)). |
 | `cq dispatch --as B --codex FILE --workspace DIR --instructions FILE --allow-from NAME [--allow-from NAME ...] [--sandbox read-only\|workspace-write] [--timeout-seconds 600] [--once]` | Run one fresh Codex process per task, serially. See [Codex setup](CODEX.md). |
 | `cq claim --as B ID` | Move the message to `.processing/` and print its JSON. |
 | `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}`. |
@@ -95,6 +95,21 @@ cq wake --as lead worker-a
 - **Signals.** In this mode the watcher catches SIGINT, SIGTERM and SIGHUP (macOS and Linux) and Ctrl+C (Windows console), and posts the stopped message. So on macOS and Linux, a watcher replaced by `--takeover` (SIGTERM) says so. On Windows, `--takeover` ends the old watcher at once, and it posts nothing.
 - **Unreachable inbox.** Each post is tried 4 times, 1, 2 and 4 seconds apart. If every try fails, the session has probably ended: the watcher exits 8 with a `cq:` line on stderr, and posts nothing more.
 
+## Wake a Codex chat
+
+`cq watch --as B --to-codex THREAD` wakes an idle Codex chat when `B` has new messages. It runs `codex queue --thread THREAD --message PROMPT`. Codex stores the message, and the Codex Desktop app starts a turn in that thread when the thread is idle. A message queued during a turn runs after that turn. `THREAD` is the thread ID or its exact name. How to set it up is in [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
+
+- **Fixed prompt.** The message is always the same text, never anything from a queue message. By default it is `Queue check as 'B'. Follow the 'B' section of AGENTS.md. If there are no UNCLAIMED messages, end with no other work and no update.` `--codex-prompt TEXT` replaces it. Do not put text from a queue message in it: subjects, bodies and sender names are written by other sessions.
+- **The executable.** `--codex-bin PATH` names the Codex executable. The default is `codex` on `PATH` (on Windows, `codex.exe`). `cq` runs it directly, without a shell, with each argument passed separately. If it cannot be found at start, the watcher exits 64.
+- **One call per batch.** `CQ-NEW` lines are batched as in [Watch into the inbox](#watch-into-the-inbox): lines within 2 seconds of the first go in one batch, and calls are at least 5 seconds apart. Each batch runs `codex queue` once, however many messages it holds, because one Codex turn handles every `UNCLAIMED` message. Messages already waiting at start give one call.
+- **Other lines.** `CQ-WAKE` lines are dropped. When `B` is asleep, the watcher stops with exit 7 and queues nothing; messages wait until `B` wakes.
+- **Output.** After each call, one line on stdout: `cq watch (B): <UTC time> queued a check for N new message(s): <the line codex printed>`.
+- **Success.** A call succeeds when `codex queue` exits 0 and prints a line with `Queued message`. A call that takes over 60 seconds is stopped and counts as failed.
+- **Failure.** A failed call is tried 4 times, 1, 2 and 4 seconds apart, with a `cq watch:` line on stderr for each retry. If every try fails, the watcher exits 9 with a `cq:` line on stderr. A retry after a non-zero exit can queue a second check, if Codex stored the first one; the second turn then finds nothing to do.
+- **No time limit.** As with `--to-inbox`, `--max-seconds` has no default. When the watcher stops for another reason (`--max-seconds`, a signal), it first queues any batch it holds. It tells the Codex chat nothing about stopping: watch its heartbeat in [cq-top](CQ-TOP.md).
+- **Session record.** The watcher records `codex` as the mode in `members/<key>`. The key is `CQ_SESSION_ID` if set, else `codex-B`. It never uses the Claude Code session IDs, because the watcher usually runs outside the Codex chat, and the session that started it must keep its own record.
+- `--to-codex` and `--to-inbox` cannot be used together (exit 64). `--codex-bin` and `--codex-prompt` need `--to-codex`.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -108,7 +123,8 @@ cq wake --as lead worker-a
 | 6 | `done`: the message is not claimed by this session. |
 | 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. |
 | 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. |
-| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, or `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`. |
+| 9 | `watch --to-codex`: `codex queue` failed 4 times in a row. Nothing wakes the Codex chat until the watcher is started again. |
+| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found. |
 | 70 | Dispatch timeout/interruption (task stays claimed), or any other error (I/O, `CQ_ROOT` missing or not initialised). |
 
 
@@ -127,7 +143,7 @@ CQ_ROOT/
   heartbeat/<name>.claim.lock serialises claims for this recipient
   heartbeat/<name>.pid       the running watcher/dispatcher process ID
   dispatch/<name>/<id>/       Codex logs and completion state (not auto-pruned)
-  members/<key>              the name owned by a Claude Code session, the UTC time it was recorded, the watcher's working folder, and its mode (monitor or inbox)
+  members/<key>              the name owned by a Claude Code session, the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox or codex)
   sleep/<name>               while it exists, the name is asleep (by, time, reason)
   coordinators               names that may sleep other names, one per line (edited by the owner)
   PAUSE                      while it exists, watchers print nothing and cq send refuses

@@ -8,8 +8,9 @@
 //! The file holds the name on line 1, the UTC time it was written on
 //! line 2, the watcher's working folder on line 3 (cq-top uses it to show a
 //! sleeping name beside its session), and the watcher's mode on line 4:
-//! `monitor`, or `inbox` for `cq watch --to-inbox`, whose watcher outlives
-//! `/clear`. Readers of the name use line 1 only, so a record from an older
+//! `monitor`, `inbox` for `cq watch --to-inbox`, whose watcher outlives
+//! `/clear`, or `codex` for `cq watch --to-codex`, which wakes a Codex chat.
+//! Readers of the name use line 1 only, so a record from an older
 //! `cq` still works; a missing or unknown mode reads as `monitor`.
 //! `members/` is created on demand, so an older root without it still works.
 
@@ -36,13 +37,27 @@ pub enum Mode {
     Monitor,
     /// `--to-inbox`: a background process that survives `/clear`.
     Inbox,
+    /// `--to-codex`: a background process, usually outside the Codex chat
+    /// it wakes.
+    Codex,
 }
 
 impl Mode {
-    fn as_str(self) -> &'static str {
+    /// The word on line 4 of the record.
+    pub fn as_str(self) -> &'static str {
         match self {
             Mode::Monitor => "monitor",
             Mode::Inbox => "inbox",
+            Mode::Codex => "codex",
+        }
+    }
+
+    /// Line 4 of a record. A missing or unknown word reads as `Monitor`.
+    pub fn parse(line: Option<&str>) -> Mode {
+        match line.map(str::trim) {
+            Some("inbox") => Mode::Inbox,
+            Some("codex") => Mode::Codex,
+            _ => Mode::Monitor,
         }
     }
 }
@@ -53,6 +68,17 @@ pub fn session_key() -> Option<String> {
         .iter()
         .filter_map(|v| std::env::var(v).ok())
         .find_map(|v| sanitise_key(&v))
+}
+
+/// The key of a `--to-codex` watcher for `name`: CQ_SESSION_ID when set,
+/// else `codex-<name>`. Never a Claude Code ID: the watcher wakes a Codex
+/// chat, not the Claude Code session that may have started it, and that
+/// session's own record must survive.
+pub fn codex_key(name: &str) -> Option<String> {
+    std::env::var(ENV_GENERIC_SESSION)
+        .ok()
+        .and_then(|v| sanitise_key(&v))
+        .or_else(|| sanitise_key(&format!("codex-{name}")))
 }
 
 /// Keep `[A-Za-z0-9_-]` (any other character becomes `_`), at most 64
@@ -106,10 +132,7 @@ pub fn name_for(root: &Root, key: &str) -> Option<String> {
 /// mode line (an older `cq`) or no record exists.
 pub fn mode_for(root: &Root, key: &str) -> Mode {
     let text = fs::read_to_string(root.members().join(key)).unwrap_or_default();
-    match text.lines().nth(3).map(str::trim) {
-        Some("inbox") => Mode::Inbox,
-        _ => Mode::Monitor,
-    }
+    Mode::parse(text.lines().nth(3))
 }
 
 /// Remove every record of `name`. Returns the keys removed.
@@ -169,5 +192,15 @@ mod tests {
         assert_eq!(sanitise_key(&"x".repeat(80)).map(|k| k.len()), Some(64));
         assert_eq!(sanitise_key(""), None);
         assert_eq!(sanitise_key("  "), None);
+    }
+
+    #[test]
+    fn modes_round_trip_and_unknown_reads_as_monitor() {
+        for m in [Mode::Monitor, Mode::Inbox, Mode::Codex] {
+            assert_eq!(Mode::parse(Some(m.as_str())), m);
+        }
+        assert_eq!(Mode::parse(Some(" codex ")), Mode::Codex);
+        assert_eq!(Mode::parse(Some("other")), Mode::Monitor);
+        assert_eq!(Mode::parse(None), Mode::Monitor);
     }
 }

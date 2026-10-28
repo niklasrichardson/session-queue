@@ -469,9 +469,14 @@ fn watch_name(args: &[String]) -> Option<String> {
 }
 
 /// The mode of a `cq watch` process, from its arguments: `--to-inbox` posts into the
-/// session's inbox, else the watcher prints for a Monitor.
+/// session's inbox, `--to-codex` wakes a Codex chat, else the watcher prints for a Monitor.
 fn watch_mode(args: &[String]) -> cq::members::Mode {
-    if args.iter().any(|a| a == "--to-inbox") {
+    if args
+        .iter()
+        .any(|a| a == "--to-codex" || a.starts_with("--to-codex="))
+    {
+        cq::members::Mode::Codex
+    } else if args.iter().any(|a| a == "--to-inbox") {
         cq::members::Mode::Inbox
     } else {
         cq::members::Mode::Monitor
@@ -1422,6 +1427,17 @@ mod tests {
                 "--takeover"
             ])),
             Mode::Inbox
+        );
+        assert_eq!(
+            watch_mode(&args(&[
+                "cq",
+                "watch",
+                "--as",
+                "w1",
+                "--to-codex",
+                "019a-thread"
+            ])),
+            Mode::Codex
         );
     }
 

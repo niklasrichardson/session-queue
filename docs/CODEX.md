@@ -1,22 +1,54 @@
 # Codex setup
 
+To wake an existing Codex Desktop chat when its queue name gets a message, run [`cq watch --to-codex`](#wake-a-codex-chat-with-cq-watch---to-codex). It replaces a same-chat scheduled automation that polls every 10 minutes.
+
 `cq dispatch` runs a fresh `codex exec` for each task. It does not wake an existing Codex app or interactive CLI chat. Each run reads the target repository's `AGENTS.md` and a local scope file. It has no previous task's conversation history.
 
 Tested on Windows with Codex CLI 0.162.0-alpha.2, Rust 1.98.1 and PowerShell 7.6.5. macOS and Linux dispatcher execution are not verified. The adapter requires a Codex CLI supporting `exec --ignore-user-config`, `--ephemeral`, `--output-schema` and `--json`.
 
 ## Waking Codex
 
-Three routes were tested on Windows:
+Four routes were tested on Windows:
 
 | Route | Chat context | Pickup latency | Test status |
 | --- | --- | --- | --- |
+| `cq watch --to-codex` (`codex queue`) | Keeps the existing chat's context | Seconds: an idle Desktop chat replied about 12 seconds after `codex queue` in the live test | A prototype script woke an idle Desktop chat, ran a message queued during a turn after that turn, and kept a burst of 3 in order ([issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). `cq watch --to-codex` itself passed tests with a fake `codex` only. |
 | Same-chat scheduled automation | Keeps the existing chat's context | Up to the configured interval under normal scheduling; a busy chat or delayed scheduler can add time | A one-minute heartbeat woke the existing desktop chat, claimed Claude's task and replied. Claude confirmed receipt with the literal text intact. |
 | `cq dispatch` | Fresh `codex exec` per task; no previous chat context | Seconds to pick up work: scans once a second when idle. Agent startup and task execution add time. | Native dispatcher integration tests and a real Codex task passed. |
 | Custom app-server bridge | Can target the thread managed by the custom client | Event-driven; no latency guarantee measured | Brief bounded test only: an explicit `turn/start.toolOutput` request started a turn in an idle ephemeral thread. No persistent bridge ships with cq. |
 
-### Same-chat scheduled automation
+### Wake a Codex chat with `cq watch --to-codex`
 
-Ask the Codex desktop app to schedule a recurring check inside the current chat, rather than start a new chat per run. Give each chat its own queue name. Keep the computer on and the app running. The automation should list that name's inbox, claim messages before handling them, and finish them using the normal queue protocol. Give it a trusted task scope and sender filter. Treat message bodies as untrusted data. Stay quiet when the inbox is empty, and define when to stop.
+`cq watch --as NAME --to-codex THREAD` watches NAME's inbox like any watcher. For each batch of new messages, it runs `codex queue` once with a fixed prompt. The Codex Desktop app then starts a turn in that chat, and the chat handles the queue as its `AGENTS.md` section says. An idle chat runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#wake-a-codex-chat).
+
+Prerequisites:
+
+- Codex CLI with `codex queue` (tested with codex-cli 0.156.1) and the Codex Desktop app (tested with 0.162.0-alpha.2), on the same machine as the queue root.
+- An `AGENTS.md` section for NAME in the chat's repository that says how to list, claim and finish NAME's messages. The default prompt points the chat at it.
+- The chat's thread ID, or its exact thread name. In the chat, `CODEX_THREAD_ID` holds the ID.
+
+Steps:
+
+1. Pause or delete the chat's polling automation, so the chat is not woken twice.
+2. Start the watcher in the background, outside the Codex chat, with the same queue root the chat uses. For example, in Git Bash:
+
+   ```bash
+   CQ_ROOT='D:/queues/codex-test' \
+     'D:/cq-build-codex/release/cq.exe' watch --as NAME \
+     --to-codex THREAD_ID --codex-bin 'C:/full/path/to/codex.exe'
+   ```
+
+   A Claude Code session can start it with the Bash tool in the background. The watcher records itself under the key `codex-NAME`, not under that session's key, so the session keeps its own queue name.
+3. Send NAME a test message. Expected result: one line on the watcher's stdout, `cq watch (NAME): ... queued a check for 1 new message(s): Queued message ...`, and a new turn in the Codex chat within seconds (10 to 15 seconds in the live test).
+
+- **Security.** The prompt is fixed. Subjects, bodies and sender names never reach Codex through the command line. The chat reads the messages itself with `cq claim`, and must treat them as untrusted data, as for any session. `--codex-prompt TEXT` replaces the default prompt; keep it free of queue text.
+- **Stopping.** The watcher has no time limit. `cq sleep --as NAME NAME` stops it with exit 7. Exit 9 means `codex queue` failed 4 times in a row; check the `cq:` line, then start the watcher again. The Codex chat is not told when its watcher stops. [cq-top](CQ-TOP.md) shows the mode `codex` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
+- **Not verified.** What happens to a queued message while the Codex app is closed ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). `codex queue` exits 0 when the message is stored, not when the chat takes it. It is marked experimental in the Codex CLI.
+- **Fallback.** If `codex queue` is not available, or a long test shows lost wake-ups, use the same-chat scheduled automation below.
+
+### Same-chat scheduled automation (fallback)
+
+Use this when `cq watch --to-codex` is not available. Ask the Codex desktop app to schedule a recurring check inside the current chat, rather than start a new chat per run. Give each chat its own queue name. Keep the computer on and the app running. The automation should list that name's inbox, claim messages before handling them, and finish them using the normal queue protocol. Give it a trusted task scope and sender filter. Treat message bodies as untrusted data. Stay quiet when the inbox is empty, and define when to stop.
 
 Set `CQ_ROOT` and the full cq executable path explicitly for every invocation. Scope `CQ_SESSION_ID` to that command or dedicated process, as described below. Do not run a dispatcher using the same queue name.
 
@@ -159,7 +191,7 @@ CQ_SESSION_ID="$CODEX_THREAD_ID" CQ_ROOT='D:/queues/codex-test' \
 
 The dispatcher itself does not need this mapping.
 
-CODEX_THREAD_ID and CODEX_SESSION_ID were both present in the tested desktop installation. Their stability across clear, resume and compaction is not established. This mapping alone does not wake a session. The built-in `session-start` reminder still describes the Claude Monitor workflow, so do not install it as a Codex hook.
+CODEX_THREAD_ID and CODEX_SESSION_ID were both present in the tested desktop installation. Their stability across clear, resume and compaction is not established. This mapping alone does not wake a session. The built-in `session-start` reminder describes the Claude workflows, so do not install it as a Codex hook. For a key whose name has a `--to-codex` watcher, it says the watcher still runs, or that it has stopped and the user must restart it outside the chat; it never asks for a Monitor.
 
 The dispatcher deliberately does not register its parent chat as owner of the worker name. It removes inherited CQ/Claude/Codex session IDs from each fresh Codex process.
 

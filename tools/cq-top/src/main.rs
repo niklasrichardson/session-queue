@@ -132,12 +132,9 @@ enum Busy {
 }
 
 /// A watcher's mode as the tables show it. A Monitor watcher restarts every 30 minutes; an
-/// inbox watcher runs until it stops. Nothing in cq-top depends on either.
+/// inbox or Codex watcher runs until it stops. Nothing in cq-top depends on any of them.
 fn mode_label(m: Mode) -> &'static str {
-    match m {
-        Mode::Monitor => "monitor",
-        Mode::Inbox => "inbox",
-    }
+    m.as_str()
 }
 
 impl Busy {
@@ -169,7 +166,7 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    /// The watcher's mode: `--to-inbox` in its process's arguments while cq-top can see the
+    /// The watcher's mode: `--to-inbox` or `--to-codex` in its process's arguments while cq-top can see the
     /// process, else its `members/` record. `None` with neither.
     fn mode(&self, w: &Watcher) -> Option<Mode> {
         self.sessions.modes.get(&w.name).copied().or(w.mode)
@@ -601,10 +598,7 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
             if let Some(dir) = t.lines().nth(2).map(str::trim).filter(|d| !d.is_empty()) {
                 folders.insert(name.clone(), sessions::folder_key(Path::new(dir)));
             }
-            let mode = match t.lines().nth(3).map(str::trim) {
-                Some("inbox") => Mode::Inbox,
-                _ => Mode::Monitor,
-            };
+            let mode = Mode::parse(t.lines().nth(3));
             modes.insert(name.clone(), mode);
             sessions.insert(name, e.file_name().to_string_lossy().into_owned());
         }
@@ -1131,13 +1125,20 @@ mod tests {
             "w2\n2026-10-27T11:00:00Z\nD:\\Code\\b\n",
         )
         .unwrap();
+        fs::write(
+            root.members().join("codex-w4"),
+            "w4\n2026-10-27T11:00:00Z\nD:\\Code\\d\ncodex\n",
+        )
+        .unwrap();
         fs::write(root.heartbeat("w3"), "2026-10-27T11:29:00Z\n").unwrap();
+        fs::write(root.heartbeat("w4"), "2026-10-27T11:29:00Z\n").unwrap();
 
         let mut s = snap(&root, &mut Beats::new());
         let mode = |s: &Snapshot, n: &str| s.mode(s.watchers.iter().find(|w| w.name == n).unwrap());
         assert_eq!(mode(&s, "w1"), Some(Mode::Inbox));
         assert_eq!(mode(&s, "w2"), Some(Mode::Monitor));
         assert_eq!(mode(&s, "w3"), None);
+        assert_eq!(mode(&s, "w4"), Some(Mode::Codex));
 
         s.sessions.modes.insert("w1".into(), Mode::Monitor);
         s.sessions.modes.insert("w3".into(), Mode::Inbox);

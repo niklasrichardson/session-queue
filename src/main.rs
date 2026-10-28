@@ -1,5 +1,6 @@
 //! Command-line interface for `cq`. All queue logic lives in the library.
 
+use std::ffi::OsString;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -10,6 +11,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::de::DeserializeOwned;
 
+use cq::codex::CodexQueue;
 use cq::done::{self, DoneRequest};
 use cq::error::{CqError, Result, exit};
 use cq::inbox::Inbox;
@@ -35,6 +37,7 @@ Exit codes:
   6   done: the message is not claimed by this session
   7   watch: the name is asleep; do not re-arm
   8   watch --to-inbox: the session's inbox cannot be reached (session gone)
+  9   watch --to-codex: codex queue failed 4 times; the Codex chat is not woken
   64  bad arguments or bad JSON input
   70  any other error (I/O, CQ_ROOT missing or not initialised)";
 
@@ -127,7 +130,7 @@ enum Cmd {
     /// prints CQ-SLEEP and exits 7. A coordinator's watcher also prints one
     /// CQ-WAKE line per message that has waited 2 minutes for a sleeping
     /// name. Experimental: --to-inbox posts the lines into this Claude Code
-    /// session's inbox instead.
+    /// session's inbox instead, and --to-codex wakes a Codex chat.
     #[command(after_help = exit_help())]
     Watch {
         /// Your session name.
@@ -137,7 +140,7 @@ enum Cmd {
         #[arg(long)]
         takeover: bool,
         /// Exit after this many seconds. Default 1790, just under the
-        /// Monitor's 1800 s cap; no limit with --to-inbox.
+        /// Monitor's 1800 s cap; no limit with --to-inbox or --to-codex.
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         max_seconds: Option<u64>,
         /// Experimental. Post the lines into this Claude Code session's own
@@ -147,6 +150,19 @@ enum Cmd {
         /// tool, not under a Monitor.
         #[arg(long)]
         to_inbox: bool,
+        /// Experimental. Wake this Codex chat (a thread ID or exact thread
+        /// name) when messages arrive: run `codex queue` once per batch with
+        /// a fixed prompt, never message text. Run it in the background,
+        /// outside the chat.
+        #[arg(long, value_name = "THREAD", conflicts_with = "to_inbox")]
+        to_codex: Option<String>,
+        /// The Codex executable for --to-codex. Default: codex on PATH.
+        #[arg(long, value_name = "PATH", requires = "to_codex")]
+        codex_bin: Option<OsString>,
+        /// The message --to-codex queues, instead of the default queue check
+        /// prompt. It must not contain anything a queue message wrote.
+        #[arg(long, value_name = "TEXT", requires = "to_codex")]
+        codex_prompt: Option<String>,
         /// Full rescan interval (for tests).
         #[arg(long, hide = true, default_value_t = DEFAULT_RESCAN_SECONDS,
               value_parser = clap::value_parser!(u64).range(1..))]
@@ -336,6 +352,22 @@ fn watch_to_inbox(opts: &WatchOptions) -> Result<Ended> {
     result
 }
 
+/// `cq watch --to-codex`. Errors go to stderr only: the Codex chat is not
+/// told that its watcher stopped.
+fn watch_to_codex(
+    opts: &WatchOptions,
+    thread: &str,
+    bin: Option<OsString>,
+    prompt: Option<String>,
+) -> Result<Ended> {
+    let mut codex = CodexQueue::start(&opts.name, thread, bin, prompt)?;
+    if let Err(e) = platform::install_interrupt_handler() {
+        eprintln!("cq watch: a signal will stop the watcher before it queues held messages ({e})");
+    }
+    let root = Root::open()?;
+    watch::watch(&root, opts, &mut codex)
+}
+
 /// Run one command. Returns the exit code of a run that did not fail:
 /// 0, or 7 for a watcher that stopped because its name is asleep.
 fn run(cmd: Cmd) -> Result<i32> {
@@ -385,17 +417,32 @@ fn run(cmd: Cmd) -> Result<i32> {
             rescan_seconds,
             no_fs_events,
             to_inbox,
+            to_codex,
+            codex_bin,
+            codex_prompt,
         } => {
+            let mode = match (&to_codex, to_inbox) {
+                (Some(_), _) => members::Mode::Codex,
+                (None, true) => members::Mode::Inbox,
+                (None, false) => members::Mode::Monitor,
+            };
             let opts = WatchOptions {
+                member_key: if to_codex.is_some() {
+                    members::codex_key(&name)
+                } else {
+                    members::session_key()
+                },
                 name,
                 takeover,
-                max_seconds: max_seconds.or((!to_inbox).then_some(DEFAULT_MAX_SECONDS)),
+                max_seconds: max_seconds
+                    .or((mode == members::Mode::Monitor).then_some(DEFAULT_MAX_SECONDS)),
                 rescan: Duration::from_secs(rescan_seconds),
                 fs_events: !no_fs_events,
-                member_key: members::session_key(),
-                to_inbox,
+                mode,
             };
-            let ended = if to_inbox {
+            let ended = if let Some(thread) = &to_codex {
+                watch_to_codex(&opts, thread, codex_bin, codex_prompt)?
+            } else if to_inbox {
                 watch_to_inbox(&opts)?
             } else {
                 let root = Root::open()?;
@@ -585,6 +632,14 @@ fn session_start(debug: bool) {
     } else if mode == members::Mode::Inbox {
         format!(
             "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Your inbox watcher has stopped. Start it again in the background with the Bash tool (not the Monitor tool): cq watch --as {name} --to-inbox. If it exits 5, an old watcher still holds the name: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else if mode == members::Mode::Codex && watch::is_running(&root, &name) {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). A Codex watcher (cq watch --as {name} --to-codex) still runs and wakes the Codex chat for {name} with codex queue: do not start a watcher for {name} here and do not use --takeover. Run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else if mode == members::Mode::Codex {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Codex watcher for {name} (cq watch --as {name} --to-codex) has stopped, so nothing wakes the Codex chat for {name}. Do not start a watcher for {name} here: tell the user, who restarts it outside the chat (see docs/CODEX.md). Run cq list --as {name} and handle any UNCLAIMED messages."
         )
     } else {
         format!(
