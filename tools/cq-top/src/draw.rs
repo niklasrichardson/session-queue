@@ -152,6 +152,7 @@ pub fn draw(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, screen: Scre
         Screen::Overview => draw_overview(f, root, s, bodies, t),
         Screen::Flow => draw_flow(f, root, s, bodies, t),
         Screen::Rejected => draw_rejected(f, root, s, bodies, t),
+        Screen::Sessions => draw_sessions(f, root, s, bodies, t),
     }
 }
 
@@ -179,6 +180,7 @@ fn header(
             tab(" 1 Overview ", screen == Screen::Overview),
             tab(" 2 Flow ", screen == Screen::Flow),
             tab(" 3 Rejected ", screen == Screen::Rejected),
+            tab(" 4 Sessions ", screen == Screen::Sessions),
             Span::styled(
                 format!(
                     "  bodies:{} [b]  theme:{} [t]  [q] quit",
@@ -501,6 +503,324 @@ fn draw_rejected(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             .block(t.block(title)),
         table,
     );
+}
+
+/// The watcher whose process runs in a session's folder, for the cq columns. A session with
+/// no watcher in its folder has none.
+pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a Watcher> {
+    let name = row.cq_name.as_deref()?;
+    s.watchers.iter().find(|w| w.name == name)
+}
+
+/// The state shown for a session, and whether it is a warning (idle with cq messages).
+pub fn session_state(s: &Snapshot, row: &sessions::Row) -> (sessions::State, bool) {
+    let (waiting, claimed) = session_watcher(s, row).map_or((0, 0), |w| (w.queued, w.claimed));
+    (row.state, sessions::warn(row.state, waiting, claimed))
+}
+
+/// Height of the CPU and Memory boxes, borders included.
+const MACHINE_ROWS: u16 = 9;
+/// Narrower than this, a box shows its figures without the graph.
+const GRAPH_MIN: u16 = 12;
+
+/// The CPU and Memory boxes side by side: figures on the left, and on the right a graph of
+/// the whole computer with Claude's share drawn over it in a second colour.
+fn draw_machine(f: &mut Frame, area: Rect, r: &sessions::Report, t: &Theme) {
+    let m = match (&r.machine, r.ready) {
+        (Some(m), true) => m,
+        (_, ready) => {
+            let line = if ready {
+                Line::styled(
+                    "Process data unavailable: CPU and memory show -, and the state uses file activity only.",
+                    t.warn,
+                )
+            } else {
+                Line::styled("Collecting sessions…", t.dim)
+            };
+            f.render_widget(Paragraph::new(line).block(t.block(" This computer ")), area);
+            return;
+        }
+    };
+    let [cpu, mem] = Layout::horizontal([Constraint::Ratio(1, 2); 2]).areas(area);
+    let now = m.sample();
+    let series = |get: fn(&sessions::Sample) -> f32| r.history.iter().map(get).collect::<Vec<_>>();
+    machine_box(
+        f,
+        cpu,
+        " CPU ",
+        &m.cpu_figures(),
+        (now.cpu, now.claude_cpu),
+        (series(|s| s.cpu), series(|s| s.claude_cpu)),
+        t,
+    );
+    machine_box(
+        f,
+        mem,
+        " Memory ",
+        &m.mem_figures(),
+        (now.mem, now.claude_mem),
+        (series(|s| s.mem), series(|s| s.claude_mem)),
+        t,
+    );
+}
+
+/// One box. `now` and `history` are (whole computer, Claude), 0 to 100.
+fn machine_box(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    figures: &[(&str, String)],
+    now: (f32, f32),
+    history: (Vec<f32>, Vec<f32>),
+    t: &Theme,
+) {
+    use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
+    // The whole computer, and Claude's share of it.
+    let (whole, claude) = (t.ok, t.alt);
+    let block = t.block(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // The first figure is the whole computer's, and the one labelled Claude is Claude's.
+    let label_w = figures.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let lines: Vec<Line> = figures
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let (mark, style) = match (i, *label) {
+                (0, _) => ("■ ", whole),
+                (_, "Claude") => ("■ ", claude),
+                _ => ("  ", t.text),
+            };
+            Line::from(vec![
+                Span::styled(mark, style),
+                Span::styled(format!("{label:<label_w$}  "), t.dim),
+                Span::styled(value.clone(), style),
+            ])
+        })
+        .collect();
+    let fig_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 1;
+    let top = inner.height.saturating_sub(lines.len() as u16) / 2;
+    let (figs, graph) = if inner.width >= fig_w + 1 + GRAPH_MIN {
+        let [a, _, b] = Layout::horizontal([
+            Constraint::Length(fig_w),
+            Constraint::Length(1),
+            Constraint::Min(GRAPH_MIN),
+        ])
+        .areas(inner);
+        (a, Some(b))
+    } else {
+        (inner, None)
+    };
+    let mut padded = vec![Line::default(); top as usize];
+    padded.extend(lines);
+    f.render_widget(Paragraph::new(padded), figs);
+    let Some(graph) = graph else {
+        return;
+    };
+
+    // With history, a scrolling graph that fills from the right.
+    if history.0.len() >= 2 {
+        let cap = sessions::HISTORY;
+        let points = |v: &[f32]| {
+            let start = cap.saturating_sub(v.len());
+            v.iter()
+                .enumerate()
+                .map(|(i, y)| ((start + i) as f64, f64::from(*y)))
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (points(&history.0), points(&history.1));
+        let set = |data, style| {
+            Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Bar)
+                .style(style)
+                .data(data)
+        };
+        f.render_widget(
+            Chart::new(vec![set(&a, whole), set(&b, claude)])
+                .x_axis(Axis::default().bounds([0.0, (cap - 1) as f64]))
+                .y_axis(
+                    Axis::default()
+                        .bounds([0.0, 100.0])
+                        .style(t.dim)
+                        .labels([Span::styled("0%", t.dim), Span::styled("100%", t.dim)]),
+                ),
+            graph,
+        );
+        return;
+    }
+
+    // A one-shot export has no history: one bar for now, Claude's share first.
+    let w = usize::from(graph.width);
+    let cells = |v: f32| ((f64::from(v) / 100.0 * w as f64).round() as usize).min(w);
+    let (all, mine) = (cells(now.0), cells(now.1).min(cells(now.0)));
+    let full = t.bars.full;
+    let bar = Line::from(vec![
+        Span::styled(full.repeat(mine), claude),
+        Span::styled(full.repeat(all - mine), whole),
+        Span::styled("░".repeat(w - all), t.dim),
+    ]);
+    let mut rows = vec![Line::default(); usize::from(graph.height.saturating_sub(5) / 2)];
+    rows.extend([bar.clone(), bar.clone(), bar]);
+    rows.push(Line::default());
+    rows.push(Line::styled(
+        "now · the graph builds in the live view",
+        t.dim,
+    ));
+    f.render_widget(Paragraph::new(rows), graph);
+}
+
+/// The Sessions screen: CPU and Memory boxes for the whole computer, then one row per Claude
+/// Code session. Only counts, times, model names and titles are shown, never message text.
+fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
+    use sessions::{State, bytes, count, usd};
+    let [head, strip, table] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(MACHINE_ROWS),
+        Constraint::Min(4),
+    ])
+    .areas(f.area());
+    header(f, head, root, s, bodies, Screen::Sessions, t);
+    let r = &s.sessions;
+    draw_machine(f, strip, r, t);
+
+    // Columns: header, width, priority. A narrow terminal drops the highest numbers first.
+    let name_w = name_width("session", r.rows.iter().map(|w| w.name.as_str()));
+    let cols: [(&str, u16, u8); 14] = [
+        ("session", name_w, 0),
+        ("state", 9, 1),
+        ("model", 10, 4),
+        ("context", 7, 3),
+        ("tokens", 7, 8),
+        ("est.cost", 8, 9),
+        ("cpu%", 5, 7),
+        ("mem", 6, 13),
+        ("sub", 3, 12),
+        ("cq", 6, 5),
+        ("wait", 4, 6),
+        ("claim", 5, 11),
+        ("last change", 13, 10),
+        ("age", 7, 2),
+    ];
+    let room = table.width.saturating_sub(2);
+    let mut by_prio: Vec<usize> = (0..cols.len()).collect();
+    by_prio.sort_by_key(|&i| cols[i].2);
+    let mut keep = vec![false; cols.len()];
+    let mut used = 0u16;
+    for i in by_prio {
+        let need = cols[i].1 + u16::from(used > 0);
+        if used + need <= room {
+            keep[i] = true;
+            used += need;
+        }
+    }
+    let pick = |cells: Vec<Cell<'static>>| -> Vec<Cell<'static>> {
+        cells
+            .into_iter()
+            .zip(&keep)
+            .filter(|(_, k)| **k)
+            .map(|(c, _)| c)
+            .collect()
+    };
+
+    let dash = || Cell::from("-").style(t.dim);
+    let rows: Vec<Row> = r
+        .rows
+        .iter()
+        .map(|row| {
+            let (state, warned) = session_state(s, row);
+            let (glyph, style) = match state {
+                _ if warned => ("▲", t.warn),
+                State::Working => ("●", t.ok),
+                State::Recent => ("◐", t.info),
+                State::Idle => ("○", t.dim),
+            };
+            let w = session_watcher(s, row);
+            let (beat, beat_style) = match w.map(|w| w.beat_age) {
+                Some(Some(a)) if a <= STALE_AFTER => (age(a), t.ok),
+                Some(Some(_)) => ("STALE".into(), t.bad),
+                Some(None) => ("off".into(), t.dim),
+                // No watcher runs in this folder.
+                None => ("-".into(), t.dim),
+            };
+            let opt = |v: Option<String>| v.map_or_else(dash, Cell::from);
+            Row::new(pick(vec![
+                Cell::from(row.name.clone()).style(if warned { t.warn } else { t.accent }),
+                Cell::from(format!("{glyph} {}", state.label())).style(style),
+                if row.model.is_empty() {
+                    dash()
+                } else {
+                    Cell::from(row.model.clone())
+                },
+                opt(row.context.map(count)),
+                Cell::from(count(row.tokens_today)),
+                Cell::from(usd(row.cost_today)),
+                opt(row.cpu.map(|c| format!("{c:.1}"))),
+                opt(row.mem.map(bytes)),
+                Cell::from(row.subagents.to_string()).style(if row.subagents > 0 {
+                    t.info
+                } else {
+                    t.dim
+                }),
+                Cell::from(beat).style(beat_style),
+                opt(w.map(|w| w.queued.to_string())).style(if warned { t.warn } else { t.text }),
+                opt(w.map(|w| w.claimed.to_string())),
+                opt(row
+                    .last_change
+                    .map(|(c, at)| format!("{} {}", c.label(), age(s.now - at)))),
+                Cell::from(age(s.now - row.active)),
+            ]))
+        })
+        .collect();
+    let widths: Vec<Constraint> = pick_widths(&cols.map(|c| c.1), &keep);
+    let headers: Vec<&str> = cols
+        .iter()
+        .zip(&keep)
+        .filter(|(_, k)| **k)
+        .map(|(c, _)| c.0)
+        .collect();
+    let n = |st: State| r.rows.iter().filter(|row| row.state == st).count();
+    let title = if r.ready {
+        format!(
+            " Sessions: {} ({} working, {} recent, {} idle). Tokens and cost since local midnight ",
+            r.rows.len(),
+            n(State::Working),
+            n(State::Recent),
+            n(State::Idle)
+        )
+    } else {
+        " Sessions ".to_string()
+    };
+    let mut rows = rows;
+    if r.ready && rows.is_empty() {
+        rows.push(Row::new(vec![
+            Cell::from(format!(
+                "No sessions in the last 24 hours in {}",
+                r.projects.display()
+            ))
+            .style(t.dim),
+        ]));
+    }
+    f.render_widget(
+        Table::new(rows, widths)
+            .header(Row::new(headers).style(t.table_header()))
+            .style(t.text)
+            .block(t.block(title).title_bottom(Span::styled(
+                " est.cost: API list prices, not your plan's bill · cpu% 100 = one core ",
+                t.dim,
+            ))),
+        table,
+    );
+}
+
+fn pick_widths(widths: &[u16], keep: &[bool]) -> Vec<Constraint> {
+    widths
+        .iter()
+        .zip(keep)
+        .filter(|(_, k)| **k)
+        .map(|(w, _)| Constraint::Length(*w))
+        .collect()
 }
 
 /// Word-wraps text to `width` characters and at most `max_lines`

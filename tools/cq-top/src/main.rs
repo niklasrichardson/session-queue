@@ -19,6 +19,7 @@ use serde_json::Value;
 mod draw;
 mod html;
 mod screens;
+mod sessions;
 use draw::{THEMES, draw};
 
 /// Watchers write a heartbeat every 30 s; three missed beats means the watcher is gone.
@@ -54,10 +55,16 @@ enum Screen {
     Overview,
     Flow,
     Rejected,
+    Sessions,
 }
 
 impl Screen {
-    const ALL: [Screen; 3] = [Screen::Overview, Screen::Flow, Screen::Rejected];
+    const ALL: [Screen; 4] = [
+        Screen::Overview,
+        Screen::Flow,
+        Screen::Rejected,
+        Screen::Sessions,
+    ];
 
     /// The name in the saved view and in exported file names.
     fn name(self) -> &'static str {
@@ -65,6 +72,7 @@ impl Screen {
             Screen::Overview => "overview",
             Screen::Flow => "flow",
             Screen::Rejected => "rejected",
+            Screen::Sessions => "sessions",
         }
     }
 
@@ -133,6 +141,8 @@ struct Snapshot {
     problems: Vec<Msg>,
     /// How many rejected and dead-lettered messages there are in all.
     problems_total: usize,
+    /// Claude Code sessions, collected apart from the queue (see `sessions.rs`).
+    sessions: sessions::Report,
 }
 
 fn main() -> std::io::Result<()> {
@@ -141,11 +151,11 @@ fn main() -> std::io::Result<()> {
         println!(
             "cq-top: live, read-only view of a cq queue.\n\
              The queue root is CQ_ROOT, or cq's per-user default.\n\
-             Keys: q quit, b bodies, tab or 1/2/3 switch screen, t next theme.\n\
+             Keys: q quit, b bodies, tab or 1/2/3/4 switch screen, t next theme.\n\
              \n\
              --html PATH          write one snapshot as an HTML dashboard to PATH, then exit\n\
-             --html-screens DIR   write the three screens as HTML pages (overview.html,\n\
-             \x20                    flow.html, rejected.html) to DIR, then exit\n\
+             --html-screens DIR   write the four screens as HTML pages (overview.html,\n\
+             \x20                    flow.html, rejected.html, sessions.html) to DIR, then exit\n\
              Neither may point inside the queue root. Message bodies are never exported."
         );
         return Ok(());
@@ -165,7 +175,8 @@ fn main() -> std::io::Result<()> {
         }
     };
     if exports.html.is_some() || exports.screens.is_some() {
-        if let Err(e) = export(&root, &exports) {
+        let scan = || sessions::collect_once(sessions::Sources::live(&root));
+        if let Err(e) = export(&root, &exports, scan) {
             eprintln!("cq-top: {e}");
             std::process::exit(EXIT_ERROR);
         }
@@ -181,8 +192,11 @@ fn run(terminal: &mut DefaultTerminal, root: &cq::Root) -> std::io::Result<()> {
     let mut show_bodies = false;
     let (mut screen, mut theme) = load_view();
     let mut beats = Beats::new();
+    // Sessions are scanned on their own threads; each frame takes the latest scan.
+    let collector = sessions::Collector::start(sessions::Sources::live(root));
     loop {
-        let snap = snapshot(root, &mut beats);
+        let mut snap = snapshot(root, &mut beats);
+        snap.sessions = collector.latest();
         terminal.draw(|f| draw(f, root.path(), &snap, show_bodies, screen, &THEMES[theme]))?;
         if event::poll(Duration::from_millis(500))?
             && let Event::Key(k) = event::read()?
@@ -199,6 +213,7 @@ fn run(terminal: &mut DefaultTerminal, root: &cq::Root) -> std::io::Result<()> {
                 KeyCode::Char('1') => screen = Screen::Overview,
                 KeyCode::Char('2') => screen = Screen::Flow,
                 KeyCode::Char('3') => screen = Screen::Rejected,
+                KeyCode::Char('4') => screen = Screen::Sessions,
                 _ => continue,
             }
             save_view(screen, theme);
@@ -314,15 +329,20 @@ fn export_path(root: &Path, path: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// Takes one snapshot and writes the exports asked for. Every path is checked before
-/// anything is written.
-fn export(root: &cq::Root, e: &Exports) -> std::io::Result<()> {
+/// anything is written, and before `scan` collects the sessions.
+fn export(
+    root: &cq::Root,
+    e: &Exports,
+    scan: impl FnOnce() -> sessions::Report,
+) -> std::io::Result<()> {
     let check = |p: &Option<PathBuf>| {
         p.as_deref()
             .map(|p| export_path(root.path(), p))
             .transpose()
     };
     let (html, screens) = (check(&e.html)?, check(&e.screens)?);
-    let snap = snapshot(root, &mut Beats::new());
+    let mut snap = snapshot(root, &mut Beats::new());
+    snap.sessions = scan();
     // Writes go to the checked full path; messages show the path as given.
     if let (Some(path), Some(given)) = (html, &e.html) {
         fs::write(&path, html::dashboard(root.path(), &snap))?;
@@ -658,6 +678,7 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
         window,
         problems,
         problems_total,
+        sessions: sessions::Report::default(),
     }
 }
 
@@ -692,9 +713,11 @@ mod tests {
         assert_eq!(parse_view(""), (Screen::Overview, 0));
         assert_eq!(parse_view("flow no-such-theme"), (Screen::Flow, 0));
         assert_eq!(parse_view("garbage"), (Screen::Overview, 0));
-        // Tab goes round all three screens.
-        assert_eq!(Screen::Rejected.next(), Screen::Overview);
+        // Tab goes round all four screens.
+        assert_eq!(Screen::Rejected.next(), Screen::Sessions);
+        assert_eq!(Screen::Sessions.next(), Screen::Overview);
         assert_eq!(Screen::Overview.next().next(), Screen::Rejected);
+        assert_eq!(parse_view("sessions amber"), (Screen::Sessions, 1));
     }
 
     /// A fixed "now" so ages do not depend on the clock: 2026-10-27T11:30:00Z.
@@ -850,8 +873,54 @@ mod tests {
                 ..msg("rejected", "task")
             }],
             problems_total: 3,
+            sessions: sessions::Report {
+                ready: true,
+                machine: Some(sessions::Machine {
+                    cpu: 12.5,
+                    cores: 8,
+                    busy_cores: 1,
+                    mem_used: 8 << 30,
+                    mem_total: 32 << 30,
+                    mem_available: 24 << 30,
+                    swap_used: 1 << 30,
+                    swap_total: 4 << 30,
+                    claude_cpu: 7.0,
+                    claude_mem: 2 << 30,
+                    claude_procs: 3,
+                }),
+                rows: vec![
+                    sessions::Row {
+                        name: EVIL_TITLE.into(),
+                        state: sessions::State::Working,
+                        model: "opus-5-5".into(),
+                        context: Some(135_000),
+                        tokens_today: 66_300_000,
+                        cost_today: Some(12.5),
+                        cpu: Some(6.0),
+                        mem: Some(900 << 20),
+                        subagents: 2,
+                        last_change: Some((sessions::Change::Edit, 1_793_100_300)),
+                        active: 1_793_100_390,
+                        ..Default::default()
+                    },
+                    // Idle with a waiting message: drawn as a warning.
+                    sessions::Row {
+                        name: "w1".into(),
+                        cq_name: Some("w1".into()),
+                        state: sessions::State::Idle,
+                        model: "haiku-4-5".into(),
+                        active: 1_793_090_000,
+                        ..Default::default()
+                    },
+                ],
+                projects: PathBuf::from("/home/me/.claude/projects"),
+                history: Vec::new(),
+            },
         }
     }
+
+    /// A session title that tries HTML injection.
+    const EVIL_TITLE: &str = "<b>RC</b> & \"x\"";
 
     #[test]
     fn every_theme_draws_both_screens() {
@@ -873,6 +942,7 @@ mod tests {
                     Screen::Overview => "Watchers",
                     Screen::Flow => "Turnaround",
                     Screen::Rejected => "not my job",
+                    Screen::Sessions => "opus-5-5",
                 }));
                 assert!(!text.contains(BODY));
             }
@@ -919,7 +989,7 @@ mod tests {
             html: Some(out.path().join("dash.html")),
             screens: Some(r.join("shots")),
         };
-        assert!(export(&root, &e).is_err());
+        assert!(export(&root, &e, sessions::Report::default).is_err());
         assert!(!out.path().join("dash.html").exists());
         assert!(!r.join("shots").exists());
     }
@@ -933,12 +1003,13 @@ mod tests {
             html: Some(out.path().join("dash.html")),
             screens: Some(out.path().join("shots")),
         };
-        export(&root, &e).unwrap();
+        export(&root, &e, sessions::Report::default).unwrap();
         for f in [
             "dash.html",
             "shots/overview.html",
             "shots/flow.html",
             "shots/rejected.html",
+            "shots/sessions.html",
         ] {
             let text = fs::read_to_string(out.path().join(f)).unwrap();
             assert!(text.starts_with("<!doctype html>"), "{f}");
@@ -1042,6 +1113,131 @@ mod tests {
         // Sidecars are still not counted as messages.
         let w = s.watchers.iter().find(|w| w.name == "w1").unwrap();
         assert_eq!((w.rejected, w.dead, w.done), (1, 2, 1));
+    }
+
+    #[test]
+    fn sessions_are_exported_with_escaped_titles() {
+        let snap = sample();
+        let page = html::dashboard(Path::new("/queue"), &snap);
+        assert!(page.contains("<h2>Sessions"));
+        assert!(page.contains("&lt;b&gt;RC&lt;/b&gt; &amp; &quot;x&quot;"));
+        assert!(!page.contains("<b>RC"));
+        // The idle session with a waiting message is a warning; the cost is labelled.
+        assert!(page.contains("idle, messages waiting"));
+        assert!(page.contains("Est. cost today"));
+        assert!(page.contains("Busy cores 1, Cores 8") && page.contains("Swap 1.0 / 4.0 GB"));
+        let screen = screens::page(
+            Path::new("/q"),
+            &snap,
+            Screen::Sessions,
+            &THEMES[0],
+            140,
+            42,
+        );
+        assert!(!screen.contains("<b>"));
+        assert!(screen.contains("&lt;"));
+
+        // The rows and the strip show on the screen, at 140 columns with every column.
+        let mut term = Terminal::new(TestBackend::new(140, 42)).unwrap();
+        term.draw(|f| {
+            draw(
+                f,
+                Path::new("/q"),
+                &snap,
+                false,
+                Screen::Sessions,
+                &THEMES[0],
+            )
+        })
+        .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for want in [
+            "▲ idle",
+            "● working",
+            "135k",
+            "66.3M",
+            "$12.50",
+            "edit",
+            "last change",
+            "Busy cores",
+            "24.0 GB",
+            "now · the graph builds",
+        ] {
+            assert!(text.contains(want), "{want}");
+        }
+        // A narrow terminal drops the least important columns, never the name or state.
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| {
+            draw(
+                f,
+                Path::new("/q"),
+                &snap,
+                false,
+                Screen::Sessions,
+                &THEMES[0],
+            )
+        })
+        .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("● working") && text.contains("w1"));
+        assert!(!text.contains("last change"));
+    }
+
+    #[test]
+    fn every_theme_draws_the_cpu_and_memory_boxes() {
+        let text = |snap: &Snapshot, theme, w, h| {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, Path::new("/q"), snap, false, Screen::Sessions, theme))
+                .unwrap();
+            term.backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        let still = sample();
+        let mut live = sample();
+        live.sessions.history = (0..200)
+            .map(|i| sessions::Sample {
+                cpu: (i % 100) as f32,
+                claude_cpu: (i % 10) as f32,
+                mem: 40.0,
+                claude_mem: 5.0,
+            })
+            .collect();
+        for theme in &THEMES {
+            for (w, h) in [(140, 42), (60, 20), (20, 8), (1, 1)] {
+                // Small sizes must not panic; the figures show whenever they fit.
+                let (a, b) = (text(&still, theme, w, h), text(&live, theme, w, h));
+                if w >= 60 {
+                    for t in [&a, &b] {
+                        assert!(t.contains("CPU") && t.contains("Memory"), "{}", theme.name);
+                        assert!(t.contains("Claude"), "{}", theme.name);
+                    }
+                }
+                if w == 140 {
+                    // Braille appears only with a history; the export shows a bar instead.
+                    let braille =
+                        |t: &str| t.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
+                    assert!(braille(&b) && !braille(&a), "{}", theme.name);
+                    assert!(a.contains("the graph builds") && !b.contains("the graph builds"));
+                    assert!(a.contains("Busy cores") && a.contains("12.5%"));
+                }
+            }
+        }
     }
 
     #[test]

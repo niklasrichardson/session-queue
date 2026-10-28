@@ -291,6 +291,8 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
     }
     b.push_str("</tbody></table></div></section>");
 
+    sessions_table(b, s);
+
     // Busy now and turnaround, side by side on a wide screen.
     b.push_str("<div class=\"cols\">");
     let _ = write!(
@@ -597,6 +599,89 @@ fn problem_table(b: &mut String, s: &Snapshot) {
     }
     if shown.is_empty() {
         b.push_str("<tr><td colspan=\"7\" class=\"dim\">None.</td></tr>");
+    }
+    b.push_str("</tbody></table></div></section>");
+}
+
+/// Claude Code sessions, as on the Sessions screen. Titles are escaped; no message text is
+/// ever read into the report.
+fn sessions_table(b: &mut String, s: &Snapshot) {
+    use sessions::{State, bytes, count, usd};
+    let r = &s.sessions;
+    let list = |figs: &[(&str, String)]| {
+        figs.iter()
+            .map(|(l, v)| format!("{l} {}", esc(v)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let machine = match &r.machine {
+        Some(m) => format!(
+            "This computer. CPU: {}. Memory: {}. Claude is its {} processes together, and \
+             its CPU here is a share of the whole computer. A busy core is one at {}% or more.",
+            list(&m.cpu_figures()),
+            list(&m.mem_figures()),
+            m.claude_procs,
+            sessions::BUSY_CORE
+        ),
+        None => "Process data unavailable: CPU and memory show -, and the state uses file \
+                 activity only."
+            .into(),
+    };
+    let _ = write!(
+        b,
+        "<section class=\"card\"><h2>Sessions <span class=\"count\">{}</span></h2>\
+         <p class=\"sub\">{machine} Tokens and cost count from local midnight, the session \
+         and its subagents together. The cost is an estimate at API list prices, not the \
+         plan's bill. In the table, CPU 100% is one core.</p><div class=\"scroll\"><table><thead><tr>\
+         <th>Session</th><th>State</th><th>Model</th><th class=\"n\">Context</th>\
+         <th class=\"n\">Tokens today</th><th class=\"n\">Est. cost today</th>\
+         <th class=\"n\">CPU %</th><th class=\"n\">Memory</th><th class=\"n\">Sub</th>\
+         <th>cq</th><th class=\"n\">Waiting</th><th class=\"n\">Claimed</th>\
+         <th>Last commit or edit</th><th class=\"n\">Age</th></tr></thead><tbody>",
+        r.rows.len()
+    );
+    let dash = || "<span class=\"dim\">-</span>".to_string();
+    for row in &r.rows {
+        let (state, warned) = draw::session_state(s, row);
+        let state_chip = match state {
+            _ if warned => chip(Tone::Warning, "▲", "idle, messages waiting"),
+            State::Working => chip(Tone::Good, "●", "working"),
+            State::Recent => chip(Tone::Accent, "◐", "recent"),
+            State::Idle => chip(Tone::Muted, "○", "idle"),
+        };
+        let w = draw::session_watcher(s, row);
+        let beat = match w {
+            Some(w) => heartbeat_chip(w),
+            None => dash(),
+        };
+        let opt = |v: Option<String>| v.map_or_else(dash, |v| esc(&v));
+        let _ = write!(
+            b,
+            "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\">{state_chip}</td>\
+             <td class=\"nowrap\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
+             <td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
+             <td class=\"n\">{}</td><td class=\"nowrap\">{beat}</td><td class=\"n\">{}</td>\
+             <td class=\"n\">{}</td><td class=\"nowrap\">{}</td><td class=\"n\">{}</td></tr>",
+            esc(&row.name),
+            opt(Some(row.model.clone()).filter(|m| !m.is_empty())),
+            opt(row.context.map(count)),
+            count(row.tokens_today),
+            esc(&usd(row.cost_today)),
+            opt(row.cpu.map(|c| format!("{c:.1}"))),
+            opt(row.mem.map(bytes)),
+            row.subagents,
+            opt(w.map(|w| w.queued.to_string())),
+            opt(w.map(|w| w.claimed.to_string())),
+            opt(row
+                .last_change
+                .map(|(c, at)| format!("{} {}", c.label(), age(s.now - at)))),
+            age(s.now - row.active)
+        );
+    }
+    if r.rows.is_empty() {
+        b.push_str(
+            "<tr><td colspan=\"14\" class=\"dim\">No sessions in the last 24 hours.</td></tr>",
+        );
     }
     b.push_str("</tbody></table></div></section>");
 }
