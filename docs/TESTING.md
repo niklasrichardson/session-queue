@@ -15,6 +15,16 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Sleep and wake on Windows, 28 October 2026
+
+Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): `cq sleep`, `cq wake`, exit 7, `CQ-SLEEP`, `CQ-WAKE` and the cq-top `asleep` display. Checked on Windows 11 with `cargo test --workspace` (112 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
+
+- `tests/sleep.rs` (9 tests) uses temporary queue roots. It covers: a name sleeps and wakes itself; only a coordinator sleeps another name (exit 5 otherwise) and any name wakes; a root without `sleep/`; a watcher asleep at start exits 7 and writes no pid file; a running watcher exits 7 within 5 seconds of `cq sleep` and removes its pid file, and a new watcher takes the name after `cq wake`; `CQ-WAKE` for a coordinator only, once per message, only after 2 minutes, never for an awake name, and with no message moved; the `cq send` warning; `cq members` and `cq list`; and `cq session-start` for a sleeping name.
+- The 2-minute rule is tested by setting the message file's modified time, not by waiting.
+- `cq-top` tests check that a sleeping name is read with its folder, and that Overview, Sessions and both HTML exports show `asleep` and no stale warning.
+
+Not verified: macOS and Linux; the `/cq-stop` and `/cq-start` skills in a live session; waking a session by a cross-session message; cq-top's Sessions row for a sleeping name in a real terminal.
+
 ## cq-top on macOS, 27 October 2026
 
 `cq-top` is a read-only terminal view of the queue (see [cq-top](CQ-TOP.md)). It was built and checked on macOS 27.0.1 (Apple silicon) with Rust 1.99.1. No `cq` source file was changed. The root `Cargo.toml` gained a workspace table, so `cq-top` is a workspace member and a default member.

@@ -1,4 +1,5 @@
-//! `cq list`: unclaimed, stale claimed and dead-lettered messages.
+//! `cq list`: unclaimed, stale claimed and dead-lettered messages, after an
+//! `ASLEEP` line when the name is asleep.
 
 use std::time::{Duration, SystemTime};
 
@@ -10,13 +11,15 @@ use crate::fsutil;
 use crate::message::{EVENT_SUBJECT_MAX, event_text, header};
 use crate::names::{check_name, id_parts, is_valid_id};
 use crate::root::{Root, message_file, reason_file};
+use crate::sleep;
 use crate::timefmt::{self, local_hhmm, rfc3339};
 
 /// Reason text in a `DLQ` line, in characters.
 const REASON_MAX: usize = 200;
 
-/// One line per message, oldest first (by creation time), then a total.
-/// Never prints bodies.
+/// `ASLEEP by=... reason="..."` when the name is asleep, then one line per
+/// message, oldest first (by creation time), then a total. Never prints
+/// bodies.
 pub fn list(root: &Root, name: &str, stale_minutes: u64) -> Result<Vec<String>> {
     check_name("--as", name)?;
     let now = SystemTime::now();
@@ -99,7 +102,11 @@ pub fn list(root: &Root, name: &str, stale_minutes: u64) -> Result<Vec<String>> 
     }
 
     rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    let mut out: Vec<String> = rows.into_iter().map(|(_, line)| line).collect();
+    let mut out: Vec<String> = sleep::read(root, name)
+        .map(|rec| format!("ASLEEP {}", rec.describe()))
+        .into_iter()
+        .chain(rows.into_iter().map(|(_, line)| line))
+        .collect();
     out.push(format!(
         "TOTAL unclaimed={unclaimed} stale={stale} dlq={dead}"
     ));

@@ -18,7 +18,7 @@ use cq::message::{
 };
 use cq::send::{self, Hops, Outgoing};
 use cq::watch::{self, DEFAULT_MAX_SECONDS, DEFAULT_RESCAN_SECONDS, WatchOptions};
-use cq::{Root, claim, list, members, platform, timefmt};
+use cq::{Root, claim, list, members, platform, sleep, timefmt};
 
 const EXIT_CODES: &str = "\
 Exit codes:
@@ -27,8 +27,10 @@ Exit codes:
   2   a rename still failed after 3 retries
   3   claim: the message is invalid and went to the dead letter queue
   4   done: the message is finished, but the reply was not sent
-  5   refused (name, size, hop or send limit, PAUSE, missing parent, watcher running)
+  5   refused (name, size, hop or send limit, PAUSE, missing parent, watcher
+      running, sleeping another name without being a coordinator)
   6   done: the message is not claimed by this session
+  7   watch: the name is asleep; do not re-arm
   64  bad arguments or bad JSON input
   70  any other error (I/O, CQ_ROOT missing or not initialised)";
 
@@ -117,7 +119,10 @@ enum Cmd {
     },
 
     /// Print one CQ-NEW line per new message in your inbox. Run it under a
-    /// Monitor. Never prints message bodies.
+    /// Monitor. Never prints message bodies. While your name is asleep, it
+    /// prints CQ-SLEEP and exits 7. A coordinator's watcher also prints one
+    /// CQ-WAKE line per message that has waited 2 minutes for a sleeping
+    /// name.
     #[command(after_help = exit_help())]
     Watch {
         /// Your session name.
@@ -226,8 +231,38 @@ enum Cmd {
         name: String,
     },
 
-    /// Print one "<session key> -> <name>" line per recorded session.
+    /// Print one "<session key> -> <name>" line per recorded session, with
+    /// " (asleep)" after a sleeping name. A sleeping name with no recorded
+    /// session prints as "- -> <name> (asleep)".
     Members,
+
+    /// Put a name to sleep: its watcher prints CQ-SLEEP and exits 7, and the
+    /// session stops re-arming. Messages still arrive in its inbox. A name
+    /// may sleep itself; only a coordinator (listed in CQ_ROOT/coordinators)
+    /// may sleep another name.
+    #[command(after_help = exit_help())]
+    Sleep {
+        /// Your session name.
+        #[arg(long = "as", value_name = "ACTOR")]
+        actor: String,
+        /// The name to put to sleep.
+        name: String,
+        /// Shown in the CQ-SLEEP line.
+        #[arg(long, value_name = "TEXT")]
+        reason: Option<String>,
+    },
+
+    /// Wake a sleeping name, so its watcher runs again. Any name may wake
+    /// any name. Exit 0 when it was not asleep. The session itself still
+    /// needs a message telling it to rejoin.
+    #[command(after_help = exit_help())]
+    Wake {
+        /// Your session name.
+        #[arg(long = "as", value_name = "ACTOR")]
+        actor: String,
+        /// The name to wake.
+        name: String,
+    },
 
     /// For a Claude Code SessionStart hook (clear|compact|resume). If this
     /// session owns a queue name, print a reminder to rejoin as it; else
@@ -264,7 +299,7 @@ fn main() -> ExitCode {
         }
     };
     match run(cli.cmd) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
             eprintln!("cq: {e}");
             ExitCode::from(e.code as u8)
@@ -272,7 +307,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cmd: Cmd) -> Result<()> {
+/// Run one command. Returns the exit code of a run that did not fail:
+/// 0, or 7 for a watcher that stopped because its name is asleep.
+fn run(cmd: Cmd) -> Result<i32> {
     match cmd {
         Cmd::Init => {
             let root = Root::from_env()?;
@@ -295,6 +332,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 )
             })?;
             let SendInput { subject, body } = parse_input(&text)?;
+            let recipient = to.clone();
             let out = Outgoing {
                 from,
                 to,
@@ -307,6 +345,9 @@ fn run(cmd: Cmd) -> Result<()> {
             };
             let id = send::send(&root, out, Hops::Lookup)?;
             println!("{id}");
+            if sleep::is_asleep(&root, &recipient) {
+                eprintln!("cq: {recipient} is asleep; wake it with /cq-start {recipient}");
+            }
         }
         Cmd::Watch {
             name,
@@ -324,7 +365,9 @@ fn run(cmd: Cmd) -> Result<()> {
                 fs_events: !no_fs_events,
                 member_key: members::session_key(),
             };
-            watch::watch(&root, &opts, &mut io::stdout().lock())?;
+            if watch::watch(&root, &opts, &mut io::stdout().lock())? == watch::Ended::Asleep {
+                return Ok(exit::ASLEEP);
+            }
         }
         Cmd::Dispatch {
             name,
@@ -431,13 +474,45 @@ fn run(cmd: Cmd) -> Result<()> {
         }
         Cmd::Members => {
             let root = Root::open()?;
-            for (key, name) in members::members(&root) {
-                println!("{key} -> {name}");
+            let records = members::members(&root);
+            let asleep = sleep::asleep(&root);
+            let mark = |name: &str| {
+                if asleep.iter().any(|n| n == name) {
+                    " (asleep)"
+                } else {
+                    ""
+                }
+            };
+            for (key, name) in &records {
+                println!("{key} -> {name}{}", mark(name));
+            }
+            for name in asleep
+                .iter()
+                .filter(|n| !records.iter().any(|r| &r.1 == *n))
+            {
+                println!("- -> {name} (asleep)");
+            }
+        }
+        Cmd::Sleep {
+            actor,
+            name,
+            reason,
+        } => {
+            let root = Root::open()?;
+            sleep::sleep(&root, &actor, &name, reason.as_deref())?;
+            println!("asleep: {name} (by {actor})");
+        }
+        Cmd::Wake { actor, name } => {
+            let root = Root::open()?;
+            if sleep::wake(&root, &actor, &name)? {
+                println!("awake: {name} (by {actor})");
+            } else {
+                println!("{name} was not asleep");
             }
         }
         Cmd::SessionStart { debug } => session_start(debug),
     }
-    Ok(())
+    Ok(exit::OK)
 }
 
 /// The SessionStart hook. Never fails, never blocks and, without
@@ -452,7 +527,18 @@ fn session_start(debug: bool) {
     if debug {
         eprintln!("cq session-start: key={key:?} name={name:?}");
     }
-    if let Some(name) = name {
+    let asleep = match (&name, Root::from_env()) {
+        (Some(n), Ok(root)) => sleep::read(&root, n),
+        _ => None,
+    };
+    if let (Some(name), Some(rec)) = (&name, asleep) {
+        // Ignore a failed write, as stdout may already be closed.
+        let _ = writeln!(
+            io::stdout(),
+            "You are in the cq session queue as {name}, and {name} is asleep ({}). Do not start a watcher. Messages wait in your inbox. To wake, run /cq-start when the user or a coordinator's message asks you to.",
+            rec.describe()
+        );
+    } else if let Some(name) = name {
         // Ignore a failed write, as stdout may already be closed.
         let _ = writeln!(
             io::stdout(),

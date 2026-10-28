@@ -17,10 +17,13 @@ pub mod exit {
     pub const REPLY_NOT_SENT: i32 = 4;
     /// A queue rule refused the request (name, size, hop limit, pair,
     /// recipient or sender limit, `PAUSE`, missing parent, watcher already
-    /// running).
+    /// running, sleeping another name without being a coordinator).
     pub const REFUSED: i32 = 5;
     /// `cq done`: the message is not claimed by this session.
     pub const NOT_FOUND: i32 = 6;
+    /// `cq watch`: the name is asleep (`sleep/<name>` exists). The session
+    /// does not re-arm.
+    pub const ASLEEP: i32 = 7;
     /// Bad command-line arguments or bad JSON input.
     pub const USAGE: i32 = 64;
     /// Any other error (I/O, `CQ_ROOT` missing).

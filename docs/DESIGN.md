@@ -45,6 +45,21 @@ Implementation choices that the specification left open, and what `cq` does. The
 - No parent check (removed 24 Oct 2026). Under the Monitor, the parent of `cq.exe` is a forked Git Bash (the Monitor runs `bash -c "... eval 'cq watch ...' < /dev/null && pwd -P ..."`), whose lifetime Cygwin controls, not the Monitor. The check was the only path that could end a watcher with exit 0 and no output while its Monitor still ran, which was seen 4 times. `--max-seconds 1790`, the single-instance lock and `--takeover` bound an orphan instead: it lives at most 30 minutes, and `--takeover` replaces it at once.
 - T14 follows from this: after only the parent is killed, the orphaned watcher keeps running and a plain second `cq watch` exits 5; `--takeover` stops the orphan, and exactly one watcher runs. A separate test runs the watcher through three nested `bash -c ... eval` forms and checks that each runs to `--max-seconds`.
 - The watcher exits 0 at `--max-seconds` or when stdout can no longer be written, and prints one line to stderr saying why (`cq watch: exiting: --max-seconds 1790 reached`). Every error exit prints `cq: <reason>`. It removes the pid file if the file still holds its own ID.
+- The watcher exits 7 with `CQ-SLEEP` while its name is asleep (see [Sleep](#sleep)). Exit 7 is not an error, so it prints no `cq:` line.
+
+## Sleep
+
+Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Session protocol](PROTOCOL.md#sleep-and-wake).
+
+- **Why a flag file.** `sleep/<name>` works like `PAUSE`, but for one name. A file needs no running process, survives restarts, can be checked by any `cq` command and by `cq-top`, and can be removed by hand. The watcher checks it on every 250 ms tick, so a running watcher stops within a second. A message to the session would not work: a stopped watcher cannot read it.
+- **Its own exit code.** Exit 7 tells the session "do not re-arm". Exit 0 means "re-arm", and exit 5 means "retry with `--takeover`".
+- **At start, no lock.** A watcher that finds its name asleep at start exits before it takes the lock or writes a heartbeat, pid file or members record. So it cannot replace a running watcher's record.
+- **`CQ-SLEEP` under `PAUSE`.** The watcher prints `CQ-SLEEP` even while `PAUSE` exists. Otherwise a paused, sleeping watcher would run to `--max-seconds`, exit 0 and be re-armed for nothing.
+- **Who may sleep whom.** Sleeping another session stops its work, so only a coordinator listed in `coordinators` may do it. Waking costs only tokens, so any name may wake any name (owner decision, 28 Oct 2026).
+- **Waking comes from outside `cq`.** A sleeping session runs no `cq` process. The sender wakes it through Claude Code (the `/cq-start` skill), not through the queue. `cq send` still delivers, so nothing is lost, and warns, so the sender knows to wake the receiver.
+- **`CQ-WAKE` is a backup.** A coordinator's watcher reports a message only after it has waited 2 minutes (`WAKE_AFTER`), so the sender has time to wake the receiver first. The age is the file's modified time, as for the prune. The coordinator scans every second, not on file events, and never claims or moves a message. It reports each message once per run, so a restarted coordinator reports old ones again, once. It is silent under `PAUSE`.
+- **When sleep pays off.** Waking a session writes its whole context to the prompt cache again, which costs about 2 times the context in input tokens. Staying awake costs about 0.4 times the context per hour in re-arms and cache reads. So sleep pays off only for an idle period of about 5 hours or more, unless the context is small.
+- **Not in stage 1:** automatic sleep after an idle time. `cq dispatch` (Codex) does not check the flag.
 
 ## Dependencies
 

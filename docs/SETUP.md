@@ -78,6 +78,16 @@ CQ_DEFAULT_TZ = 'Europe/London'
 CQ_DEFAULT_TZ_LABEL = 'UK'
 ```
 
+## Skills
+
+Two Claude Code skills put a session to sleep and wake it (see [Sleep and wake](PROTOCOL.md#sleep-and-wake)). Copy `skills/cq-start` and `skills/cq-stop` to `~/.claude/skills/`:
+
+```bash
+cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
+```
+
+To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.
+
 ## Upgrading while watchers run
 
 On Windows, a running `cq.exe` is locked, but it can be renamed. To upgrade without stopping the sessions:

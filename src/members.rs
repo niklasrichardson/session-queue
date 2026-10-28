@@ -5,9 +5,11 @@
 //! conversation forgets its name; the SessionStart hook (`cq session-start`)
 //! looks the key up and reminds it. A name belongs to one session at a time.
 //!
-//! The file holds the name on line 1 and the UTC time it was written on
-//! line 2. `members/` is created on demand, so an older root without it
-//! still works.
+//! The file holds the name on line 1, the UTC time it was written on
+//! line 2, and the watcher's working folder on line 3 (cq-top uses it to
+//! show a sleeping name beside its session). Readers of the name use line 1
+//! only, so a two-line record from an older `cq` still works. `members/` is
+//! created on demand, so an older root without it still works.
 
 use std::fs;
 use std::path::Path;
@@ -57,7 +59,10 @@ pub fn record(root: &Root, key: &str, name: &str) -> Result<()> {
     let dir = root.members();
     fs::create_dir_all(&dir).map_err(|e| CqError::io(format!("create {}", dir.display()), e))?;
     let path = dir.join(key);
-    let text = format!("{name}\n{}\n", rfc3339(timefmt::now()));
+    let folder = std::env::current_dir()
+        .map(|d| d.display().to_string().replace(['\r', '\n'], ""))
+        .unwrap_or_default();
+    let text = format!("{name}\n{}\n{folder}\n", rfc3339(timefmt::now()));
     fsutil::write_atomic(&root.tmp(), &path, text.as_bytes())
         .map_err(|e| CqError::io(format!("write {}", path.display()), e))?;
     for (other, n) in members(root) {
