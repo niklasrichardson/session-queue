@@ -110,7 +110,7 @@ The rule is `sessions::state`, and the warning is `sessions::warn`.
 - The real working folder comes from the first `cwd` in the transcript whose encoding matches the folder name. Nothing else is read from that line.
 - A folder is shown when a Claude process runs in it, or when its transcript was written in the last 24 hours.
 - A Claude process is a process named `claude`. Helper processes with a `--type=` argument count in the Claude totals but are not sessions. Each other process is matched to a folder by encoding its working folder.
-- A cq watcher is matched by its working folder. Its name comes from `cq watch --as NAME` in its arguments, or else from its `heartbeat/NAME.pid` file in the queue root.
+- A cq watcher is a `cq` process. Its name comes from `cq watch --as NAME` in its arguments, or else from its `heartbeat/NAME.pid` file in the queue root. It belongs to the nearest session process among its parents, up to 10 steps up, because a session often runs `cq watch` from another folder. A watcher with no session above it belongs to its own working folder.
 
 ### Tokens and cost
 
@@ -122,7 +122,7 @@ The rule is `sessions::state`, and the warning is `sessions::warn`.
 
 ### Background work
 
-- A background thread scans every 3 seconds. A key press never waits for a scan.
+- A background thread scans every 3 seconds. A key press never waits for a scan. The first scan reads today's transcripts and takes a few seconds. After that, a scan took 90 to 410 ms on the test computer (12 sessions, 32 cores). Reading the process list takes about 80 ms of that.
 - Another background thread runs `git` at most once every 60 seconds for each folder, with `GIT_OPTIONAL_LOCKS=0` so that `git status` does not write the index.
 
 ### Privacy

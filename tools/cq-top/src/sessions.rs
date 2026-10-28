@@ -638,8 +638,47 @@ struct Procs {
     /// Folder -> (real folder, CPU % of one core, memory) of its Claude processes and their
     /// descendants.
     sessions: HashMap<String, (PathBuf, f32, u64)>,
-    /// Folder -> cq name of a watcher running there.
+    /// Session folder -> cq name of its watcher.
     watchers: HashMap<String, String>,
+}
+
+/// One process, as far as watcher matching needs it.
+struct ProcInfo {
+    parent: Option<sysinfo::Pid>,
+    /// A Claude Code session process (named `claude`, not a `--type=` helper).
+    session: bool,
+    cwd: Option<PathBuf>,
+}
+
+/// How far up a watcher's parents to look for its session: `cq` runs under a few shells.
+const ANCESTRY_STEPS: usize = 10;
+
+/// Folder key -> cq name, for watchers given as (watcher pid, name), first name wins. A watcher
+/// belongs to the nearest session process among its parents, because `cq watch` often runs in
+/// another folder than its session. Without one, it belongs to its own working folder.
+fn match_watchers(
+    table: &HashMap<sysinfo::Pid, ProcInfo>,
+    watchers: impl IntoIterator<Item = (sysinfo::Pid, String)>,
+) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (pid, name) in watchers {
+        let mut up = table.get(&pid).and_then(|p| p.parent);
+        let mut owner = None;
+        for _ in 0..ANCESTRY_STEPS {
+            let Some(p) = up.and_then(|u| table.get(&u)) else {
+                break;
+            };
+            if p.session && p.cwd.is_some() {
+                owner = p.cwd.as_deref();
+                break;
+            }
+            up = p.parent;
+        }
+        if let Some(dir) = owner.or_else(|| table.get(&pid)?.cwd.as_deref()) {
+            out.entry(key(&encode(dir))).or_insert(name);
+        }
+    }
+    out
 }
 
 fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> {
@@ -688,20 +727,21 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
     };
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     let mut roots: HashMap<String, (PathBuf, Vec<Pid>)> = HashMap::new();
+    let mut table = HashMap::new();
+    let mut watchers = Vec::new();
     for (pid, p) in all {
         if let Some(parent) = p.parent() {
             children.entry(parent).or_default().push(*pid);
         }
+        let mut session = false;
         match stem(p).as_str() {
             "claude" => {
                 out.machine.claude_cpu += p.cpu_usage();
                 out.machine.claude_mem += p.memory();
                 out.machine.claude_procs += 1;
                 // Electron helpers (`--type=renderer` and so on) are not sessions.
-                if args(p).iter().any(|a| a.starts_with("--type=")) {
-                    continue;
-                }
-                if let Some(dir) = cwd(p) {
+                session = !args(p).iter().any(|a| a.starts_with("--type="));
+                if session && let Some(dir) = cwd(p) {
                     roots
                         .entry(key(&encode(dir)))
                         .or_insert_with(|| (dir.to_path_buf(), Vec::new()))
@@ -709,13 +749,15 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
                         .push(*pid);
                 }
             }
-            "cq" => {
-                if let (Some(name), Some(dir)) = (watch_name(&args(p)), cwd(p)) {
-                    out.watchers.insert(key(&encode(dir)), name);
-                }
-            }
+            "cq" => watchers.extend(watch_name(&args(p)).map(|name| (*pid, name))),
             _ => {}
         }
+        let info = ProcInfo {
+            parent: p.parent(),
+            session,
+            cwd: cwd(p).map(Path::to_path_buf),
+        };
+        table.insert(*pid, info);
     }
     // `<root>/heartbeat/NAME.pid` names a watcher whose arguments could not be read.
     for e in fs::read_dir(heartbeat).into_iter().flatten().flatten() {
@@ -725,16 +767,15 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
         };
         let pid = fs::read_to_string(e.path())
             .ok()
-            .and_then(|t| t.trim().parse::<u32>().ok());
-        if let Some(p) = pid.and_then(|n| all.get(&Pid::from_u32(n)))
-            && stem(p) == "cq"
-            && let Some(dir) = cwd(p)
+            .and_then(|t| t.trim().parse::<u32>().ok())
+            .map(Pid::from_u32);
+        if let Some(pid) = pid
+            && all.get(&pid).is_some_and(|p| stem(p) == "cq")
         {
-            out.watchers
-                .entry(key(&encode(dir)))
-                .or_insert_with(|| name.to_string());
+            watchers.push((pid, name.to_string()));
         }
     }
+    out.watchers = match_watchers(&table, watchers);
     // Each session's CPU and memory: its Claude processes and everything below them.
     for (k, (dir, pids)) in roots {
         let (mut cpu, mut mem) = (0.0, 0);
@@ -1205,6 +1246,84 @@ mod tests {
             watch_name(&["cq".into(), "send".into(), "--as".into(), "w1".into()]),
             None
         );
+    }
+
+    #[test]
+    fn a_watcher_belongs_to_the_session_above_it() {
+        use sysinfo::Pid;
+        let mut table = HashMap::new();
+        let mut add = |pid: u32, parent: Option<u32>, session: bool, cwd: Option<&str>| {
+            let info = ProcInfo {
+                parent: parent.map(Pid::from_u32),
+                session,
+                cwd: cwd.map(PathBuf::from),
+            };
+            table.insert(Pid::from_u32(pid), info);
+        };
+        // The app, a session under it, three shells, then `cq watch` in another folder.
+        add(1, None, true, Some("C:/Apps/Claude"));
+        add(
+            2,
+            Some(1),
+            true,
+            Some("D:/Code/tools/.claude/worktrees/wt-1"),
+        );
+        add(3, Some(2), false, Some("D:/Code/tools"));
+        add(4, Some(3), false, None);
+        add(5, Some(4), false, None);
+        add(10, Some(5), false, Some("D:/Code/queue"));
+        // A session without a readable folder is skipped for the one above it.
+        add(20, None, true, Some("D:/Code/app"));
+        add(21, Some(20), true, None);
+        add(22, Some(21), false, Some("D:/Code/elsewhere"));
+        // No session above: the watcher's own folder.
+        add(30, None, false, Some("D:/Code/solo"));
+        // Too far from its session: more than ANCESTRY_STEPS shells.
+        add(40, None, true, Some("D:/Code/far"));
+        for pid in 41..41 + ANCESTRY_STEPS as u32 {
+            add(pid, Some(pid - 1), false, None);
+        }
+        let deep = 41 + ANCESTRY_STEPS as u32;
+        add(deep, Some(deep - 1), false, Some("D:/Code/deep"));
+        // A parent loop ends.
+        add(80, Some(81), false, None);
+        add(81, Some(80), false, None);
+        add(82, Some(81), false, Some("D:/Code/loop"));
+
+        let names = [
+            (10, "queue-admin"),
+            (22, "w1"),
+            (30, "solo"),
+            (deep, "deep"),
+            (82, "l"),
+        ];
+        let mut got = match_watchers(
+            &table,
+            names
+                .iter()
+                .map(|(p, n)| (Pid::from_u32(*p), n.to_string())),
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
+        got.sort();
+        let want = [
+            ("D:/Code/app", "w1"),
+            ("D:/Code/deep", "deep"),
+            ("D:/Code/loop", "l"),
+            ("D:/Code/solo", "solo"),
+            ("D:/Code/tools/.claude/worktrees/wt-1", "queue-admin"),
+        ];
+        let mut want = want
+            .iter()
+            .map(|(d, n)| (key(&encode(Path::new(d))), n.to_string()))
+            .collect::<Vec<_>>();
+        want.sort();
+        assert_eq!(got, want);
+
+        // The first name for a folder wins: the arguments come before heartbeat files.
+        let two = [(10, "from-args"), (10, "from-heartbeat")];
+        let got = match_watchers(&table, two.map(|(p, n)| (Pid::from_u32(p), n.to_string())));
+        assert_eq!(got.values().collect::<Vec<_>>(), ["from-args"]);
     }
 
     #[test]
