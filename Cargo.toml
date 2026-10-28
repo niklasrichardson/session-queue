@@ -28,6 +28,10 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 jsonschema = { version = "0.60.1", default-features = false }
 tempfile = "3.27.0"
 
+# The fake session inbox in tests/inbox.rs needs ConnectNamedPipe.
+[target."cfg(windows)".dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_IO"] }
+
 [[bin]]
 name = "cq"
 path = "src/main.rs"

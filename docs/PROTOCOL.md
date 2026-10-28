@@ -16,6 +16,17 @@ How a Claude Code session uses `cq`: owning a name, keeping the watcher armed, h
 10. Start worker sessions detached. A linked side session sends turn-end notices to the session that started it.
 
 
+## Inbox mode (experimental)
+
+Instead of a Monitor, a session can run `cq watch --to-inbox`. The watcher then posts its lines into the session's own Claude Code inbox, as a cross-session message from `cq`. This saves the turn that each 30-minute re-arm costs. The details are in [Commands](COMMANDS.md#watch-into-the-inbox-experimental), and the reasons and open questions in [Design](DESIGN.md#inbox-mode-experimental). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
+
+1. Start the watcher once, in the background, with the Bash tool (not the Monitor tool): `cq watch --as NAME --to-inbox`. Do not re-arm it on a timer: it has no time limit.
+2. Queue events arrive as a message from `cq`. The first line is `cq watch (NAME): queue events`; the lines after it are the usual `CQ-NEW`, `CQ-WAKE` and `CQ-SLEEP` lines. Handle each line as under the Monitor (steps 3 to 9 above, and [Sleep and wake](#sleep-and-wake)).
+3. A message whose last line is `cq watch (NAME) stopped: ... Run /cq-start to re-arm.` means the watcher has ended. Run `/cq-start` to start it again.
+4. If the stopped line says NAME is asleep, do not re-arm. Run `/cq-stop` as for `CQ-SLEEP`.
+5. If the watcher exits 5 at start, an old watcher still holds the name: start it again with `--takeover`. The stopped message reports this error too.
+6. Exit 8 means the watcher could not reach the inbox. Only a session that has ended should see it.
+
 ## Rejoin after /clear
 
 After `/clear` or a compaction, a session forgets its queue name and rules, so it stops claiming messages and re-arming its watcher. `cq` remembers the owner of each name:

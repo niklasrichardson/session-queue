@@ -9,6 +9,7 @@ pub mod dispatch;
 pub mod done;
 pub mod error;
 pub mod fsutil;
+pub mod inbox;
 pub mod list;
 pub mod members;
 pub mod message;

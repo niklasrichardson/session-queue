@@ -12,6 +12,10 @@
 //! watcher also prints one `CQ-WAKE` line per message that has waited
 //! `WAKE_AFTER` for a sleeping name, and never claims or moves it.
 //!
+//! With `--to-inbox` (experimental), the lines go into the session's own
+//! Claude Code inbox instead of stdout (see `inbox`), and the watcher has no
+//! default time limit.
+//!
 //! There is no parent-process check. Under Git Bash the parent of `cq.exe`
 //! is a forked bash whose lifetime Cygwin controls, not the Monitor, and the
 //! check was the only path that could end a watcher with exit 0 and no
@@ -58,7 +62,8 @@ pub const WAKE_AFTER: Duration = Duration::from_secs(120);
 /// How a watcher run ended without an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
-    /// `--max-seconds`, or stdout closed: the session re-arms.
+    /// `--max-seconds`, stdout closed, or (with `--to-inbox`) a signal:
+    /// the session re-arms.
     Normal,
     /// The name is asleep: exit 7, and the session does not re-arm.
     Asleep,
@@ -68,7 +73,9 @@ pub enum Ended {
 pub struct WatchOptions {
     pub name: String,
     pub takeover: bool,
-    pub max_seconds: u64,
+    /// Stop after this many seconds. `None` runs until another reason
+    /// stops the watcher (`--to-inbox`).
+    pub max_seconds: Option<u64>,
     /// Full rescan interval. 60 seconds; shorter in tests.
     pub rescan: Duration,
     /// File-system events through `notify`. Off in tests that check the
@@ -84,7 +91,7 @@ impl WatchOptions {
         Self {
             name: name.into(),
             takeover: false,
-            max_seconds: DEFAULT_MAX_SECONDS,
+            max_seconds: Some(DEFAULT_MAX_SECONDS),
             rescan: Duration::from_secs(DEFAULT_RESCAN_SECONDS),
             fs_events: true,
             member_key: None,
@@ -92,21 +99,54 @@ impl WatchOptions {
     }
 }
 
-/// Run the watcher until `--max-seconds`, until `out` can no longer be
-/// written, or until the name is asleep. Each of these prints one line to
-/// stderr saying why, so an exit is never silent.
-pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<Ended> {
+/// Where a watcher's event lines go: stdout under a Monitor (`Lines`), or
+/// the session's own Claude Code inbox (`inbox::Inbox`).
+pub trait Sink {
+    /// Deliver one event line (without its newline), or hold it back.
+    fn line(&mut self, line: &str) -> io::Result<()>;
+    /// Called on every tick of the loop, to deliver lines held back.
+    fn tick(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    /// The watcher is stopping without an error: deliver what is held back
+    /// and, where someone can act on it, say why.
+    fn stopped(&mut self, _reason: &str, _ended: Ended) {}
+    /// A failed `line` or `tick`: `Ok` with the reason for a normal stop,
+    /// or the error the watcher exits with.
+    fn failed(&mut self, e: io::Error) -> Result<String>;
+}
+
+/// stdout under a Monitor: one line per event, flushed at once.
+pub struct Lines<W: Write>(pub W);
+
+impl<W: Write> Sink for Lines<W> {
+    fn line(&mut self, line: &str) -> io::Result<()> {
+        writeln!(self.0, "{line}")?;
+        self.0.flush()
+    }
+
+    fn failed(&mut self, e: io::Error) -> Result<String> {
+        // Nobody reads the output any more.
+        Ok(format!("stdout can no longer be written ({e})"))
+    }
+}
+
+/// Run the watcher until `--max-seconds`, until `out` fails, or until the
+/// name is asleep. Each of these prints one line to stderr saying why, so
+/// an exit is never silent. With `--to-inbox`, a signal also stops it.
+pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<Ended> {
     let name = opts.name.as_str();
     check_name("--as", name)?;
     // Asleep at start: take no lock and record nothing.
     if let Some(rec) = sleep::read(root, name) {
         say_asleep(out, &rec);
+        out.stopped("asleep", Ended::Asleep);
         let _ = writeln!(io::stderr(), "cq watch: exiting: asleep");
         return Ok(Ended::Asleep);
     }
     root.ensure_session_dirs(name)?;
     let started = Instant::now();
-    let deadline = started + Duration::from_secs(opts.max_seconds);
+    let deadline = opts.max_seconds.map(|s| started + Duration::from_secs(s));
 
     let _lock = take_lock(root, name, opts.takeover)?;
     let pid = std::process::id();
@@ -147,17 +187,19 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<E
     let mut woken: HashSet<String> = HashSet::new();
     let mut next_wake_scan = started;
 
-    let (reason, ended) = loop {
+    let end = loop {
         let now = Instant::now();
-        if now >= deadline {
-            break (
-                format!("--max-seconds {} reached", opts.max_seconds),
-                Ended::Normal,
-            );
+        if let (Some(d), Some(s)) = (deadline, opts.max_seconds)
+            && now >= d
+        {
+            break Ok((format!("--max-seconds {s} reached"), Ended::Normal));
+        }
+        if platform::interrupted() {
+            break Ok(("stopped by a signal".to_owned(), Ended::Normal));
         }
         if let Some(rec) = sleep::read(root, name) {
             say_asleep(out, &rec);
-            break ("asleep".to_owned(), Ended::Asleep);
+            break Ok(("asleep".to_owned(), Ended::Asleep));
         }
         if now >= next_heartbeat {
             heartbeat(root, name);
@@ -181,24 +223,22 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<E
         if pending && !paused {
             pending = false;
             if let Err(e) = scan(root, name, &mut announced, out) {
-                // Nobody reads the output any more.
-                break (
-                    format!("stdout can no longer be written ({e})"),
-                    Ended::Normal,
-                );
+                break out.failed(e).map(|r| (r, Ended::Normal));
             }
         }
         if coordinator && !paused && now >= next_wake_scan {
             next_wake_scan = now + WAKE_SCAN_EVERY;
             if let Err(e) = wake_scan(root, name, &mut woken, out) {
-                break (
-                    format!("stdout can no longer be written ({e})"),
-                    Ended::Normal,
-                );
+                break out.failed(e).map(|r| (r, Ended::Normal));
             }
         }
+        if let Err(e) = out.tick() {
+            break out.failed(e).map(|r| (r, Ended::Normal));
+        }
 
-        let wait = TICK.min(deadline.saturating_duration_since(Instant::now()));
+        let wait = deadline.map_or(TICK, |d| {
+            TICK.min(d.saturating_duration_since(Instant::now()))
+        });
         let stopped = match &events {
             Some(rx) => match rx.recv_timeout(wait) {
                 Ok(()) => {
@@ -229,15 +269,17 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<E
     if fs::read_to_string(&pid_file).is_ok_and(|s| s.trim() == pid.to_string()) {
         let _ = fs::remove_file(&pid_file);
     }
+    let (reason, ended) = end?;
+    out.stopped(&reason, ended);
     // Ignore a failed write: stderr may be the same closed pipe as stdout.
     let _ = writeln!(io::stderr(), "cq watch: exiting: {reason}");
     Ok(ended)
 }
 
-/// Print the `CQ-SLEEP` line. A failed write is ignored: the watcher exits
-/// either way.
-fn say_asleep(out: &mut impl Write, rec: &sleep::Sleep) {
-    let _ = writeln!(out, "CQ-SLEEP {}", rec.describe()).and_then(|()| out.flush());
+/// Deliver the `CQ-SLEEP` line. A failed write is ignored: the watcher
+/// exits either way.
+fn say_asleep(out: &mut impl Sink, rec: &sleep::Sleep) {
+    let _ = out.line(&format!("CQ-SLEEP {}", rec.describe()));
 }
 
 /// Take the exclusive lock on `heartbeat/<name>.lock`. The OS releases it
@@ -304,7 +346,7 @@ fn scan(
     root: &Root,
     name: &str,
     announced: &mut HashSet<String>,
-    out: &mut impl Write,
+    out: &mut impl Sink,
 ) -> io::Result<()> {
     let inbox = root.inbox(name);
     let present = fsutil::json_stems(&inbox, is_valid_id);
@@ -320,8 +362,7 @@ fn scan(
             // Announce it anyway; `cq claim` decides what happens to it.
             Err(_) => Vec::new(),
         };
-        writeln!(out, "{}", event_line("CQ-NEW", name, &id, &bytes))?;
-        out.flush()?;
+        out.line(&event_line("CQ-NEW", name, &id, &bytes))?;
         announced.insert(id);
     }
     Ok(())
@@ -335,7 +376,7 @@ fn wake_scan(
     root: &Root,
     name: &str,
     woken: &mut HashSet<String>,
-    out: &mut impl Write,
+    out: &mut impl Sink,
 ) -> io::Result<()> {
     for to in sleep::asleep(root) {
         if to == name {
@@ -358,8 +399,7 @@ fn wake_scan(
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                 Err(_) => Vec::new(),
             };
-            writeln!(out, "{}", event_line("CQ-WAKE", &to, &id, &bytes))?;
-            out.flush()?;
+            out.line(&event_line("CQ-WAKE", &to, &id, &bytes))?;
             woken.insert(id);
         }
     }

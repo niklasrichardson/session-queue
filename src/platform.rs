@@ -1,5 +1,5 @@
-//! Process helpers: stop an old watcher, and check stdin for input without
-//! blocking.
+//! Process helpers: stop an old watcher, check stdin for input without
+//! blocking, and connect to a Claude Code session's inbox.
 //!
 //! Windows and macOS are the targets; the Unix version also works on Linux.
 
@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::error::{CqError, Result};
 
-pub use imp::{stdin_has_input, terminate};
+pub use imp::{InboxConn, open_inbox, stdin_has_input, terminate};
 
 /// How long `stdin_has_input` waits for the first byte on an open, empty
 /// pipe. A pipeline writer (`echo ... | cq done`) can start after `cq`;
@@ -35,6 +35,16 @@ mod imp {
     };
 
     use super::{CqError, PIPE_GRACE, Result};
+
+    /// A client end of a Claude Code session's inbox named pipe.
+    pub type InboxConn = std::fs::File;
+
+    /// Connect to a session's inbox named pipe (`\\.\pipe\...`), write only.
+    /// Fails at once when the pipe does not exist or every instance is
+    /// busy; the caller retries.
+    pub fn open_inbox(path: &std::ffi::OsStr) -> std::io::Result<InboxConn> {
+        std::fs::OpenOptions::new().write(true).open(path)
+    }
 
     /// Owns a process handle and closes it on drop.
     struct Handle(HANDLE);
@@ -153,6 +163,18 @@ mod imp {
 
     /// How long `terminate` waits after SIGTERM before it sends SIGKILL.
     const KILL_AFTER: Duration = Duration::from_secs(5);
+    /// A write to a session's inbox socket that takes longer has failed.
+    const INBOX_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// A connection to a Claude Code session's inbox socket.
+    pub type InboxConn = std::os::unix::net::UnixStream;
+
+    /// Connect to a session's inbox Unix socket.
+    pub fn open_inbox(path: &std::ffi::OsStr) -> io::Result<InboxConn> {
+        let s = InboxConn::connect(path)?;
+        s.set_write_timeout(Some(INBOX_WRITE_TIMEOUT))?;
+        Ok(s)
+    }
 
     /// Bytes waiting to be read on `fd` (a pipe or socket), or `None` when
     /// the count is not available.
@@ -473,19 +495,21 @@ pub fn stop_agent(agent: &mut Agent) -> Result<()> {
     Ok(())
 }
 
-static DISPATCH_INTERRUPTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-pub fn dispatch_interrupted() -> bool {
-    DISPATCH_INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed)
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// True once Ctrl+C (Windows console) or SIGINT, SIGTERM or SIGHUP (Unix)
+/// arrived after `install_interrupt_handler`. Used by `dispatch` and by
+/// `watch --to-inbox`.
+pub fn interrupted() -> bool {
+    INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-pub fn install_dispatch_interrupt_handler() -> Result<()> {
-    DISPATCH_INTERRUPTED.store(false, std::sync::atomic::Ordering::Relaxed);
+pub fn install_interrupt_handler() -> Result<()> {
+    INTERRUPTED.store(false, std::sync::atomic::Ordering::Relaxed);
     #[cfg(windows)]
     {
         unsafe extern "system" fn on_interrupt(kind: u32) -> i32 {
             if kind <= 2 {
-                DISPATCH_INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
+                INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
                 1
             } else {
                 0
@@ -497,7 +521,7 @@ pub fn install_dispatch_interrupt_handler() -> Result<()> {
         } == 0
         {
             return Err(CqError::io(
-                "install dispatch interrupt handler",
+                "install interrupt handler",
                 std::io::Error::last_os_error(),
             ));
         }
@@ -505,7 +529,7 @@ pub fn install_dispatch_interrupt_handler() -> Result<()> {
     #[cfg(unix)]
     {
         extern "C" fn on_interrupt(_: libc::c_int) {
-            DISPATCH_INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         // SAFETY: static signal handler only writes an atomic flag.
         unsafe {
@@ -523,7 +547,7 @@ pub fn install_dispatch_interrupt_handler() -> Result<()> {
                 ) == libc::SIG_ERR
             {
                 return Err(CqError::io(
-                    "install dispatch signal handler",
+                    "install signal handler",
                     std::io::Error::last_os_error(),
                 ));
             }

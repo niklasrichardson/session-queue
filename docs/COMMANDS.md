@@ -10,7 +10,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | --- | --- |
 | `cq init` | Create the layout under `CQ_ROOT`. |
 | `cq send --from A --to B --type task\|result\|info [--reply-to ID] [--parent ID] [--status ok\|failed\|rejected] [--input FILE]` | Read `{"subject": "...", "body": "..."}`, write the message, print its ID. |
-| `cq watch --as B [--takeover] [--max-seconds 1790]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)). |
+| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)). Experimental: `--to-inbox` posts the lines into the session's own Claude Code inbox instead (see [Watch into the inbox](#watch-into-the-inbox-experimental)). |
 | `cq dispatch --as B --codex FILE --workspace DIR --instructions FILE --allow-from NAME [--allow-from NAME ...] [--sandbox read-only\|workspace-write] [--timeout-seconds 600] [--once]` | Run one fresh Codex process per task, serially. See [Codex setup](CODEX.md). |
 | `cq claim --as B ID` | Move the message to `.processing/` and print its JSON. |
 | `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}`. |
@@ -75,6 +75,26 @@ cq wake --as lead worker-a
   CQ-WAKE 2026-10-28T09:12:03Z (09:12 GMT) to=worker-a from=lead type=task id=20261028T091000Z-lead-ab12 subject="Run the tests"
   ```
 
+## Watch into the inbox (experimental)
+
+`cq watch --as B --to-inbox` posts its lines into the Claude Code session that started it, instead of printing them. A message to an idle session starts a new turn, so the session needs no Monitor and no re-arm every 30 minutes. How a session runs it is in [Session protocol](PROTOCOL.md#inbox-mode-experimental). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
+
+- **Inbox address.** Claude Code exports `CLAUDE_CODE_MESSAGING_SOCKET` (a Unix socket, or a named pipe such as `\\.\pipe\LOCAL\cc-msg-<hex>` on Windows) and `CLAUDE_CODE_MESSAGING_TOKEN` to Bash commands and hooks. If either is missing or empty, `cq watch` exits 64. It never prints the token or the address.
+- **One post.** Connect, write `{"type":"auth","token":"..."}`, then `{"type":"user","from":"cq","message":{"role":"user","content":"..."}}`, each followed by a newline, then close. `cq` connects only when the message is ready, because Claude Code closes a connection that sends no complete line within 30 seconds.
+- **Content.** The header line `cq watch (B): queue events`, then the event lines unchanged (`CQ-NEW`, `CQ-WAKE`, `CQ-SLEEP`), one per line.
+- **Batching.** Lines that arrive within 2 seconds of the first held line go in one message. Posts are at least 5 seconds apart. One message holds at most 50 event lines; the rest follow in the next post. Messages already waiting at start go in the first post. The values are `BATCH_WINDOW`, `MIN_GAP` and `MAX_LINES` in `src/inbox.rs`.
+- **No time limit.** With `--to-inbox`, `--max-seconds` has no default. The flag still works when given.
+- **Stopped message.** When the watcher stops, it posts one last message. Lines still held go in the same message, before the stopped line:
+
+  ```text
+  cq watch (B) stopped: <reason>. Run /cq-start to re-arm.
+  cq watch (B) stopped: B is asleep. Do not re-arm; run /cq-start only when asked to wake.
+  ```
+
+  The reason is `--max-seconds N reached`, `stopped by a signal`, or `error: <the cq: message>` (for example exit 5, another watcher is running). The lock, pid file, heartbeat, `PAUSE` and `--takeover` work as without `--to-inbox`.
+- **Signals.** In this mode the watcher catches SIGINT, SIGTERM and SIGHUP (macOS and Linux) and Ctrl+C (Windows console), and posts the stopped message. So on macOS and Linux, a watcher replaced by `--takeover` (SIGTERM) says so. On Windows, `--takeover` ends the old watcher at once, and it posts nothing.
+- **Unreachable inbox.** Each post is tried 4 times, 1, 2 and 4 seconds apart. If every try fails, the session has probably ended: the watcher exits 8 with a `cq:` line on stderr, and posts nothing more.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -87,7 +107,8 @@ cq wake --as lead worker-a
 | 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. |
 | 6 | `done`: the message is not claimed by this session. |
 | 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. |
-| 64 | Bad arguments or bad JSON input, or `done` input without `--reply` or `--reject`. |
+| 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. |
+| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, or `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`. |
 | 70 | Dispatch timeout/interruption (task stays claimed), or any other error (I/O, `CQ_ROOT` missing or not initialised). |
 
 

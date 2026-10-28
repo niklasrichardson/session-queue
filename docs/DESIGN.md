@@ -47,6 +47,20 @@ Implementation choices that the specification left open, and what `cq` does. The
 - The watcher exits 0 at `--max-seconds` or when stdout can no longer be written, and prints one line to stderr saying why (`cq watch: exiting: --max-seconds 1790 reached`). Every error exit prints `cq: <reason>`. It removes the pid file if the file still holds its own ID.
 - The watcher exits 7 with `CQ-SLEEP` while its name is asleep (see [Sleep](#sleep)). Exit 7 is not an error, so it prints no `cq:` line.
 
+## Inbox mode (experimental)
+
+`cq watch --to-inbox` posts the watcher's lines into the session's own Claude Code inbox instead of stdout. The commands are in [Commands](COMMANDS.md#watch-into-the-inbox-experimental) and the session steps in [Session protocol](PROTOCOL.md#inbox-mode-experimental).
+
+- **Why.** Under the Monitor, the watcher must be re-armed at least every 30 minutes, because the Monitor expires. Each re-arm is a model turn that reads the whole context again. An idle session pays for 2 re-arms an hour for nothing. A watcher that posts into the inbox can run for hours, and the session pays only for turns that have queue events.
+- **The documented path.** Claude Code gives each session an inbox and exports its address and a token to the session's Bash commands and hooks ([The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket)). It delivers a message from the session's own child process, and a message to an idle session starts a new turn. On Windows the token in the auth line is the only proof that the poster is a child of the session, so `cq` always sends it. The owner tested this live on 28 Oct 2026: a background child posted after 180 seconds and woke an idle session.
+- **Batching.** Claude Code refuses rapid bursts to one inbox and drops identical repeats, and each message to an idle session costs a turn. So `cq` holds lines for 2 seconds and keeps posts 5 seconds apart. The burst limit is not documented, so 5 seconds is a guess. A post holds at most 50 lines.
+- **One last message.** A watcher that stops posts why, with any held lines, in one message, so the session knows to re-arm (or, when asleep, not to). One message costs one turn, not two. Exit 7 and `CQ-SLEEP` keep their meaning.
+- **Exit 8.** A post that still fails after 4 tries over about 7 seconds means the inbox is gone, which means the session has ended. The watcher stops, so it never runs on without a reader. It is a new code because sessions act on exit codes, and none of the others fits.
+- **No default `--max-seconds`.** The time limit only exists because the Monitor expires.
+- **Signals.** The watcher catches SIGTERM, so on macOS and Linux a watcher replaced by `--takeover` posts a stopped message. If it is still posting 5 seconds later, `--takeover` sends SIGKILL and the message can be lost. On Windows, `--takeover` uses `TerminateProcess`, which cannot be caught, so the old watcher posts nothing.
+- **Transport.** A named pipe opened with `std::fs::OpenOptions` on Windows, and `std::os::unix::net::UnixStream` elsewhere, in `src/platform.rs`. No new dependency. The tests' fake inbox needs the `Win32_System_IO` feature of windows-sys, as a dev-dependency only.
+- **Unknowns.** Whether the desktop app stops the processes of an idle session, and how long the inbox stays reachable. How Claude Code's Bash tool reports the watcher's exit next to the stopped message. A watcher whose session ended without stopping it finds out only at its next post; until then it holds the name and writes its heartbeat. Long runs (many hours) have not been tested.
+
 ## Sleep
 
 Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Session protocol](PROTOCOL.md#sleep-and-wake).
