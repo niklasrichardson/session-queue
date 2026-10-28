@@ -518,50 +518,172 @@ pub fn session_state(s: &Snapshot, row: &sessions::Row) -> (sessions::State, boo
     (row.state, sessions::warn(row.state, waiting, claimed))
 }
 
-/// The Sessions screen: a strip for the whole computer, then one row per Claude Code
-/// session. Only counts, times, model names and titles are shown, never message text.
+/// Height of the CPU and Memory boxes, borders included.
+const MACHINE_ROWS: u16 = 9;
+/// Narrower than this, a box shows its figures without the graph.
+const GRAPH_MIN: u16 = 12;
+
+/// The CPU and Memory boxes side by side: figures on the left, and on the right a graph of
+/// the whole computer with Claude's share drawn over it in a second colour.
+fn draw_machine(f: &mut Frame, area: Rect, r: &sessions::Report, t: &Theme) {
+    let m = match (&r.machine, r.ready) {
+        (Some(m), true) => m,
+        (_, ready) => {
+            let line = if ready {
+                Line::styled(
+                    "Process data unavailable: CPU and memory show -, and the state uses file activity only.",
+                    t.warn,
+                )
+            } else {
+                Line::styled("Collecting sessions…", t.dim)
+            };
+            f.render_widget(Paragraph::new(line).block(t.block(" This computer ")), area);
+            return;
+        }
+    };
+    let [cpu, mem] = Layout::horizontal([Constraint::Ratio(1, 2); 2]).areas(area);
+    let now = m.sample();
+    let series = |get: fn(&sessions::Sample) -> f32| r.history.iter().map(get).collect::<Vec<_>>();
+    machine_box(
+        f,
+        cpu,
+        " CPU ",
+        &m.cpu_figures(),
+        (now.cpu, now.claude_cpu),
+        (series(|s| s.cpu), series(|s| s.claude_cpu)),
+        t,
+    );
+    machine_box(
+        f,
+        mem,
+        " Memory ",
+        &m.mem_figures(),
+        (now.mem, now.claude_mem),
+        (series(|s| s.mem), series(|s| s.claude_mem)),
+        t,
+    );
+}
+
+/// One box. `now` and `history` are (whole computer, Claude), 0 to 100.
+fn machine_box(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    figures: &[(&str, String)],
+    now: (f32, f32),
+    history: (Vec<f32>, Vec<f32>),
+    t: &Theme,
+) {
+    use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
+    // The whole computer, and Claude's share of it.
+    let (whole, claude) = (t.ok, t.alt);
+    let block = t.block(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // The first figure is the whole computer's, and the one labelled Claude is Claude's.
+    let label_w = figures.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let lines: Vec<Line> = figures
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let (mark, style) = match (i, *label) {
+                (0, _) => ("■ ", whole),
+                (_, "Claude") => ("■ ", claude),
+                _ => ("  ", t.text),
+            };
+            Line::from(vec![
+                Span::styled(mark, style),
+                Span::styled(format!("{label:<label_w$}  "), t.dim),
+                Span::styled(value.clone(), style),
+            ])
+        })
+        .collect();
+    let fig_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 1;
+    let top = inner.height.saturating_sub(lines.len() as u16) / 2;
+    let (figs, graph) = if inner.width >= fig_w + 1 + GRAPH_MIN {
+        let [a, _, b] = Layout::horizontal([
+            Constraint::Length(fig_w),
+            Constraint::Length(1),
+            Constraint::Min(GRAPH_MIN),
+        ])
+        .areas(inner);
+        (a, Some(b))
+    } else {
+        (inner, None)
+    };
+    let mut padded = vec![Line::default(); top as usize];
+    padded.extend(lines);
+    f.render_widget(Paragraph::new(padded), figs);
+    let Some(graph) = graph else {
+        return;
+    };
+
+    // With history, a scrolling graph that fills from the right.
+    if history.0.len() >= 2 {
+        let cap = sessions::HISTORY;
+        let points = |v: &[f32]| {
+            let start = cap.saturating_sub(v.len());
+            v.iter()
+                .enumerate()
+                .map(|(i, y)| ((start + i) as f64, f64::from(*y)))
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (points(&history.0), points(&history.1));
+        let set = |data, style| {
+            Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Bar)
+                .style(style)
+                .data(data)
+        };
+        f.render_widget(
+            Chart::new(vec![set(&a, whole), set(&b, claude)])
+                .x_axis(Axis::default().bounds([0.0, (cap - 1) as f64]))
+                .y_axis(
+                    Axis::default()
+                        .bounds([0.0, 100.0])
+                        .style(t.dim)
+                        .labels([Span::styled("0%", t.dim), Span::styled("100%", t.dim)]),
+                ),
+            graph,
+        );
+        return;
+    }
+
+    // A one-shot export has no history: one bar for now, Claude's share first.
+    let w = usize::from(graph.width);
+    let cells = |v: f32| ((f64::from(v) / 100.0 * w as f64).round() as usize).min(w);
+    let (all, mine) = (cells(now.0), cells(now.1).min(cells(now.0)));
+    let full = t.bars.full;
+    let bar = Line::from(vec![
+        Span::styled(full.repeat(mine), claude),
+        Span::styled(full.repeat(all - mine), whole),
+        Span::styled("░".repeat(w - all), t.dim),
+    ]);
+    let mut rows = vec![Line::default(); usize::from(graph.height.saturating_sub(5) / 2)];
+    rows.extend([bar.clone(), bar.clone(), bar]);
+    rows.push(Line::default());
+    rows.push(Line::styled(
+        "now · the graph builds in the live view",
+        t.dim,
+    ));
+    f.render_widget(Paragraph::new(rows), graph);
+}
+
+/// The Sessions screen: CPU and Memory boxes for the whole computer, then one row per Claude
+/// Code session. Only counts, times, model names and titles are shown, never message text.
 fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
     use sessions::{State, bytes, count, usd};
     let [head, strip, table] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Length(MACHINE_ROWS),
         Constraint::Min(4),
     ])
     .areas(f.area());
     header(f, head, root, s, bodies, Screen::Sessions, t);
-
     let r = &s.sessions;
-    let gb = |n: u64| format!("{:.1}", n as f64 / f64::from(1u32 << 30));
-    let line = match (&r.machine, r.ready) {
-        (_, false) => Line::styled("Collecting sessions…", t.dim),
-        (None, true) => Line::styled(
-            "Process data unavailable: CPU and memory show -, and the state uses file activity only.",
-            t.warn,
-        ),
-        (Some(m), true) => Line::from(vec![
-            Span::styled("CPU ", t.dim),
-            Span::styled(
-                format!("{:.1}%", m.cpu),
-                if m.cpu >= 80.0 { t.warn } else { t.text },
-            ),
-            Span::styled(format!(" of {} cores   memory ", m.cores), t.dim),
-            Span::styled(
-                format!("{} / {} GB", gb(m.mem_used), gb(m.mem_total)),
-                t.text,
-            ),
-            Span::styled(
-                format!("   Claude processes ({}): CPU ", m.claude_procs),
-                t.dim,
-            ),
-            Span::styled(format!("{:.1}%", m.claude_cpu), t.info),
-            Span::styled(" of one core, memory ", t.dim),
-            Span::styled(format!("{} GB", gb(m.claude_mem)), t.info),
-        ]),
-    };
-    f.render_widget(
-        Paragraph::new(line).block(t.block(" This computer ")),
-        strip,
-    );
+    draw_machine(f, strip, r, t);
 
     // Columns: header, width, priority. A narrow terminal drops the highest numbers first.
     let name_w = name_width("session", r.rows.iter().map(|w| w.name.as_str()));

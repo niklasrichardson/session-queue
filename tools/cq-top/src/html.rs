@@ -608,18 +608,20 @@ fn problem_table(b: &mut String, s: &Snapshot) {
 fn sessions_table(b: &mut String, s: &Snapshot) {
     use sessions::{State, bytes, count, usd};
     let r = &s.sessions;
-    let gb = |n: u64| format!("{:.1} GB", n as f64 / f64::from(1u32 << 30));
+    let list = |figs: &[(&str, String)]| {
+        figs.iter()
+            .map(|(l, v)| format!("{l} {}", esc(v)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let machine = match &r.machine {
         Some(m) => format!(
-            "This computer: CPU {:.1}% of {} cores, memory {} of {}. \
-             Claude processes ({}): CPU {:.1}% of one core, memory {}.",
-            m.cpu,
-            m.cores,
-            gb(m.mem_used),
-            gb(m.mem_total),
+            "This computer. CPU: {}. Memory: {}. Claude is its {} processes together, and \
+             its CPU here is a share of the whole computer. A busy core is one at {}% or more.",
+            list(&m.cpu_figures()),
+            list(&m.mem_figures()),
             m.claude_procs,
-            m.claude_cpu,
-            gb(m.claude_mem)
+            sessions::BUSY_CORE
         ),
         None => "Process data unavailable: CPU and memory show -, and the state uses file \
                  activity only."
@@ -630,7 +632,7 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
         "<section class=\"card\"><h2>Sessions <span class=\"count\">{}</span></h2>\
          <p class=\"sub\">{machine} Tokens and cost count from local midnight, the session \
          and its subagents together. The cost is an estimate at API list prices, not the \
-         plan's bill. CPU: 100% is one core.</p><div class=\"scroll\"><table><thead><tr>\
+         plan's bill. In the table, CPU 100% is one core.</p><div class=\"scroll\"><table><thead><tr>\
          <th>Session</th><th>State</th><th>Model</th><th class=\"n\">Context</th>\
          <th class=\"n\">Tokens today</th><th class=\"n\">Est. cost today</th>\
          <th class=\"n\">CPU %</th><th class=\"n\">Memory</th><th class=\"n\">Sub</th>\

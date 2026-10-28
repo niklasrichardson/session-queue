@@ -75,7 +75,11 @@ The state glyphs are `◌` queued, `◐` claimed, `●` done, `✕` rejected and
 
 One row per Claude Code session on this computer, with what it costs today and whether it is working.
 
-- **This computer.** CPU use of the whole computer (0 to 100 % across all cores), memory used and total, and the CPU and memory of all Claude processes together.
+- **CPU and Memory.** Two boxes at the top. Each has figures on the left and a graph on the right. The graph shows the whole computer in one colour and Claude's share of it in a second colour, both 0 to 100 %.
+  - CPU figures: **Total** (0 to 100 % across all cores), **Claude** (all Claude processes together, as a share of the whole computer, so it fits the same graph), **Busy cores** (cores at 50 % or more of that core) and **Cores**. The table's cpu% column stays in % of one core.
+  - Memory figures: **Used** of total, **Available**, **Swap** used of total, and **Claude** (all Claude processes together). GB here are GiB, as Task Manager and `top` count them.
+  - The graph keeps one sample per scan, the newest 120 (6 minutes), and fills from the right. The history exists only in the live view. An export takes one snapshot, so it draws the current level as one bar, Claude's share first, with the note "the graph builds in the live view". The `--html` dashboard gives the same figures as text.
+  - A box too narrow for its graph shows the figures only.
 - **Sessions.** One row per session, sorted working, then recent, then idle. Within each group, the newest activity is first.
 
 | Column | What it shows |
@@ -131,11 +135,11 @@ The screen and the exports never show message text. They show only counts, times
 
 ### Without process data
 
-If the process list cannot be read, the strip says so. CPU and memory show `-`, no cq watcher is matched (so the cq columns show `-`), and the state uses file activity only. A process whose working folder cannot be read, for example one owned by another user, is not matched to a session.
+If the process list cannot be read, one box says so in place of the CPU and Memory boxes. CPU and memory show `-`, no cq watcher is matched (so the cq columns show `-`), and the state uses file activity only. A process whose working folder cannot be read, for example one owned by another user, is not matched to a session.
 
 ### Platforms
 
-Process data comes from the `sysinfo` crate. The screen is tested on Windows. It is expected to work on macOS and Linux, but it is not tested there yet: see issue #17.
+Process data and the CPU and Memory figures come from the `sysinfo` crate, with the same code on every system. The screen is tested on Windows. It is expected to work on macOS and Linux, but it is not tested there yet: see issue #17.
 
 ## Themes
 

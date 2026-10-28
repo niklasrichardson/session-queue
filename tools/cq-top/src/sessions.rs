@@ -6,7 +6,7 @@
 //! optional locks off, so it never writes the index.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     env, fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -611,18 +611,110 @@ fn git_worker(cache: GitCache) {
 
 // ---------- processes ----------
 
-/// Whole-computer figures for the strip at the top.
+/// A core at least this busy (% of that core) counts in the busy-cores figure.
+pub const BUSY_CORE: f32 = 50.0;
+/// Samples kept for the CPU and Memory graphs: 6 minutes at one per scan.
+pub const HISTORY: usize = 120;
+
+/// Whole-computer figures for the CPU and Memory boxes at the top.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Machine {
     /// 0 to 100, all cores together.
     pub cpu: f32,
     pub cores: usize,
+    /// Cores at `BUSY_CORE` % or more.
+    pub busy_cores: usize,
     pub mem_used: u64,
     pub mem_total: u64,
+    pub mem_available: u64,
+    pub swap_used: u64,
+    pub swap_total: u64,
     /// Every process named `claude`, sessions and helpers: % of one core, and bytes.
     pub claude_cpu: f32,
     pub claude_mem: u64,
     pub claude_procs: usize,
+}
+
+/// `part` as a % of `total`, 0 to 100; an empty total gives 0.
+fn percent(part: f64, total: f64) -> f32 {
+    if total > 0.0 {
+        (100.0 * part / total).clamp(0.0, 100.0) as f32
+    } else {
+        0.0
+    }
+}
+
+impl Machine {
+    /// Claude's CPU as a % of the whole computer, on the same scale as `cpu`.
+    pub fn claude_share(&self) -> f32 {
+        percent(f64::from(self.claude_cpu), 100.0 * self.cores as f64)
+    }
+
+    pub fn sample(&self) -> Sample {
+        let total = self.mem_total as f64;
+        Sample {
+            cpu: self.cpu.clamp(0.0, 100.0),
+            claude_cpu: self.claude_share(),
+            mem: percent(self.mem_used as f64, total),
+            claude_mem: percent(self.claude_mem as f64, total),
+        }
+    }
+
+    /// The CPU box's figures: (label, value).
+    pub fn cpu_figures(&self) -> [(&'static str, String); 4] {
+        [
+            ("Total", format!("{:.1}%", self.cpu)),
+            ("Claude", format!("{:.1}%", self.claude_share())),
+            ("Busy cores", self.busy_cores.to_string()),
+            ("Cores", self.cores.to_string()),
+        ]
+    }
+
+    /// The Memory box's figures: (label, value).
+    pub fn mem_figures(&self) -> [(&'static str, String); 4] {
+        [
+            ("Used", of_gb(self.mem_used, self.mem_total)),
+            ("Available", gb(self.mem_available)),
+            ("Swap", of_gb(self.swap_used, self.swap_total)),
+            ("Claude", gb(self.claude_mem)),
+        ]
+    }
+}
+
+/// One point on the graphs, every figure 0 to 100 % of the whole computer.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Sample {
+    pub cpu: f32,
+    pub claude_cpu: f32,
+    pub mem: f32,
+    pub claude_mem: f32,
+}
+
+/// The newest `cap` samples, oldest first. Lives only in the running view.
+#[derive(Debug)]
+pub struct History {
+    cap: usize,
+    samples: VecDeque<Sample>,
+}
+
+impl History {
+    pub fn new(cap: usize) -> History {
+        History {
+            cap: cap.max(1),
+            samples: VecDeque::with_capacity(cap.max(1)),
+        }
+    }
+
+    pub fn push(&mut self, s: Sample) {
+        if self.samples.len() == self.cap {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(s);
+    }
+
+    pub fn to_vec(&self) -> Vec<Sample> {
+        self.samples.iter().copied().collect()
+    }
 }
 
 /// What the process list says, keyed by encoded folder.
@@ -713,8 +805,16 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
         machine: Machine {
             cpu: sys.global_cpu_usage(),
             cores: sys.cpus().len(),
+            busy_cores: sys
+                .cpus()
+                .iter()
+                .filter(|c| c.cpu_usage() >= BUSY_CORE)
+                .count(),
             mem_used: sys.used_memory(),
             mem_total: sys.total_memory(),
+            mem_available: sys.available_memory(),
+            swap_used: sys.used_swap(),
+            swap_total: sys.total_swap(),
             ..Machine::default()
         },
         ..Procs::default()
@@ -825,6 +925,8 @@ pub struct Report {
     pub rows: Vec<Row>,
     /// Where the transcripts were looked for.
     pub projects: PathBuf,
+    /// One sample per scan, oldest first; empty in a one-shot export.
+    pub history: Vec<Sample>,
 }
 
 /// Where the Sessions screen reads from.
@@ -966,6 +1068,7 @@ impl Scanner {
             machine: procs.map(|p| p.machine),
             rows,
             projects: self.src.projects.clone(),
+            history: Vec::new(),
         }
     }
 
@@ -1079,8 +1182,13 @@ impl Collector {
         thread::spawn(move || {
             let mut sc = Scanner::new(src, Git::Background(cache));
             sc.prime();
+            let mut history = History::new(HISTORY);
             loop {
-                let r = sc.scan();
+                let mut r = sc.scan();
+                if let Some(m) = &r.machine {
+                    history.push(m.sample());
+                }
+                r.history = history.to_vec();
                 *out.lock().unwrap_or_else(|e| e.into_inner()) = r;
                 thread::sleep(SCAN_EVERY);
             }
@@ -1147,6 +1255,17 @@ pub fn bytes(n: u64) -> String {
     } else {
         format!("{:.1}G", mb / 1024.0)
     }
+}
+
+/// `37.4 GB`, in GiB as Task Manager and `top` count them.
+pub fn gb(n: u64) -> String {
+    format!("{:.1} GB", n as f64 / f64::from(1u32 << 30))
+}
+
+/// `37.4 / 63.9 GB`.
+pub fn of_gb(part: u64, total: u64) -> String {
+    let g = |n: u64| n as f64 / f64::from(1u32 << 30);
+    format!("{:.1} / {:.1} GB", g(part), g(total))
 }
 
 /// `$12.34`, or `?` when a model had no price.
@@ -1628,6 +1747,66 @@ mod tests {
         touch(&main.join("a.txt"), 1_700_000_900);
         assert_eq!(last_change(&main), Some((Change::Edit, 1_700_000_900)));
         assert_eq!(last_change(&wt), Some((Change::Commit, 1_700_000_500)));
+    }
+
+    #[test]
+    fn history_keeps_the_newest_samples_in_order() {
+        let at = |n: f32| Sample {
+            cpu: n,
+            ..Sample::default()
+        };
+        let mut h = History::new(3);
+        assert!(h.to_vec().is_empty());
+        h.push(at(1.0));
+        h.push(at(2.0));
+        assert_eq!(h.to_vec(), [at(1.0), at(2.0)]);
+        h.push(at(3.0));
+        h.push(at(4.0));
+        h.push(at(5.0));
+        assert_eq!(h.to_vec(), [at(3.0), at(4.0), at(5.0)]);
+        // A capacity of 0 still keeps the newest sample.
+        let mut one = History::new(0);
+        one.push(at(1.0));
+        one.push(at(2.0));
+        assert_eq!(one.to_vec(), [at(2.0)]);
+    }
+
+    #[test]
+    fn machine_figures_are_short_and_share_one_scale() {
+        let m = Machine {
+            cpu: 12.84,
+            cores: 32,
+            busy_cores: 3,
+            mem_used: 40_157_247_078,  // 37.4 GiB
+            mem_total: 68_611_850_240, // 63.9 GiB
+            mem_available: 28_454_603_162,
+            swap_used: 0,
+            swap_total: 4 << 30,
+            claude_cpu: 160.0,
+            claude_mem: 7 << 30,
+            claude_procs: 26,
+        };
+        let cpu = m.cpu_figures().map(|(l, v)| format!("{l} {v}"));
+        assert_eq!(
+            cpu,
+            ["Total 12.8%", "Claude 5.0%", "Busy cores 3", "Cores 32"]
+        );
+        let mem = m.mem_figures().map(|(l, v)| format!("{l} {v}"));
+        assert_eq!(
+            mem,
+            [
+                "Used 37.4 / 63.9 GB",
+                "Available 26.5 GB",
+                "Swap 0.0 / 4.0 GB",
+                "Claude 7.0 GB"
+            ]
+        );
+        // 160 % of one core on 32 cores is 5 % of the computer.
+        let s = m.sample();
+        assert!((s.claude_cpu - 5.0).abs() < 1e-4);
+        assert!((s.mem - 58.53).abs() < 0.01 && (s.claude_mem - 10.95).abs() < 0.01);
+        // Nothing known gives zeros, not NaN.
+        assert_eq!(Machine::default().sample(), Sample::default());
     }
 
     #[test]

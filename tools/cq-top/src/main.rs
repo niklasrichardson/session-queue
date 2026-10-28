@@ -878,8 +878,12 @@ mod tests {
                 machine: Some(sessions::Machine {
                     cpu: 12.5,
                     cores: 8,
+                    busy_cores: 1,
                     mem_used: 8 << 30,
                     mem_total: 32 << 30,
+                    mem_available: 24 << 30,
+                    swap_used: 1 << 30,
+                    swap_total: 4 << 30,
                     claude_cpu: 7.0,
                     claude_mem: 2 << 30,
                     claude_procs: 3,
@@ -910,6 +914,7 @@ mod tests {
                     },
                 ],
                 projects: PathBuf::from("/home/me/.claude/projects"),
+                history: Vec::new(),
             },
         }
     }
@@ -1120,6 +1125,7 @@ mod tests {
         // The idle session with a waiting message is a warning; the cost is labelled.
         assert!(page.contains("idle, messages waiting"));
         assert!(page.contains("Est. cost today"));
+        assert!(page.contains("Busy cores 1, Cores 8") && page.contains("Swap 1.0 / 4.0 GB"));
         let screen = screens::page(
             Path::new("/q"),
             &snap,
@@ -1159,7 +1165,9 @@ mod tests {
             "$12.50",
             "edit",
             "last change",
-            "of 8 cores",
+            "Busy cores",
+            "24.0 GB",
+            "now · the graph builds",
         ] {
             assert!(text.contains(want), "{want}");
         }
@@ -1185,6 +1193,51 @@ mod tests {
             .collect();
         assert!(text.contains("● working") && text.contains("w1"));
         assert!(!text.contains("last change"));
+    }
+
+    #[test]
+    fn every_theme_draws_the_cpu_and_memory_boxes() {
+        let text = |snap: &Snapshot, theme, w, h| {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, Path::new("/q"), snap, false, Screen::Sessions, theme))
+                .unwrap();
+            term.backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        let still = sample();
+        let mut live = sample();
+        live.sessions.history = (0..200)
+            .map(|i| sessions::Sample {
+                cpu: (i % 100) as f32,
+                claude_cpu: (i % 10) as f32,
+                mem: 40.0,
+                claude_mem: 5.0,
+            })
+            .collect();
+        for theme in &THEMES {
+            for (w, h) in [(140, 42), (60, 20), (20, 8), (1, 1)] {
+                // Small sizes must not panic; the figures show whenever they fit.
+                let (a, b) = (text(&still, theme, w, h), text(&live, theme, w, h));
+                if w >= 60 {
+                    for t in [&a, &b] {
+                        assert!(t.contains("CPU") && t.contains("Memory"), "{}", theme.name);
+                        assert!(t.contains("Claude"), "{}", theme.name);
+                    }
+                }
+                if w == 140 {
+                    // Braille appears only with a history; the export shows a bar instead.
+                    let braille =
+                        |t: &str| t.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
+                    assert!(braille(&b) && !braille(&a), "{}", theme.name);
+                    assert!(a.contains("the graph builds") && !b.contains("the graph builds"));
+                    assert!(a.contains("Busy cores") && a.contains("12.5%"));
+                }
+            }
+        }
     }
 
     #[test]
