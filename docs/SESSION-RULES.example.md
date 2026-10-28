@@ -20,6 +20,8 @@ Instead of the Monitor, you can start `cq watch --as NAME --to-inbox` once, in t
 
 When a message from `cq` ends with `cq watch (NAME) stopped: ... Run /cq-start to re-arm.`, the watcher has ended: run /cq-start. If it says NAME is asleep, do not re-arm; run /cq-stop. If watch exits 5 at start, start it again with --takeover. See [Session protocol](PROTOCOL.md#inbox-mode-experimental).
 
+The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: check with `cq list` instead. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](SETUP.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
+
 ## Sleep and wake
 
 - Messages to a sleeping name are delivered. cq send then warns "NAME is asleep; wake it with /cq-start NAME". Then run /cq-start NAME.

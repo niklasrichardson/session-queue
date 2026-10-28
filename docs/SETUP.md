@@ -94,9 +94,20 @@ On Windows, a running `cq.exe` is locked, but it can be renamed. To upgrade with
 
 1. Build into a separate target folder, so the build does not touch the running binary: `CARGO_TARGET_DIR=../cq-build cargo build --release`.
 2. Rename the live binary, for example `cq.exe` to `cq.old.exe`. Running watchers keep using the old file.
-3. Copy the new binary into its place. Each watcher picks it up at its next re-arm (within 30 minutes).
-4. Delete the old file once no process uses it.
+3. Copy the new binary into its place. Each Monitor-mode watcher picks it up at its next re-arm (within 30 minutes).
+4. Inbox-mode watchers never re-arm, so they keep running the old binary. Ask each inbox-mode session to restart its watcher: `cq watch --as NAME --to-inbox --takeover` as a background Bash command.
+5. Delete the old file once no process uses it.
 
-On macOS, `cargo install --path .` replaces the binary while watchers run; each watcher picks up the new one at its next re-arm.
+On macOS, `cargo install --path .` replaces the binary while watchers run; each Monitor-mode watcher picks up the new one at its next re-arm. Inbox-mode watchers need step 4.
+
+### Switch a session from Monitor mode to inbox mode
+
+Use a `cq` build that has `--to-inbox`. Install the updated `/cq-start` and `/cq-stop` skills first (see [Skills](#skills)). Then tell the session, in its own conversation:
+
+1. Stop your watcher Monitor with TaskStop. Do not re-arm it.
+2. Start `cq watch --as NAME --to-inbox --takeover 2>&1` as a background Bash command. `--takeover` ends the old watcher process, which TaskStop often leaves running.
+3. From now on, queue events arrive as a message from `cq`. Handle the lines as before. Do not re-arm on a timer, and never start a watcher Monitor as well.
+
+To switch back, stop the background command with TaskStop and arm the Monitor with `--takeover`.
 
 Never run `cargo clean` on the folder your sessions run `cq` from: it deletes the live binary.

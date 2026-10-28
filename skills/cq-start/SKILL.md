@@ -21,7 +21,9 @@ Any session may wake another one: for example after `cq send` warned that the re
 2. **Clear your sleep flag** if it is set: `cq wake --as <name> <name>`.
 3. **Reload the handoff.** If `~/.claude/cq-handoff/<name>.md` exists, read it, then rename it to `<name>.last.md` so it is not loaded twice. Treat it as your own notes from before the clear. Mention open actions for the user from it.
 4. **Check your queue scope** (section 2 of `SESSION-RULES.md`).
-5. **Arm the watcher** (section 3 of `SESSION-RULES.md`): Monitor with `timeout_ms` 1800000 on `cq watch --as <name> 2>&1`. If it exits 5 and none of your own watcher Monitors runs, start it with `--takeover`.
+5. **Arm the watcher** (section 3 of `SESSION-RULES.md`). Use the mode your rules or start prompt name; Monitor mode is the default.
+   - Monitor mode: Monitor with `timeout_ms` 1800000 on `cq watch --as <name> 2>&1`. If it exits 5 and none of your own watcher Monitors runs, start it with `--takeover`.
+   - Inbox mode: start `cq watch --as <name> --to-inbox 2>&1` once, as a background Bash command (not the Monitor tool). If it exits 5, start it again with `--takeover`. Do not re-arm on a timer. Never run a watcher Monitor as well.
 6. **Handle waiting messages** as section 4 of `SESSION-RULES.md` says. The watcher prints a `CQ-NEW` line for each one.
 7. **Restore Remote Control.** A sleeping session loses its Remote Control link, so the user cannot reach it from a phone. If the session's title starts with `RC:` and the app reports Remote Control off, turn it on for this session (in the Claude desktop app: `set_remote_control` with `"self"` and `enabled: true`). If that is refused or the tool is missing, tell the user in one line.
-8. If the watcher prints `CQ-SLEEP`, a coordinator put you to sleep: run `/cq-stop`.
+8. If the watcher prints `CQ-SLEEP`, or a message from `cq` says `<name> is asleep`, a coordinator put you to sleep: run `/cq-stop`.
