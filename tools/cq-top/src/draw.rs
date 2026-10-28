@@ -327,9 +327,16 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             Some(a) => (format!("STALE {}", age(a)), t.bad),
             None => ("none".into(), t.dim),
         };
+        let mode = match s.mode(w) {
+            Some(m) => {
+                Cell::from(mode_label(m)).style(if m == Mode::Inbox { t.info } else { t.text })
+            }
+            None => Cell::from("-").style(t.dim),
+        };
         Row::new(vec![
             Cell::from(w.name.clone()).style(t.accent),
             Cell::from(txt).style(style),
+            mode,
             Cell::from(w.pid.clone()),
             Cell::from(w.session.clone()),
             Cell::from(w.queued.to_string()),
@@ -346,6 +353,7 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             [
                 Constraint::Length(name_w),
                 Constraint::Length(14),
+                Constraint::Length(7),
                 Constraint::Length(8),
                 Constraint::Length(10),
                 Constraint::Length(7),
@@ -359,6 +367,7 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             Row::new([
                 "watcher",
                 "heartbeat",
+                "mode",
                 "pid",
                 "session",
                 "queued",
@@ -695,7 +704,7 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
 
     // Columns: header, width, priority. A narrow terminal drops the highest numbers first.
     let name_w = name_width("session", r.rows.iter().map(|w| w.name.as_str()));
-    let cols: [(&str, u16, u8); 14] = [
+    let cols: [(&str, u16, u8); 15] = [
         ("session", name_w, 0),
         ("state", 9, 1),
         ("model", 10, 4),
@@ -703,11 +712,13 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
         ("tokens", 7, 8),
         ("est.cost", 8, 9),
         ("cpu%", 5, 7),
-        ("mem", 6, 13),
-        ("sub", 3, 12),
+        ("mem", 6, 14),
+        ("sub", 3, 13),
         ("cq", 6, 5),
+        // `inbox` or `mon` (monitor).
+        ("mode", 5, 11),
         ("wait", 4, 6),
-        ("claim", 5, 11),
+        ("claim", 5, 12),
         ("last change", 13, 10),
         ("age", 7, 2),
     ];
@@ -773,6 +784,11 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                     t.dim
                 }),
                 Cell::from(beat).style(beat_style),
+                match w.and_then(|w| s.mode(w)) {
+                    Some(Mode::Inbox) => Cell::from("inbox").style(t.info),
+                    Some(Mode::Monitor) => Cell::from("mon"),
+                    None => dash(),
+                },
                 opt(w.map(|w| w.queued.to_string())).style(if warned { t.warn } else { t.text }),
                 opt(w.map(|w| w.claimed.to_string())),
                 opt(row

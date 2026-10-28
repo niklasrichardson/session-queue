@@ -468,6 +468,16 @@ fn watch_name(args: &[String]) -> Option<String> {
     None
 }
 
+/// The mode of a `cq watch` process, from its arguments: `--to-inbox` posts into the
+/// session's inbox, else the watcher prints for a Monitor.
+fn watch_mode(args: &[String]) -> cq::members::Mode {
+    if args.iter().any(|a| a == "--to-inbox") {
+        cq::members::Mode::Inbox
+    } else {
+        cq::members::Mode::Monitor
+    }
+}
+
 // ---------- the state rule ----------
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -731,6 +741,8 @@ struct Procs {
     sessions: HashMap<String, (PathBuf, f32, u64)>,
     /// Session folder -> cq name of its watcher.
     watchers: HashMap<String, String>,
+    /// cq name -> mode, from the arguments of its `cq watch` process.
+    modes: HashMap<String, cq::members::Mode>,
 }
 
 /// One process, as far as watcher matching needs it.
@@ -848,7 +860,13 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
                         .push(*pid);
                 }
             }
-            "cq" => watchers.extend(watch_name(&args(p)).map(|name| (*pid, name))),
+            "cq" => {
+                let a = args(p);
+                if let Some(name) = watch_name(&a) {
+                    out.modes.entry(name.clone()).or_insert(watch_mode(&a));
+                    watchers.push((*pid, name));
+                }
+            }
             _ => {}
         }
         let info = ProcInfo {
@@ -937,6 +955,9 @@ pub struct Report {
     pub projects: PathBuf,
     /// One sample per scan, oldest first; empty in a one-shot export.
     pub history: Vec<Sample>,
+    /// cq name -> mode, from the arguments of each `cq watch` process whose arguments could
+    /// be read. A watcher found only by its pid file has no entry.
+    pub modes: HashMap<String, cq::members::Mode>,
 }
 
 /// Where the Sessions screen reads from.
@@ -1075,12 +1096,14 @@ impl Scanner {
         // Forget files that are no longer read, so the cache does not grow for ever.
         self.tallies.retain(|p, _| used.contains(p));
         rows.sort_by_key(|r| (r.state, std::cmp::Reverse(r.active)));
+        let modes = procs.as_ref().map(|p| p.modes.clone()).unwrap_or_default();
         Report {
             ready: true,
             machine: procs.map(|p| p.machine),
             rows,
             projects: self.src.projects.clone(),
             history: Vec::new(),
+            modes,
         }
     }
 
@@ -1381,6 +1404,28 @@ mod tests {
     }
 
     #[test]
+    fn to_inbox_in_the_arguments_makes_an_inbox_watcher() {
+        use cq::members::Mode;
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            watch_mode(&args(&["cq", "watch", "--as", "w1"])),
+            Mode::Monitor
+        );
+        // As the Bash tool starts it in the background.
+        assert_eq!(
+            watch_mode(&args(&[
+                r"D:\cq\cq.exe",
+                "watch",
+                "--as",
+                "w1",
+                "--to-inbox",
+                "--takeover"
+            ])),
+            Mode::Inbox
+        );
+    }
+
+    #[test]
     fn a_watcher_belongs_to_the_session_above_it() {
         use sysinfo::Pid;
         let mut table = HashMap::new();
@@ -1392,7 +1437,8 @@ mod tests {
             };
             table.insert(Pid::from_u32(pid), info);
         };
-        // The app, a session under it, three shells, then `cq watch` in another folder.
+        // The app, a session under it, three shells, then `cq watch` in another folder. The
+        // Bash tool's background `cq watch --to-inbox` has the same shape on Windows.
         add(1, None, true, Some("C:/Apps/Claude"));
         add(
             2,

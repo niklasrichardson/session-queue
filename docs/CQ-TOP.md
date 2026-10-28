@@ -52,7 +52,7 @@ cq-top --html-screens shots         # shots/overview.html, flow.html, rejected.h
 
 ## Overview screen
 
-- **Watchers.** One row per name: heartbeat age, watcher process ID, Claude Code session, and the number of queued, claimed, done, rejected and dead-lettered messages. A heartbeat older than 90 seconds shows as `STALE`. A name that is asleep (`sleep/<name>` exists) shows `asleep` instead, and gets a row even with no heartbeat.
+- **Watchers.** One row per name: heartbeat age, [mode](#watcher-mode), watcher process ID, Claude Code session, and the number of queued, claimed, done, rejected and dead-lettered messages. A heartbeat older than 90 seconds shows as `STALE`. A name that is asleep (`sleep/<name>` exists) shows `asleep` instead, and gets a row even with no heartbeat.
 - **In flight.** Queued and claimed messages, oldest first. A message that stays here for a long time is probably stuck.
 - **Recent.** The 40 newest finished, rejected and dead-lettered messages.
 
@@ -94,10 +94,11 @@ One row per Claude Code session on this computer, with what it costs today and w
 | mem | Memory of the same processes. |
 | sub | Subagent transcripts written in the last 10 minutes. |
 | cq, wait, claim | The cq watcher's heartbeat age (`off` without a heartbeat, `STALE` after 90 seconds, `asleep` when its name is asleep, `-` when no watcher runs in the folder), and its queued and claimed messages. |
+| mode | The cq watcher's [mode](#watcher-mode): `inbox`, or `mon` for monitor. `-` when it is not known. |
 | last change | The newest of the last commit on the folder's own `HEAD` and the newest file that `git status` lists in that worktree. Sessions in different worktrees of one repo show their own work. |
 | age | Time since the transcript, or a subagent transcript, was last written. |
 
-A narrow terminal drops the least important columns first: mem, sub, claim, last change, est.cost and tokens.
+A narrow terminal drops the least important columns first: mem, sub, claim, mode, last change, est.cost and tokens.
 
 ### State rule
 
@@ -115,6 +116,7 @@ The rule is `sessions::state`, and the warning is `sessions::warn`.
 - A folder is shown when a Claude process runs in it, or when its transcript was written in the last 24 hours.
 - A Claude process is a process named `claude`. Helper processes with a `--type=` argument count in the Claude totals but are not sessions. Each other process is matched to a folder by encoding its working folder.
 - A cq watcher is a `cq` process. Its name comes from `cq watch --as NAME` in its arguments, or else from its `heartbeat/NAME.pid` file in the queue root. It belongs to the nearest session process among its parents, up to 10 steps up, because a session often runs `cq watch` from another folder. A watcher with no session above it belongs to its own working folder.
+- An inbox watcher that the Bash tool starts in the background matches the same way. On Windows it runs under three `bash` processes below the session's `claude` process (checked on 28 October 2026).
 - A sleeping name has no `cq` process. Its row is the one that last showed that name while `cq-top` ran, or else the folder in line 3 of its `members/` record (the watcher's working folder). A name that matches neither shows only on the Overview screen.
 
 ### Tokens and cost
@@ -141,6 +143,17 @@ If the process list cannot be read, one box says so in place of the CPU and Memo
 ### Platforms
 
 Process data and the CPU and Memory figures come from the `sysinfo` crate, with the same code on every system. The screen is tested on Windows. It is expected to work on macOS and Linux, but it is not tested there yet: see issue #17.
+
+## Watcher mode
+
+A watcher runs in one of two modes (see [Commands](COMMANDS.md#watch-into-the-inbox-experimental)):
+
+- **monitor:** `cq watch` under a Claude Code Monitor. It stops after 1790 seconds and the session re-arms it, so it gets a new process ID about every 30 minutes.
+- **inbox:** `cq watch --to-inbox`, a background process that posts into the session's inbox. It has no time limit and keeps one process ID until it stops. It survives `/clear`.
+
+`cq-top` takes the mode from `--to-inbox` in the watcher process's arguments while it can see the process. Otherwise it reads line 4 of the name's `members/` record. A record without line 4 (from an older `cq`) means monitor. A name with neither shows `-`.
+
+Nothing else in `cq-top` depends on the mode. Liveness is the heartbeat age in both modes, and `cq-top` shows only the current process ID, so it counts no restarts.
 
 ## Themes
 
