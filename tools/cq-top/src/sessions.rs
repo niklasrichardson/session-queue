@@ -519,8 +519,8 @@ impl Change {
     }
 }
 
-/// The newest of the last commit on any local branch (all worktrees share the refs) and the
-/// newest change to a file `git status` lists. `None` outside a repo or without `git`.
+/// The newest of the last commit on the folder's own `HEAD` (its worktree, not the whole
+/// repo) and the newest change to a file `git status` lists there. `None` outside a repo or without `git`.
 pub fn last_change(folder: &Path) -> Option<(Change, i64)> {
     let git = |args: &[&str]| {
         Command::new("git")
@@ -536,15 +536,9 @@ pub fn last_change(folder: &Path) -> Option<(Change, i64)> {
             .filter(|o| o.status.success())
             .map(|o| o.stdout)
     };
-    let commit = git(&[
-        "for-each-ref",
-        "--sort=-committerdate",
-        "--count=1",
-        "--format=%(committerdate:unix)",
-        "refs/heads",
-    ])
-    .and_then(|o| String::from_utf8_lossy(&o).trim().parse::<i64>().ok())
-    .map(|t| (Change::Commit, t));
+    let commit = git(&["log", "-1", "--format=%ct", "HEAD"])
+        .and_then(|o| String::from_utf8_lossy(&o).trim().parse::<i64>().ok())
+        .map(|t| (Change::Commit, t));
 
     // Porcelain paths are relative to the top of the worktree.
     let top = git(&["rev-parse", "--show-toplevel"])
@@ -1582,6 +1576,58 @@ mod tests {
             State::Idle
         );
         assert!(sc.scan_at(now + SHOW_SECS + 60, TODAY).rows.is_empty());
+    }
+
+    #[test]
+    fn last_change_is_the_worktrees_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let (main, wt) = (dir.path().join("main"), dir.path().join("wt"));
+        fs::create_dir(&main).unwrap();
+        let git = |cwd: &Path, at: i64, args: &[&str]| {
+            let date = format!("@{at} +0000");
+            Command::new("git")
+                .current_dir(cwd)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        if !git(&main, 0, &["init", "-q", "-b", "main"]) {
+            eprintln!("no git: skipped");
+            return;
+        }
+        fs::write(main.join("a.txt"), "a").unwrap();
+        assert!(git(&main, 0, &["add", "a.txt"]));
+        assert!(git(&main, 1_700_000_000, &["commit", "-q", "-m", "a"]));
+        let wt_arg = wt.to_string_lossy().into_owned();
+        assert!(git(
+            &main,
+            0,
+            &["worktree", "add", "-q", "-b", "b", &wt_arg]
+        ));
+        assert!(git(
+            &wt,
+            1_700_000_500,
+            &["commit", "-q", "--allow-empty", "-m", "b"]
+        ));
+
+        // The newer commit on the other worktree's branch does not count here.
+        assert_eq!(last_change(&main), Some((Change::Commit, 1_700_000_000)));
+        assert_eq!(last_change(&wt), Some((Change::Commit, 1_700_000_500)));
+        // An uncommitted edit newer than the commit wins, in its own worktree only.
+        fs::write(main.join("a.txt"), "edited").unwrap();
+        touch(&main.join("a.txt"), 1_700_000_900);
+        assert_eq!(last_change(&main), Some((Change::Edit, 1_700_000_900)));
+        assert_eq!(last_change(&wt), Some((Change::Commit, 1_700_000_500)));
     }
 
     #[test]

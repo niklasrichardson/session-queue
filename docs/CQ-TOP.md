@@ -90,7 +90,7 @@ One row per Claude Code session on this computer, with what it costs today and w
 | mem | Memory of the same processes. |
 | sub | Subagent transcripts written in the last 10 minutes. |
 | cq, wait, claim | The cq watcher's heartbeat age (`off` without a heartbeat, `STALE` after 90 seconds, `-` when no watcher runs in the folder), and its queued and claimed messages. |
-| last change | The newest of the last commit on any local branch and the newest file that `git status` lists. |
+| last change | The newest of the last commit on the folder's own `HEAD` and the newest file that `git status` lists in that worktree. Sessions in different worktrees of one repo show their own work. |
 | age | Time since the transcript, or a subagent transcript, was last written. |
 
 A narrow terminal drops the least important columns first: mem, sub, claim, last change, est.cost and tokens.
