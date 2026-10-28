@@ -127,7 +127,7 @@ CQ_ROOT/
   heartbeat/<name>.claim.lock serialises claims for this recipient
   heartbeat/<name>.pid       the running watcher/dispatcher process ID
   dispatch/<name>/<id>/       Codex logs and completion state (not auto-pruned)
-  members/<key>              the name owned by a Claude Code session, the UTC time it was recorded, and the watcher's working folder
+  members/<key>              the name owned by a Claude Code session, the UTC time it was recorded, the watcher's working folder, and its mode (monitor or inbox)
   sleep/<name>               while it exists, the name is asleep (by, time, reason)
   coordinators               names that may sleep other names, one per line (edited by the owner)
   PAUSE                      while it exists, watchers print nothing and cq send refuses

@@ -84,6 +84,9 @@ pub struct WatchOptions {
     /// The Claude Code session to record as the owner of the name. `None`
     /// records nothing.
     pub member_key: Option<String>,
+    /// `--to-inbox`: recorded in the session's `members/` record, so that
+    /// `cq session-start` does not ask for a Monitor after `/clear`.
+    pub to_inbox: bool,
 }
 
 impl WatchOptions {
@@ -95,6 +98,7 @@ impl WatchOptions {
             rescan: Duration::from_secs(DEFAULT_RESCAN_SECONDS),
             fs_events: true,
             member_key: None,
+            to_inbox: false,
         }
     }
 }
@@ -156,7 +160,12 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     if let Some(key) = &opts.member_key {
         // The queue still works without the record; only a rejoin after
         // `/clear` needs it.
-        if let Err(e) = members::record(root, key, name) {
+        let mode = if opts.to_inbox {
+            members::Mode::Inbox
+        } else {
+            members::Mode::Monitor
+        };
+        if let Err(e) = members::record(root, key, name, mode) {
             eprintln!("cq watch: could not record the session for {name}: {e}");
         }
     }
@@ -326,6 +335,20 @@ pub(crate) fn take_lock(root: &Root, name: &str, takeover: bool) -> Result<File>
             }
         }
     }
+}
+
+/// True while a watcher or dispatcher for `name` holds its lock. Takes the
+/// lock for a moment when it is free, so a watcher that starts in that
+/// moment exits 5. Creates no file: a missing lock file means no watcher.
+pub fn is_running(root: &Root, name: &str) -> bool {
+    let Ok(file) = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.lock_file(name))
+    else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(TryLockError::WouldBlock))
 }
 
 /// Any change in the inbox triggers a scan; the scan decides what is new.

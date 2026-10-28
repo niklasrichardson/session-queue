@@ -60,6 +60,8 @@ fn watch_records_the_session() {
     // Line 3: the watcher's working folder, for cq-top.
     let here = std::env::current_dir().unwrap().display().to_string();
     assert_eq!(text.lines().nth(2), Some(here.as_str()));
+    // Line 4: the watcher's mode, for session-start.
+    assert_eq!(text.lines().nth(3), Some("monitor"));
 
     // An empty host ID falls back to the session ID, sanitised.
     watch_once(&env, "c", &[(HOST, ""), (SESSION, "s:2/x")]);

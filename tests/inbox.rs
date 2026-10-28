@@ -7,7 +7,9 @@
 mod common;
 
 use std::ffi::OsString;
+use std::fs;
 use std::io::Read;
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,6 +21,7 @@ use common::*;
 const TOKEN: &str = "test-token-7f3a";
 const SOCKET_VAR: &str = "CLAUDE_CODE_MESSAGING_SOCKET";
 const TOKEN_VAR: &str = "CLAUDE_CODE_MESSAGING_TOKEN";
+const HOST: &str = "CLAUDE_CODE_HOST_SESSION_ID";
 
 /// A fake session inbox. Each connection's full text arrives on `posts`.
 struct FakeInbox {
@@ -160,15 +163,19 @@ fn content(text: &str) -> String {
 
 /// Start `cq watch --as <name> --to-inbox` posting to `addr`.
 fn watch_to(env: &Env, name: &str, addr: &OsString, flags: &[&str]) -> Watcher {
+    Watcher::spawn(watch_to_cmd(env, name, addr, flags))
+}
+
+fn watch_to_cmd(env: &Env, name: &str, addr: &OsString, flags: &[&str]) -> Command {
     let mut args = vec!["watch", "--as", name, "--to-inbox"];
     args.extend_from_slice(flags);
     let mut c = env.cmd(&args);
     c.env(SOCKET_VAR, addr)
         .env(TOKEN_VAR, TOKEN)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    Watcher::spawn(c)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    c
 }
 
 /// The exit code once the process ends, within `timeout`.
@@ -299,4 +306,121 @@ fn missing_variables_exit_64() {
     let err = stderr(&out);
     assert!(err.contains(TOKEN_VAR), "{err}");
     assert!(!env.path("heartbeat/b").exists(), "the watcher started");
+}
+
+/// `cq session-start` for the session `key`, with no input.
+fn session_start(env: &Env, key: &str) -> Output {
+    let mut c = env.cmd(&["session-start"]);
+    c.env(HOST, key)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    c.output().expect("run cq session-start")
+}
+
+/// Line 4 of `members/<key>`: the watcher's mode.
+fn member_mode(env: &Env, key: &str) -> Option<String> {
+    let text = fs::read_to_string(env.path(&format!("members/{key}"))).ok()?;
+    text.lines().nth(3).map(str::to_owned)
+}
+
+fn monitor_reminder(name: &str) -> String {
+    format!(
+        "You are in the cq session queue as {name}. Before anything else this turn: re-read {RULES} and follow it as {name} (skip choosing a name). Start your watcher Monitor (timeout_ms 1800000) on: cq watch --as {name} 2>&1. If it exits 5, your previous watcher belonged to the conversation before the clear: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages.
+"
+    )
+}
+
+/// After `/clear`, a session whose inbox watcher still runs is told to keep
+/// it: no Monitor and no `--takeover`.
+#[test]
+fn session_start_keeps_a_running_inbox_watcher() {
+    let env = Env::new();
+    let inbox = FakeInbox::start();
+    let mut c = watch_to_cmd(&env, "b", &inbox.addr, &[]);
+    c.env(HOST, "local_aaa");
+    let _w = Watcher::spawn(c);
+    assert!(wait_until(Duration::from_secs(10), || member_mode(
+        &env,
+        "local_aaa"
+    )
+    .as_deref()
+        == Some("inbox")));
+
+    let out = session_start(&env, "local_aaa");
+    assert_eq!(code(&out), 0);
+    assert_eq!(stderr(&out), "");
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "You are in the cq session queue as b. Before anything else this turn: re-read {RULES} and follow it as b (skip choosing a name). Your inbox watcher (cq watch --as b --to-inbox) still runs and posts queue events into this session's inbox: do not start a watcher Monitor and do not use --takeover. Run cq list --as b and handle any UNCLAIMED messages.
+"
+        )
+    );
+
+    // A Monitor watcher that cannot take the lock records nothing.
+    let mut m = env.cmd(&["watch", "--as", "b", "--max-seconds", "1"]);
+    m.env(HOST, "local_aaa").stdin(Stdio::null());
+    assert_eq!(code(&m.output().unwrap()), 5);
+    assert_eq!(member_mode(&env, "local_aaa").as_deref(), Some("inbox"));
+    assert!(stdout(&session_start(&env, "local_aaa")).contains("still runs"));
+}
+
+/// After `/clear`, a session whose inbox watcher has ended is told to start
+/// it again in the background, not under a Monitor.
+#[test]
+fn session_start_restarts_a_stopped_inbox_watcher() {
+    let env = Env::new();
+    let inbox = FakeInbox::start();
+    let mut c = watch_to_cmd(&env, "b", &inbox.addr, &["--max-seconds", "1"]);
+    c.env(HOST, "local_aaa");
+    let mut w = Watcher::spawn(c);
+    assert_eq!(exit_code(&mut w, Duration::from_secs(10)), 0);
+    assert_eq!(member_mode(&env, "local_aaa").as_deref(), Some("inbox"));
+
+    let out = session_start(&env, "local_aaa");
+    assert_eq!(code(&out), 0);
+    assert_eq!(stderr(&out), "");
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "You are in the cq session queue as b. Before anything else this turn: re-read {RULES} and follow it as b (skip choosing a name). Your inbox watcher has stopped. Start it again in the background with the Bash tool (not the Monitor tool): cq watch --as b --to-inbox. If it exits 5, an old watcher still holds the name: start it with --takeover. Then run cq list --as b and handle any UNCLAIMED messages.
+"
+        )
+    );
+}
+
+/// A Monitor watcher replaces the inbox mark, and a record from an older
+/// `cq` (no mode line) gets the Monitor reminder.
+#[test]
+fn session_start_monitor_after_inbox_and_old_records() {
+    let env = Env::new();
+    let inbox = FakeInbox::start();
+    let mut c = watch_to_cmd(&env, "b", &inbox.addr, &["--max-seconds", "1"]);
+    c.env(HOST, "local_aaa");
+    let mut w = Watcher::spawn(c);
+    assert_eq!(exit_code(&mut w, Duration::from_secs(10)), 0);
+    assert_eq!(member_mode(&env, "local_aaa").as_deref(), Some("inbox"));
+
+    let mut m = env.cmd(&["watch", "--as", "b", "--max-seconds", "1"]);
+    m.env(HOST, "local_aaa").stdin(Stdio::null());
+    let out = m.output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(member_mode(&env, "local_aaa").as_deref(), Some("monitor"));
+    let out = session_start(&env, "local_aaa");
+    assert_eq!(code(&out), 0);
+    assert_eq!(stdout(&out), monitor_reminder("b"));
+
+    fs::write(
+        env.path("members/local_old"),
+        "c
+2026-10-01T00:00:00Z
+/somewhere
+",
+    )
+    .unwrap();
+    assert_eq!(
+        stdout(&session_start(&env, "local_old")),
+        monitor_reminder("c")
+    );
 }

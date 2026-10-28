@@ -393,6 +393,7 @@ fn run(cmd: Cmd) -> Result<i32> {
                 rescan: Duration::from_secs(rescan_seconds),
                 fs_events: !no_fs_events,
                 member_key: members::session_key(),
+                to_inbox,
             };
             let ended = if to_inbox {
                 watch_to_inbox(&opts)?
@@ -555,32 +556,43 @@ fn run(cmd: Cmd) -> Result<i32> {
 fn session_start(debug: bool) {
     drain_hook_input();
     let key = members::session_key();
-    let name = match (&key, Root::from_env()) {
-        (Some(k), Ok(root)) => members::name_for(&root, k),
+    let root = Root::from_env().ok();
+    let name = match (&key, &root) {
+        (Some(k), Some(root)) => members::name_for(root, k),
+        _ => None,
+    };
+    let mode = match (&key, &root, &name) {
+        (Some(k), Some(root), Some(_)) => Some(members::mode_for(root, k)),
         _ => None,
     };
     if debug {
-        eprintln!("cq session-start: key={key:?} name={name:?}");
+        eprintln!("cq session-start: key={key:?} name={name:?} mode={mode:?}");
     }
-    let asleep = match (&name, Root::from_env()) {
-        (Some(n), Ok(root)) => sleep::read(&root, n),
-        _ => None,
+    let (Some(root), Some(name), Some(mode)) = (root, name, mode) else {
+        return;
     };
-    if let (Some(name), Some(rec)) = (&name, asleep) {
-        // Ignore a failed write, as stdout may already be closed.
-        let _ = writeln!(
-            io::stdout(),
+    let runtime_rules = std::env::var(ENV_RULES).ok();
+    let rules = rules_ref(runtime_rules.as_deref(), BUILD_RULES_PATH);
+    let text = if let Some(rec) = sleep::read(&root, &name) {
+        format!(
             "You are in the cq session queue as {name}, and {name} is asleep ({}). Do not start a watcher. Messages wait in your inbox. To wake, run /cq-start when the user or a coordinator's message asks you to.",
             rec.describe()
-        );
-    } else if let Some(name) = name {
-        // Ignore a failed write, as stdout may already be closed.
-        let _ = writeln!(
-            io::stdout(),
-            "You are in the cq session queue as {name}. Before anything else this turn: re-read {} and follow it as {name} (skip choosing a name). Start your watcher Monitor (timeout_ms 1800000) on: cq watch --as {name} 2>&1. If it exits 5, your previous watcher belonged to the conversation before the clear: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages.",
-            rules_ref(std::env::var(ENV_RULES).ok().as_deref(), BUILD_RULES_PATH)
-        );
-    }
+        )
+    } else if mode == members::Mode::Inbox && watch::is_running(&root, &name) {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Your inbox watcher (cq watch --as {name} --to-inbox) still runs and posts queue events into this session's inbox: do not start a watcher Monitor and do not use --takeover. Run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else if mode == members::Mode::Inbox {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Your inbox watcher has stopped. Start it again in the background with the Bash tool (not the Monitor tool): cq watch --as {name} --to-inbox. If it exits 5, an old watcher still holds the name: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Start your watcher Monitor (timeout_ms 1800000) on: cq watch --as {name} 2>&1. If it exits 5, your previous watcher belonged to the conversation before the clear: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    };
+    // Ignore a failed write, as stdout may already be closed.
+    let _ = writeln!(io::stdout(), "{text}");
 }
 
 /// The session rules file named in the `session-start` reminder: `CQ_RULES`
