@@ -152,6 +152,7 @@ pub fn draw(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, screen: Scre
         Screen::Overview => draw_overview(f, root, s, bodies, t),
         Screen::Flow => draw_flow(f, root, s, bodies, t),
         Screen::Rejected => draw_rejected(f, root, s, bodies, t),
+        Screen::Sessions => draw_sessions(f, root, s, bodies, t),
     }
 }
 
@@ -179,6 +180,7 @@ fn header(
             tab(" 1 Overview ", screen == Screen::Overview),
             tab(" 2 Flow ", screen == Screen::Flow),
             tab(" 3 Rejected ", screen == Screen::Rejected),
+            tab(" 4 Sessions ", screen == Screen::Sessions),
             Span::styled(
                 format!(
                     "  bodies:{} [b]  theme:{} [t]  [q] quit",
@@ -501,6 +503,202 @@ fn draw_rejected(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             .block(t.block(title)),
         table,
     );
+}
+
+/// The watcher whose process runs in a session's folder, for the cq columns. A session with
+/// no watcher in its folder has none.
+pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a Watcher> {
+    let name = row.cq_name.as_deref()?;
+    s.watchers.iter().find(|w| w.name == name)
+}
+
+/// The state shown for a session, and whether it is a warning (idle with cq messages).
+pub fn session_state(s: &Snapshot, row: &sessions::Row) -> (sessions::State, bool) {
+    let (waiting, claimed) = session_watcher(s, row).map_or((0, 0), |w| (w.queued, w.claimed));
+    (row.state, sessions::warn(row.state, waiting, claimed))
+}
+
+/// The Sessions screen: a strip for the whole computer, then one row per Claude Code
+/// session. Only counts, times, model names and titles are shown, never message text.
+fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
+    use sessions::{State, bytes, count, usd};
+    let [head, strip, table] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(4),
+    ])
+    .areas(f.area());
+    header(f, head, root, s, bodies, Screen::Sessions, t);
+
+    let r = &s.sessions;
+    let gb = |n: u64| format!("{:.1}", n as f64 / f64::from(1u32 << 30));
+    let line = match (&r.machine, r.ready) {
+        (_, false) => Line::styled("Collecting sessions…", t.dim),
+        (None, true) => Line::styled(
+            "Process data unavailable: CPU and memory show -, and the state uses file activity only.",
+            t.warn,
+        ),
+        (Some(m), true) => Line::from(vec![
+            Span::styled("CPU ", t.dim),
+            Span::styled(
+                format!("{:.1}%", m.cpu),
+                if m.cpu >= 80.0 { t.warn } else { t.text },
+            ),
+            Span::styled(format!(" of {} cores   memory ", m.cores), t.dim),
+            Span::styled(
+                format!("{} / {} GB", gb(m.mem_used), gb(m.mem_total)),
+                t.text,
+            ),
+            Span::styled(
+                format!("   Claude processes ({}): CPU ", m.claude_procs),
+                t.dim,
+            ),
+            Span::styled(format!("{:.1}%", m.claude_cpu), t.info),
+            Span::styled(" of one core, memory ", t.dim),
+            Span::styled(format!("{} GB", gb(m.claude_mem)), t.info),
+        ]),
+    };
+    f.render_widget(
+        Paragraph::new(line).block(t.block(" This computer ")),
+        strip,
+    );
+
+    // Columns: header, width, priority. A narrow terminal drops the highest numbers first.
+    let name_w = name_width("session", r.rows.iter().map(|w| w.name.as_str()));
+    let cols: [(&str, u16, u8); 14] = [
+        ("session", name_w, 0),
+        ("state", 9, 1),
+        ("model", 10, 4),
+        ("context", 7, 3),
+        ("tokens", 7, 8),
+        ("est.cost", 8, 9),
+        ("cpu%", 5, 7),
+        ("mem", 6, 13),
+        ("sub", 3, 12),
+        ("cq", 6, 5),
+        ("wait", 4, 6),
+        ("claim", 5, 11),
+        ("last change", 13, 10),
+        ("age", 7, 2),
+    ];
+    let room = table.width.saturating_sub(2);
+    let mut by_prio: Vec<usize> = (0..cols.len()).collect();
+    by_prio.sort_by_key(|&i| cols[i].2);
+    let mut keep = vec![false; cols.len()];
+    let mut used = 0u16;
+    for i in by_prio {
+        let need = cols[i].1 + u16::from(used > 0);
+        if used + need <= room {
+            keep[i] = true;
+            used += need;
+        }
+    }
+    let pick = |cells: Vec<Cell<'static>>| -> Vec<Cell<'static>> {
+        cells
+            .into_iter()
+            .zip(&keep)
+            .filter(|(_, k)| **k)
+            .map(|(c, _)| c)
+            .collect()
+    };
+
+    let dash = || Cell::from("-").style(t.dim);
+    let rows: Vec<Row> = r
+        .rows
+        .iter()
+        .map(|row| {
+            let (state, warned) = session_state(s, row);
+            let (glyph, style) = match state {
+                _ if warned => ("▲", t.warn),
+                State::Working => ("●", t.ok),
+                State::Recent => ("◐", t.info),
+                State::Idle => ("○", t.dim),
+            };
+            let w = session_watcher(s, row);
+            let (beat, beat_style) = match w.map(|w| w.beat_age) {
+                Some(Some(a)) if a <= STALE_AFTER => (age(a), t.ok),
+                Some(Some(_)) => ("STALE".into(), t.bad),
+                Some(None) => ("off".into(), t.dim),
+                // No watcher runs in this folder.
+                None => ("-".into(), t.dim),
+            };
+            let opt = |v: Option<String>| v.map_or_else(dash, Cell::from);
+            Row::new(pick(vec![
+                Cell::from(row.name.clone()).style(if warned { t.warn } else { t.accent }),
+                Cell::from(format!("{glyph} {}", state.label())).style(style),
+                if row.model.is_empty() {
+                    dash()
+                } else {
+                    Cell::from(row.model.clone())
+                },
+                opt(row.context.map(count)),
+                Cell::from(count(row.tokens_today)),
+                Cell::from(usd(row.cost_today)),
+                opt(row.cpu.map(|c| format!("{c:.1}"))),
+                opt(row.mem.map(bytes)),
+                Cell::from(row.subagents.to_string()).style(if row.subagents > 0 {
+                    t.info
+                } else {
+                    t.dim
+                }),
+                Cell::from(beat).style(beat_style),
+                opt(w.map(|w| w.queued.to_string())).style(if warned { t.warn } else { t.text }),
+                opt(w.map(|w| w.claimed.to_string())),
+                opt(row
+                    .last_change
+                    .map(|(c, at)| format!("{} {}", c.label(), age(s.now - at)))),
+                Cell::from(age(s.now - row.active)),
+            ]))
+        })
+        .collect();
+    let widths: Vec<Constraint> = pick_widths(&cols.map(|c| c.1), &keep);
+    let headers: Vec<&str> = cols
+        .iter()
+        .zip(&keep)
+        .filter(|(_, k)| **k)
+        .map(|(c, _)| c.0)
+        .collect();
+    let n = |st: State| r.rows.iter().filter(|row| row.state == st).count();
+    let title = if r.ready {
+        format!(
+            " Sessions: {} ({} working, {} recent, {} idle). Tokens and cost since local midnight ",
+            r.rows.len(),
+            n(State::Working),
+            n(State::Recent),
+            n(State::Idle)
+        )
+    } else {
+        " Sessions ".to_string()
+    };
+    let mut rows = rows;
+    if r.ready && rows.is_empty() {
+        rows.push(Row::new(vec![
+            Cell::from(format!(
+                "No sessions in the last 24 hours in {}",
+                r.projects.display()
+            ))
+            .style(t.dim),
+        ]));
+    }
+    f.render_widget(
+        Table::new(rows, widths)
+            .header(Row::new(headers).style(t.table_header()))
+            .style(t.text)
+            .block(t.block(title).title_bottom(Span::styled(
+                " est.cost: API list prices, not your plan's bill · cpu% 100 = one core ",
+                t.dim,
+            ))),
+        table,
+    );
+}
+
+fn pick_widths(widths: &[u16], keep: &[bool]) -> Vec<Constraint> {
+    widths
+        .iter()
+        .zip(keep)
+        .filter(|(_, k)| **k)
+        .map(|(w, _)| Constraint::Length(*w))
+        .collect()
 }
 
 /// Word-wraps text to `width` characters and at most `max_lines`
