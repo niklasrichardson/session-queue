@@ -29,7 +29,7 @@ Do the steps in order. Do not start new work.
 4. **Set the sleep flag.** If the watcher printed `CQ-SLEEP`, the flag is already set: skip this step. Otherwise run `cq sleep --as <name> <name> --reason "<short reason>"`.
 5. **Stop the watcher.** Stop your watcher Monitor with TaskStop if one still runs. Do not start another one, and do not re-arm when it ends.
 6. **Clear the conversation**, so the session costs nothing while it sleeps and wakes cheaply:
-   - If the session serves Remote Control (its title starts with `RC:` or the app says so), you cannot clear it. End your reply with the line: `Ready: type /clear`.
+   - If the session serves Remote Control (its title starts with `RC:` or the app says so), you cannot clear it. End your reply with the line: `Ready: type /clear`. Warn the user that the session loses Remote Control while it sleeps; `/cq-start` turns it back on after a wake. To reach it from a phone meanwhile, ask a session that is awake (for example the coordinator) to wake it.
    - Otherwise call the app's clear-session tool with `"self"` (in the Claude desktop app: `clear_session`). The clear happens when this turn ends, so write your reply first. If the tool is missing or refused, end with `Ready: type /clear`.
 7. **Reply** in one short block: queue name, where the handoff is, anything the user must do before the clear, and how to wake the session (`/cq-start`, or a coordinator's wake message).
 

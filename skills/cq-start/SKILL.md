@@ -23,4 +23,5 @@ Any session may wake another one: for example after `cq send` warned that the re
 4. **Check your queue scope** (section 2 of `SESSION-RULES.md`).
 5. **Arm the watcher** (section 3 of `SESSION-RULES.md`): Monitor with `timeout_ms` 1800000 on `cq watch --as <name> 2>&1`. If it exits 5 and none of your own watcher Monitors runs, start it with `--takeover`.
 6. **Handle waiting messages** as section 4 of `SESSION-RULES.md` says. The watcher prints a `CQ-NEW` line for each one.
-7. If the watcher prints `CQ-SLEEP`, a coordinator put you to sleep: run `/cq-stop`.
+7. **Restore Remote Control.** A sleeping session loses its Remote Control link, so the user cannot reach it from a phone. If the session's title starts with `RC:` and the app reports Remote Control off, turn it on for this session (in the Claude desktop app: `set_remote_control` with `"self"` and `enabled: true`). If that is refused or the tool is missing, tell the user in one line.
+8. If the watcher prints `CQ-SLEEP`, a coordinator put you to sleep: run `/cq-stop`.
