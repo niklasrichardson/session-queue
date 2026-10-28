@@ -146,10 +146,12 @@ Process data and the CPU and Memory figures come from the `sysinfo` crate, with 
 
 ## Watcher mode
 
-A watcher runs in one of two modes (see [Commands](COMMANDS.md#watch-into-the-inbox-experimental)):
+A watcher runs in one of two modes (see [Commands](COMMANDS.md#watch-into-the-inbox)):
 
-- **monitor:** `cq watch` under a Claude Code Monitor. It stops after 1790 seconds and the session re-arms it, so it gets a new process ID about every 30 minutes.
-- **inbox:** `cq watch --to-inbox`, a background process that posts into the session's inbox. It has no time limit and keeps one process ID until it stops. It survives `/clear`.
+- **inbox** (the default): `cq watch --to-inbox`, a background process that posts into the session's inbox. It has no time limit and keeps one process ID until it stops. It survives `/clear`.
+- **monitor** (the fallback): `cq watch` under a Claude Code Monitor. It stops after 1790 seconds and the session re-arms it, so it gets a new process ID about every 30 minutes.
+
+An inbox watcher that is killed without warning does not tell its session. Its heartbeat then shows `STALE` after 90 seconds, so the Watchers box is where you see that an inbox watcher has stopped.
 
 `cq-top` takes the mode from `--to-inbox` in the watcher process's arguments while it can see the process. Otherwise it reads line 4 of the name's `members/` record. A record without line 4 (from an older `cq`) means monitor. A name with neither shows `-`.
 

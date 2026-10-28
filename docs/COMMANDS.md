@@ -10,7 +10,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | --- | --- |
 | `cq init` | Create the layout under `CQ_ROOT`. |
 | `cq send --from A --to B --type task\|result\|info [--reply-to ID] [--parent ID] [--status ok\|failed\|rejected] [--input FILE]` | Read `{"subject": "...", "body": "..."}`, write the message, print its ID. |
-| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)). Experimental: `--to-inbox` posts the lines into the session's own Claude Code inbox instead (see [Watch into the inbox](#watch-into-the-inbox-experimental)). |
+| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)). `--to-inbox` posts the lines into the session's own Claude Code inbox instead, the default for Claude Code sessions (see [Watch into the inbox](#watch-into-the-inbox)). |
 | `cq dispatch --as B --codex FILE --workspace DIR --instructions FILE --allow-from NAME [--allow-from NAME ...] [--sandbox read-only\|workspace-write] [--timeout-seconds 600] [--once]` | Run one fresh Codex process per task, serially. See [Codex setup](CODEX.md). |
 | `cq claim --as B ID` | Move the message to `.processing/` and print its JSON. |
 | `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}`. |
@@ -75,9 +75,9 @@ cq wake --as lead worker-a
   CQ-WAKE 2026-10-28T09:12:03Z (09:12 GMT) to=worker-a from=lead type=task id=20261028T091000Z-lead-ab12 subject="Run the tests"
   ```
 
-## Watch into the inbox (experimental)
+## Watch into the inbox
 
-`cq watch --as B --to-inbox` posts its lines into the Claude Code session that started it, instead of printing them. A message to an idle session starts a new turn, so the session needs no Monitor and no re-arm every 30 minutes. How a session runs it is in [Session protocol](PROTOCOL.md#inbox-mode-experimental). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
+`cq watch --as B --to-inbox` posts its lines into the Claude Code session that started it, instead of printing them. A message to an idle session starts a new turn, so the session needs no Monitor and no re-arm every 30 minutes. It is the default way for Claude Code sessions to receive queue events. How a session runs it is in [Session protocol](PROTOCOL.md#inbox-mode). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
 
 - **Inbox address.** Claude Code exports `CLAUDE_CODE_MESSAGING_SOCKET` (a Unix socket, or a named pipe such as `\\.\pipe\LOCAL\cc-msg-<hex>` on Windows) and `CLAUDE_CODE_MESSAGING_TOKEN` to Bash commands and hooks. If either is missing or empty, `cq watch` exits 64. It never prints the token or the address.
 - **One post.** Connect, write `{"type":"auth","token":"..."}`, then `{"type":"user","from":"cq","message":{"role":"user","content":"..."}}`, each followed by a newline, then close. `cq` connects only when the message is ready, because Claude Code closes a connection that sends no complete line within 30 seconds.

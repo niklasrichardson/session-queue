@@ -10,17 +10,17 @@ Copy and adapt this file for your own queue. Keep private scope rules in your ow
 
 ## Keep the receiver running
 
-For Claude Code, start the Monitor with timeout_ms 1800000 on cq watch --as NAME. Re-arm whenever the Monitor expires or watch exits. If watch exits 5 because your previous watcher is still running, re-arm with --takeover. If re-arming was the only work in a turn, end with the single word Watching.
+For Claude Code, use inbox mode. Start `cq watch --as NAME --to-inbox 2>&1` once, as a background Bash command, not with the Monitor tool. Queue events then arrive as a message from `cq`, starting with the line `cq watch (NAME): queue events`. Handle each CQ-NEW, CQ-WAKE and CQ-SLEEP line in it as below. Do not re-arm on a timer, and never run a watcher Monitor as well. If watch exits 5 at start, your previous watcher still holds the name: start it again with --takeover. See [Session protocol](PROTOCOL.md#inbox-mode).
 
-Exception: if watch prints CQ-SLEEP and exits 7, your name is asleep. Do not re-arm. Run /cq-stop: it saves a handoff to ~/.claude/cq-handoff/NAME.md and clears the conversation (on Remote Control, it asks the user to type /clear). Run /cq-start when the user or a wake message asks you to rejoin.
+When a message from `cq` ends with `cq watch (NAME) stopped: ... Run /cq-start to re-arm.`, the watcher has ended: run /cq-start.
 
-## Experimental: inbox mode
+The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: follow the SessionStart reminder, which says whether your watcher still runs. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](SETUP.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
 
-Instead of the Monitor, you can start `cq watch --as NAME --to-inbox` once, in the background, with the Bash tool. Queue events then arrive as a message from `cq`, starting with the line `cq watch (NAME): queue events`. Handle the lines in it exactly like Monitor lines. Do not re-arm on a timer.
+Exception: if a message from `cq` says NAME is asleep, or watch prints CQ-SLEEP and exits 7, your name is asleep. Do not re-arm. Run /cq-stop: it saves a handoff to ~/.claude/cq-handoff/NAME.md and clears the conversation (on Remote Control, it asks the user to type /clear). Run /cq-start when the user or a wake message asks you to rejoin.
 
-When a message from `cq` ends with `cq watch (NAME) stopped: ... Run /cq-start to re-arm.`, the watcher has ended: run /cq-start. If it says NAME is asleep, do not re-arm; run /cq-stop. If watch exits 5 at start, start it again with --takeover. See [Session protocol](PROTOCOL.md#inbox-mode-experimental).
+### Fallback: Monitor mode
 
-The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: check with `cq list` instead. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](SETUP.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
+Use this only when `cq watch --to-inbox` exits 64, because the session has no inbox. Start the Monitor with timeout_ms 1800000 on cq watch --as NAME 2>&1. Re-arm whenever the Monitor expires or watch exits. If watch exits 5 and none of your own watcher Monitors runs, re-arm with --takeover. If re-arming was the only work in a turn, end with the single word Watching. The CQ-SLEEP exception above applies here too. See [Session protocol](PROTOCOL.md#monitor-mode-fallback).
 
 ## Sleep and wake
 
