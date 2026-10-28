@@ -27,6 +27,9 @@ pub mod exit {
     /// `cq watch --to-inbox`: the session's inbox could not be reached
     /// after every retry. The session has probably ended.
     pub const INBOX_GONE: i32 = 8;
+    /// `cq watch --to-codex`: `codex queue` failed after every retry, so
+    /// the Codex chat is not being woken.
+    pub const CODEX_QUEUE_FAILED: i32 = 9;
     /// Bad command-line arguments or bad JSON input.
     pub const USAGE: i32 = 64;
     /// Any other error (I/O, `CQ_ROOT` missing).

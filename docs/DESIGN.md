@@ -69,6 +69,18 @@ Implementation choices that the specification left open, and what `cq` does. The
 - **Monitor mode heals itself.** The Monitor expires at least every 30 minutes, and the session re-arms it. So a dead Monitor-mode watcher is replaced within 30 minutes. Inbox mode has no such timer.
 - **How to spot it.** The watcher's heartbeat stops. [cq-top](CQ-TOP.md) shows it as `STALE` after 90 seconds. After a `/clear`, `cq session-start` also tells the session that its inbox watcher has stopped. To restart it, run `/cq-start` in that session.
 
+## Codex wake
+
+`cq watch --to-codex THREAD` wakes an existing Codex Desktop chat with `codex queue`. The commands are in [Commands](COMMANDS.md#wake-a-codex-chat) and the setup in [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
+
+- **Why.** The fallback, a same-chat automation that runs every 10 minutes, costs a model turn per run even when the inbox is empty (about 1% of the 5-hour limit per run, [issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). `codex queue` starts a turn only when there is work. Other routes were rejected in issue #12: the Desktop app's app-server is private, `codex exec resume` on a live chat can split its history, and hooks cannot start a turn.
+- **A sink, like the inbox.** It reuses the watcher and its `Sink` trait, so the lock, heartbeat, `PAUSE`, sleep and `--takeover` behave as in every mode. It uses the inbox values for batching (2-second window, 5-second gap) and retries (4 tries, 1, 2 and 4 seconds apart). One Codex turn handles every `UNCLAIMED` message, so one call per batch is enough.
+- **Fixed prompt.** Codex reads the queued message as a user instruction. Queue text is written by other sessions, so none of it goes into the message: not the subject, body, sender or ID. The chat reads its messages with `cq claim`, under its `AGENTS.md` rules.
+- **No shell.** `cq` starts the Codex executable directly, with each argument separate, so no character in the thread name or prompt is interpreted.
+- **Exit 9.** A call fails on a non-zero exit, on no `Queued message` line, or after 60 seconds. After 4 failed tries the watcher stops with a new code, because nothing wakes the chat any more and none of the other codes fits.
+- **Its own member key.** The watcher usually runs in another process tree than the Codex chat, often started by a Claude Code session. Recording it under that session's key would replace the session's own name, so it uses `CQ_SESSION_ID` or `codex-NAME`.
+- **Known risks.** `codex queue` is experimental. It confirms that the message is stored, not that a turn started. A message queued while the app is closed is untested ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). The chat is not told when its watcher stops; cq-top shows the heartbeat.
+
 ## Sleep
 
 Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Session protocol](PROTOCOL.md#sleep-and-wake).

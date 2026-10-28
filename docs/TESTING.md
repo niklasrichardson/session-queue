@@ -15,6 +15,16 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Codex wake on Windows, 28 October 2026
+
+`cq watch --to-codex` (experimental, see [Commands](COMMANDS.md#wake-a-codex-chat)). Checked on Windows 11 with `cargo test --workspace` (149 tests, 0 failed), `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`. All passed. `cargo clippy -p cq --all-targets -- -D warnings` also passed for `aarch64-apple-darwin` and `x86_64-linux-android` (a compile check of the Unix code; nothing ran).
+
+- Unit tests in `src/codex.rs` (7 tests) use a fake runner and the inbox's fake clock. They cover: one call per 2-second batch, with the fixed prompt; `CQ-WAKE` and `CQ-SLEEP` give no call; the 5-second gap; held lines are dropped when asleep and queued on a normal stop; retries 1 and 2 seconds apart; exit 9 after 4 tries; usage errors for an empty or multi-line thread and an empty prompt.
+- `tests/to_codex.rs` (7 tests) runs the real `cq` against a temporary queue root and a fake `codex` (`tests/support/fake_codex_queue.rs`) that records its arguments. The tests check: two waiting messages give one call, and a later message a second; the arguments are exactly `queue --thread THREAD --message PROMPT`, and no subject, body, sender name or ID reaches them; one stdout line per call; `cq sleep` stops the watcher with exit 7 and no call; a name asleep at start exits 7 with no call; `--codex-prompt` replaces the prompt; a non-zero exit, and exit 0 without `Queued message`, each give 4 calls then exit 9; bad flag combinations exit 64; the record is `members/codex-NAME` with mode `codex`, and a Claude Code session's own record is kept; `CQ_SESSION_ID` sets the key; `cq session-start` for a `codex` key says not to start a watcher, both while the watcher runs and after it stops.
+- cq-top: a `codex` record and `--to-codex` in a process's arguments show the mode `codex`.
+
+Not verified: `cq watch --to-codex` with the real Codex CLI and Desktop app (the live test in [issue #12](https://github.com/niklasrichardson/session-queue/issues/12) used a prototype script with the same `codex queue` call); a message queued while the Codex app is closed ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)); a long run; macOS and Linux at run time.
+
 ## Inbox mode on Windows, 28 October 2026
 
 `cq watch --to-inbox` (experimental, see [Commands](COMMANDS.md#watch-into-the-inbox)). Checked on Windows 11 with `cargo test --workspace` (127 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed. `cargo clippy --all-targets -- -D warnings` also passed for `aarch64-apple-darwin` and `x86_64-linux-android` (a compile check of the Unix code; nothing ran).

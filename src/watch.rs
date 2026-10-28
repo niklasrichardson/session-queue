@@ -14,7 +14,8 @@
 //!
 //! With `--to-inbox` (experimental), the lines go into the session's own
 //! Claude Code inbox instead of stdout (see `inbox`), and the watcher has no
-//! default time limit.
+//! default time limit. `--to-codex` instead wakes a Codex chat with
+//! `codex queue` (see `codex`).
 //!
 //! There is no parent-process check. Under Git Bash the parent of `cq.exe`
 //! is a forked bash whose lifetime Cygwin controls, not the Monitor, and the
@@ -65,8 +66,8 @@ pub const WAKE_AFTER: Duration = Duration::from_secs(120);
 /// How a watcher run ended without an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
-    /// `--max-seconds`, stdout closed, or (with `--to-inbox`) a signal:
-    /// the session re-arms.
+    /// `--max-seconds`, stdout closed, or (with `--to-inbox` or
+    /// `--to-codex`) a signal: the session re-arms.
     Normal,
     /// The name is asleep: exit 7, and the session does not re-arm.
     Asleep,
@@ -77,7 +78,7 @@ pub struct WatchOptions {
     pub name: String,
     pub takeover: bool,
     /// Stop after this many seconds. `None` runs until another reason
-    /// stops the watcher (`--to-inbox`).
+    /// stops the watcher (`--to-inbox`, `--to-codex`).
     pub max_seconds: Option<u64>,
     /// Full rescan interval. 60 seconds; shorter in tests.
     pub rescan: Duration,
@@ -87,9 +88,9 @@ pub struct WatchOptions {
     /// The Claude Code session to record as the owner of the name. `None`
     /// records nothing.
     pub member_key: Option<String>,
-    /// `--to-inbox`: recorded in the session's `members/` record, so that
-    /// `cq session-start` does not ask for a Monitor after `/clear`.
-    pub to_inbox: bool,
+    /// Where the lines go, recorded in the session's `members/` record, so
+    /// that `cq session-start` does not ask for a Monitor after `/clear`.
+    pub mode: members::Mode,
 }
 
 impl WatchOptions {
@@ -101,13 +102,14 @@ impl WatchOptions {
             rescan: Duration::from_secs(DEFAULT_RESCAN_SECONDS),
             fs_events: true,
             member_key: None,
-            to_inbox: false,
+            mode: members::Mode::Monitor,
         }
     }
 }
 
-/// Where a watcher's event lines go: stdout under a Monitor (`Lines`), or
-/// the session's own Claude Code inbox (`inbox::Inbox`).
+/// Where a watcher's event lines go: stdout under a Monitor (`Lines`), the
+/// session's own Claude Code inbox (`inbox::Inbox`), or a Codex chat
+/// (`codex::CodexQueue`).
 pub trait Sink {
     /// Deliver one event line (without its newline), or hold it back.
     fn line(&mut self, line: &str) -> io::Result<()>;
@@ -140,7 +142,8 @@ impl<W: Write> Sink for Lines<W> {
 
 /// Run the watcher until `--max-seconds`, until `out` fails, or until the
 /// name is asleep. Each of these prints one line to stderr saying why, so
-/// an exit is never silent. With `--to-inbox`, a signal also stops it.
+/// an exit is never silent. With `--to-inbox` or `--to-codex`, a signal
+/// also stops it.
 pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<Ended> {
     let name = opts.name.as_str();
     check_name("--as", name)?;
@@ -163,12 +166,7 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     if let Some(key) = &opts.member_key {
         // The queue still works without the record; only a rejoin after
         // `/clear` needs it.
-        let mode = if opts.to_inbox {
-            members::Mode::Inbox
-        } else {
-            members::Mode::Monitor
-        };
-        if let Err(e) = members::record(root, key, name, mode) {
+        if let Err(e) = members::record(root, key, name, opts.mode) {
             eprintln!("cq watch: could not record the session for {name}: {e}");
         }
     }

@@ -281,34 +281,32 @@ pub fn frame(token: &str, content: &str) -> String {
     format!("{auth}\n{msg}\n")
 }
 
+/// A fake `Clock` for unit tests, shared with `codex`.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fake_clock {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::time::{Duration, Instant};
 
-    use serde_json::json;
-
-    use super::*;
-
-    const TOKEN: &str = "secret-token-1234";
+    use super::Clock;
 
     /// A clock that moves only when told to, or when slept on.
     #[derive(Clone)]
-    struct FakeClock {
+    pub struct FakeClock {
         base: Instant,
         offset: Rc<Cell<Duration>>,
-        slept: Rc<RefCell<Vec<Duration>>>,
+        pub slept: Rc<RefCell<Vec<Duration>>>,
     }
 
     impl FakeClock {
-        fn new() -> Self {
+        pub fn new() -> Self {
             Self {
                 base: Instant::now(),
                 offset: Rc::new(Cell::new(Duration::ZERO)),
                 slept: Rc::default(),
             }
         }
-        fn advance(&self, d: Duration) {
+        pub fn advance(&self, d: Duration) {
             self.offset.set(self.offset.get() + d);
         }
     }
@@ -322,6 +320,19 @@ mod tests {
             self.advance(d);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use serde_json::json;
+
+    use super::fake_clock::FakeClock;
+    use super::*;
+
+    const TOKEN: &str = "secret-token-1234";
 
     /// Records each connection's bytes, with the fake time it closed.
     /// Fails the next `fail` connects.

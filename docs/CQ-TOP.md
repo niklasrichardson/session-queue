@@ -94,7 +94,7 @@ One row per Claude Code session on this computer, with what it costs today and w
 | mem | Memory of the same processes. |
 | sub | Subagent transcripts written in the last 10 minutes. |
 | cq, wait, claim | The cq watcher's heartbeat age (`off` without a heartbeat, `STALE` after 90 seconds, `asleep` when its name is asleep, `-` when no watcher runs in the folder), and its queued and claimed messages. |
-| mode | The cq watcher's [mode](#watcher-mode): `inbox`, or `mon` for monitor. `-` when it is not known. |
+| mode | The cq watcher's [mode](#watcher-mode): `inbox`, `codex`, or `mon` for monitor. `-` when it is not known. |
 | last change | The newest of the last commit on the folder's own `HEAD` and the newest file that `git status` lists in that worktree. Sessions in different worktrees of one repo show their own work. |
 | age | Time since the transcript, or a subagent transcript, was last written. |
 
@@ -146,14 +146,15 @@ Process data and the CPU and Memory figures come from the `sysinfo` crate, with 
 
 ## Watcher mode
 
-A watcher runs in one of two modes (see [Commands](COMMANDS.md#watch-into-the-inbox)):
+A watcher runs in one of three modes (see [Commands](COMMANDS.md#watch-into-the-inbox)):
 
 - **inbox** (the default): `cq watch --to-inbox`, a background process that posts into the session's inbox. It has no time limit and keeps one process ID until it stops. It survives `/clear`.
+- **codex**: `cq watch --to-codex`, a background process that wakes a Codex chat with `codex queue` (see [Commands](COMMANDS.md#wake-a-codex-chat)). It has no time limit. It usually runs outside the chat it wakes, and its `members/` key is `codex-<name>` unless `CQ_SESSION_ID` was set.
 - **monitor** (the fallback): `cq watch` under a Claude Code Monitor. It stops after 1790 seconds and the session re-arms it, so it gets a new process ID about every 30 minutes.
 
 An inbox watcher that is killed without warning does not tell its session. Its heartbeat then shows `STALE` after 90 seconds, so the Watchers box is where you see that an inbox watcher has stopped.
 
-`cq-top` takes the mode from `--to-inbox` in the watcher process's arguments while it can see the process. Otherwise it reads line 4 of the name's `members/` record. A record without line 4 (from an older `cq`) means monitor. A name with neither shows `-`.
+`cq-top` takes the mode from `--to-inbox` or `--to-codex` in the watcher process's arguments while it can see the process. Otherwise it reads line 4 of the name's `members/` record. A record without line 4 (from an older `cq`) means monitor. A name with neither shows `-`.
 
 Nothing else in `cq-top` depends on the mode. Liveness is the heartbeat age in both modes, and `cq-top` shows only the current process ID, so it counts no restarts.
 

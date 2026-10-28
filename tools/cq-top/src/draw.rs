@@ -329,7 +329,7 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
         };
         let mode = match s.mode(w) {
             Some(m) => {
-                Cell::from(mode_label(m)).style(if m == Mode::Inbox { t.info } else { t.text })
+                Cell::from(mode_label(m)).style(if m == Mode::Monitor { t.text } else { t.info })
             }
             None => Cell::from("-").style(t.dim),
         };
@@ -786,6 +786,7 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 Cell::from(beat).style(beat_style),
                 match w.and_then(|w| s.mode(w)) {
                     Some(Mode::Inbox) => Cell::from("inbox").style(t.info),
+                    Some(Mode::Codex) => Cell::from("codex").style(t.info),
                     Some(Mode::Monitor) => Cell::from("mon"),
                     None => dash(),
                 },

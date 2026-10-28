@@ -20,7 +20,7 @@ With `cq`, a message reaches the receiving session as a queue event instead. In 
 
 ## Codex
 
-`cq dispatch` runs one fresh Codex task per message. It requires trusted scope rules and allowed senders, handles replies, and stops for review after uncertain completion. Start with [Codex setup](docs/CODEX.md). Claude Code sessions use `cq watch` instead.
+`cq watch --to-codex THREAD` wakes an existing Codex Desktop chat with `codex queue` when its queue name gets a message (experimental). `cq dispatch` runs one fresh Codex task per message. It requires trusted scope rules and allowed senders, handles replies, and stops for review after uncertain completion. Start with [Codex setup](docs/CODEX.md). Claude Code sessions use `cq watch` instead.
 
 ## Quick start (Claude Code)
 
