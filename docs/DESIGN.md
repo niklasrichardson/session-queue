@@ -47,9 +47,11 @@ Implementation choices that the specification left open, and what `cq` does. The
 - The watcher exits 0 at `--max-seconds` or when stdout can no longer be written, and prints one line to stderr saying why (`cq watch: exiting: --max-seconds 1790 reached`). Every error exit prints `cq: <reason>`. It removes the pid file if the file still holds its own ID.
 - The watcher exits 7 with `CQ-SLEEP` while its name is asleep (see [Sleep](#sleep)). Exit 7 is not an error, so it prints no `cq:` line.
 
-## Inbox mode (experimental)
+## Inbox mode
 
-`cq watch --to-inbox` posts the watcher's lines into the session's own Claude Code inbox instead of stdout. The commands are in [Commands](COMMANDS.md#watch-into-the-inbox-experimental) and the session steps in [Session protocol](PROTOCOL.md#inbox-mode-experimental).
+`cq watch --to-inbox` posts the watcher's lines into the session's own Claude Code inbox instead of stdout. The commands are in [Commands](COMMANDS.md#watch-into-the-inbox) and the session steps in [Session protocol](PROTOCOL.md#inbox-mode).
+
+- **Decision (28 Oct 2026).** Inbox mode is the default way for Claude Code sessions to receive queue events. Monitor mode is the fallback, for a session where `--to-inbox` exits 64 (no inbox). Inbox mode was added as experimental in [#24](https://github.com/niklasrichardson/session-queue/pull/24). On 28 Oct 2026 the owner moved all live sessions to it, to test it in real use. A planned 24-hour soak test was stopped after about 1 hour, so there are no long-run results yet.
 
 - **Why.** Under the Monitor, the watcher must be re-armed at least every 30 minutes, because the Monitor expires. Each re-arm is a model turn that reads the whole context again. An idle session pays for 2 re-arms an hour for nothing. A watcher that posts into the inbox can run for hours, and the session pays only for turns that have queue events.
 - **The documented path.** Claude Code gives each session an inbox and exports its address and a token to the session's Bash commands and hooks ([The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket)). It delivers a message from the session's own child process, and a message to an idle session starts a new turn. On Windows the token in the auth line is the only proof that the poster is a child of the session, so `cq` always sends it. The owner tested this live on 28 Oct 2026: a background child posted after 180 seconds and woke an idle session.
@@ -60,6 +62,12 @@ Implementation choices that the specification left open, and what `cq` does. The
 - **Signals.** The watcher catches SIGTERM, so on macOS and Linux a watcher replaced by `--takeover` posts a stopped message. If it is still posting 5 seconds later, `--takeover` sends SIGKILL and the message can be lost. On Windows, `--takeover` uses `TerminateProcess`, which cannot be caught, so the old watcher posts nothing.
 - **Transport.** A named pipe opened with `std::fs::OpenOptions` on Windows, and `std::os::unix::net::UnixStream` elsewhere, in `src/platform.rs`. No new dependency. The tests' fake inbox needs the `Win32_System_IO` feature of windows-sys, as a dev-dependency only.
 - **Unknowns.** Whether the desktop app stops the processes of an idle session, and how long the inbox stays reachable. How Claude Code's Bash tool reports the watcher's exit next to the stopped message. A watcher whose session ended without stopping it finds out only at its next post; until then it holds the name and writes its heartbeat. Long runs (many hours) have not been tested.
+
+### Known risks
+
+- **A watcher that dies silently.** An inbox watcher posts a stopped message when its name is put to sleep, when it reaches `--max-seconds`, on an error, or (on macOS and Linux) on a signal. A watcher that is killed without warning posts nothing: for example, if the desktop app stops the session's processes. The session is not told, so it does not restart the watcher, and messages wait in its inbox. `cq send` does not warn the sender.
+- **Monitor mode heals itself.** The Monitor expires at least every 30 minutes, and the session re-arms it. So a dead Monitor-mode watcher is replaced within 30 minutes. Inbox mode has no such timer.
+- **How to spot it.** The watcher's heartbeat stops. [cq-top](CQ-TOP.md) shows it as `STALE` after 90 seconds. After a `/clear`, `cq session-start` also tells the session that its inbox watcher has stopped. To restart it, run `/cq-start` in that session.
 
 ## Sleep
 
@@ -72,7 +80,7 @@ Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7
 - **Who may sleep whom.** Sleeping another session stops its work, so only a coordinator listed in `coordinators` may do it. Waking costs only tokens, so any name may wake any name (owner decision, 28 Oct 2026).
 - **Waking comes from outside `cq`.** A sleeping session runs no `cq` process. The sender wakes it through Claude Code (the `/cq-start` skill), not through the queue. `cq send` still delivers, so nothing is lost, and warns, so the sender knows to wake the receiver.
 - **`CQ-WAKE` is a backup.** A coordinator's watcher reports a message only after it has waited 2 minutes (`WAKE_AFTER`), so the sender has time to wake the receiver first. The age is the file's modified time, as for the prune. The coordinator scans every second, not on file events, and never claims or moves a message. It reports each message once per run, so a restarted coordinator reports old ones again, once. It is silent under `PAUSE`.
-- **When sleep pays off.** Waking a session writes its whole context to the prompt cache again, which costs about 2 times the context in input tokens. Staying awake costs about 0.4 times the context per hour in re-arms and cache reads. So sleep pays off only for an idle period of about 5 hours or more, unless the context is small.
+- **When sleep pays off.** Waking a session writes its whole context to the prompt cache again, which costs about 2 times the context in input tokens. Staying awake costs about 0.4 times the context per hour in re-arms and cache reads. So sleep pays off only for an idle period of about 5 hours or more, unless the context is small. These figures are for Monitor mode. In inbox mode, an idle session takes no re-arm turns, so staying awake costs less, and sleep pays off only after a longer idle period.
 - **Not in stage 1:** automatic sleep after an idle time. `cq dispatch` (Codex) does not check the flag.
 
 ## Dependencies
