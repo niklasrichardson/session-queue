@@ -407,6 +407,11 @@ pub fn encode(path: &Path) -> String {
         .collect()
 }
 
+/// The key of a working folder, as the Sessions screen matches folders.
+pub fn folder_key(path: &Path) -> String {
+    key(&encode(path))
+}
+
 /// Windows folders are not case-sensitive, so `d:\` and `D:\` are the same folder there.
 fn key(encoded: &str) -> String {
     if cfg!(windows) {
@@ -898,6 +903,11 @@ pub struct Row {
     pub name: String,
     /// The cq name whose watcher runs in this folder; the cq columns come from the queue.
     pub cq_name: Option<String>,
+    /// The cq name of the last watcher seen in this folder while cq-top runs, kept after
+    /// the watcher stops, so a name that went to sleep stays beside its session.
+    pub cq_last: Option<String>,
+    /// The folder key (see `folder_key`), to match a sleeping name's `members/` record.
+    pub folder_key: String,
     pub state: State,
     /// Short form, such as `opus-5-5`; empty when no assistant line was found.
     pub model: String,
@@ -964,6 +974,8 @@ struct Folder {
     /// The transcript `head_info` last read, so it is read once per session.
     head_of: PathBuf,
     head_title: Option<String>,
+    /// The cq name of the last watcher seen in this folder.
+    cq_last: Option<String>,
 }
 
 pub struct Scanner {
@@ -1130,6 +1142,11 @@ impl Scanner {
         let cpu = proc.map(|p| p.1);
 
         let watcher = procs.and_then(|p| p.watchers.get(&k)).cloned();
+        let seen = &mut self.folders.entry(k.clone()).or_default().cq_last;
+        if watcher.is_some() {
+            seen.clone_from(&watcher);
+        }
+        let cq_last = seen.clone();
         let label = path
             .as_deref()
             .map(folder_label)
@@ -1138,6 +1155,8 @@ impl Scanner {
         Row {
             name: display_name(watcher.as_deref(), title.as_deref(), &label),
             cq_name: watcher,
+            cq_last,
+            folder_key: k,
             state: state(now, active, cpu),
             model: latest
                 .as_ref()

@@ -281,6 +281,7 @@ fn draw_flow(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) 
         let backlog = w.claimed + w.queued;
         let busy = w.busy();
         let style = match busy {
+            Busy::Asleep => t.dim,
             Busy::Stale => t.bad,
             Busy::Idle => t.dim,
             Busy::Backlog => t.warn,
@@ -321,6 +322,7 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
 
     let rows = s.watchers.iter().map(|w| {
         let (txt, style) = match w.beat_age {
+            _ if w.asleep => ("asleep".into(), t.info),
             Some(a) if a <= STALE_AFTER => (format!("live {}", age(a)), t.ok),
             Some(a) => (format!("STALE {}", age(a)), t.bad),
             None => ("none".into(), t.dim),
@@ -505,11 +507,17 @@ fn draw_rejected(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
     );
 }
 
-/// The watcher whose process runs in a session's folder, for the cq columns. A session with
-/// no watcher in its folder has none.
+/// The watcher whose process runs in a session's folder, for the cq columns. Without one, a
+/// sleeping name last seen in the folder, or whose `members/` record names the folder. A
+/// session with neither has none.
 pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a Watcher> {
-    let name = row.cq_name.as_deref()?;
-    s.watchers.iter().find(|w| w.name == name)
+    if let Some(name) = row.cq_name.as_deref() {
+        return s.watchers.iter().find(|w| w.name == name);
+    }
+    let asleep = || s.watchers.iter().filter(|w| w.asleep);
+    asleep()
+        .find(|w| row.cq_last.as_deref() == Some(w.name.as_str()))
+        .or_else(|| asleep().find(|w| w.folder.as_deref() == Some(row.folder_key.as_str())))
 }
 
 /// The state shown for a session, and whether it is a warning (idle with cq messages).
@@ -738,6 +746,7 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             };
             let w = session_watcher(s, row);
             let (beat, beat_style) = match w.map(|w| w.beat_age) {
+                _ if w.is_some_and(|w| w.asleep) => ("asleep".into(), t.info),
                 Some(Some(a)) if a <= STALE_AFTER => (age(a), t.ok),
                 Some(Some(_)) => ("STALE".into(), t.bad),
                 Some(None) => ("off".into(), t.dim),

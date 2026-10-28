@@ -12,6 +12,15 @@ Copy and adapt this file for your own queue. Keep private scope rules in your ow
 
 For Claude Code, start the Monitor with timeout_ms 1800000 on cq watch --as NAME. Re-arm whenever the Monitor expires or watch exits. If watch exits 5 because your previous watcher is still running, re-arm with --takeover. If re-arming was the only work in a turn, end with the single word Watching.
 
+Exception: if watch prints CQ-SLEEP and exits 7, your name is asleep. Do not re-arm. Run /cq-stop: it saves a handoff to ~/.claude/cq-handoff/NAME.md and clears the conversation (on Remote Control, it asks the user to type /clear). Run /cq-start when the user or a wake message asks you to rejoin.
+
+## Sleep and wake
+
+- Messages to a sleeping name are delivered. cq send then warns "NAME is asleep; wake it with /cq-start NAME". Then run /cq-start NAME.
+- If the wake cannot be delivered, tell the user which session needs waking, and send a push notification if that tool exists. Do not retry in a loop.
+- A coordinator (a name in CQ_ROOT/coordinators) may get CQ-WAKE lines: a message has waited 2 minutes for a sleeping name. Do the same as a sender: run /cq-start NAME. Do not claim the message.
+- Only a coordinator may sleep another name. Any name may wake any name.
+
 Codex uses cq dispatch instead of Monitor. Give it its own queue name, trusted scope instructions and allowed senders. Each Codex child must let the dispatcher claim, reply and finish; it must not run those commands itself.
 
 ## Claim, decide and finish

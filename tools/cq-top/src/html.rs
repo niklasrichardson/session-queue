@@ -139,6 +139,7 @@ fn bucket_chip(bucket: &str) -> String {
 
 fn heartbeat_chip(w: &Watcher) -> String {
     match w.beat_age {
+        _ if w.asleep => chip(Tone::Muted, "z", "asleep"),
         Some(a) if a <= STALE_AFTER => chip(Tone::Good, "●", &format!("live, {}", age(a))),
         Some(a) => chip(Tone::Critical, "▲", &format!("STALE, {}", age(a))),
         None => chip(Tone::Muted, "○", "no heartbeat"),
@@ -147,6 +148,7 @@ fn heartbeat_chip(w: &Watcher) -> String {
 
 fn busy_tone(b: Busy) -> (Tone, &'static str) {
     match b {
+        Busy::Asleep => (Tone::Muted, "z"),
         Busy::Stale => (Tone::Critical, "▲"),
         Busy::Idle => (Tone::Muted, "○"),
         Busy::Backlog => (Tone::Warning, "◌"),
@@ -186,7 +188,7 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
     let stale: Vec<&str> = s
         .watchers
         .iter()
-        .filter(|w| w.beat_age.is_some_and(|a| a > STALE_AFTER))
+        .filter(|w| !w.asleep && w.beat_age.is_some_and(|a| a > STALE_AFTER))
         .map(|w| w.name.as_str())
         .collect();
     let mut notes = Vec::new();
@@ -304,7 +306,7 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
         let busy = w.busy();
         let (tone, glyph) = busy_tone(busy);
         // The screens call a watcher with no heartbeat STALE too; here it says why.
-        let state = if w.beat_age.is_none() {
+        let state = if w.beat_age.is_none() && !w.asleep {
             chip(Tone::Muted, "○", "no heartbeat")
         } else {
             chip(tone, glyph, busy.label())

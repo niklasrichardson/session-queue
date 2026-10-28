@@ -11,6 +11,8 @@
 //! heartbeat/<name>.lock     held by the running watcher
 //! heartbeat/<name>.pid      the running watcher's process ID
 //! members/<key>             the name owned by a Claude Code session
+//! sleep/<name>              while it exists, the name is asleep
+//! coordinators              names that may sleep and wake others (owner-edited)
 //! PAUSE                     while it exists, watchers emit nothing
 //! ```
 
@@ -32,9 +34,10 @@ const ABSOLUTE_EXAMPLE: &str = "/Users/me/Library/Application Support/cq";
 const ABSOLUTE_EXAMPLE: &str = "/home/me/.local/share/cq";
 
 const TOP_DIRS: [&str; 6] = ["tmp", "inbox", "done", "rejected", "dlq", "heartbeat"];
-/// Created by `cq init`, and on demand, so a root made before it existed
+/// Created by `cq init`, and on demand, so a root made before they existed
 /// still opens.
 const MEMBERS_DIR: &str = "members";
+const SLEEP_DIR: &str = "sleep";
 
 #[derive(Debug, Clone)]
 pub struct Root {
@@ -76,7 +79,7 @@ impl Root {
 
     /// Create the layout. Safe to run more than once.
     pub fn init(&self) -> Result<()> {
-        for d in TOP_DIRS.into_iter().chain([MEMBERS_DIR]) {
+        for d in TOP_DIRS.into_iter().chain([MEMBERS_DIR, SLEEP_DIR]) {
             let p = self.path.join(d);
             fs::create_dir_all(&p)
                 .map_err(|e| CqError::io(format!("create {}", p.display()), e))?;
@@ -140,6 +143,18 @@ impl Root {
 
     pub fn members(&self) -> PathBuf {
         self.path.join(MEMBERS_DIR)
+    }
+
+    pub fn sleep_dir(&self) -> PathBuf {
+        self.path.join(SLEEP_DIR)
+    }
+
+    pub fn sleep_file(&self, name: &str) -> PathBuf {
+        self.sleep_dir().join(name)
+    }
+
+    pub fn coordinators(&self) -> PathBuf {
+        self.path.join("coordinators")
     }
 
     pub fn pause(&self) -> PathBuf {

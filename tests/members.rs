@@ -57,6 +57,9 @@ fn watch_records_the_session() {
     let text = fs::read_to_string(env.path("members/local_aaa")).unwrap();
     let time = text.lines().nth(1).expect("a time line");
     assert!(time.ends_with('Z') && time.len() == 20, "{time:?}");
+    // Line 3: the watcher's working folder, for cq-top.
+    let here = std::env::current_dir().unwrap().display().to_string();
+    assert_eq!(text.lines().nth(2), Some(here.as_str()));
 
     // An empty host ID falls back to the session ID, sanitised.
     watch_once(&env, "c", &[(HOST, ""), (SESSION, "s:2/x")]);

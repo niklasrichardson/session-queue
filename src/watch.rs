@@ -7,6 +7,11 @@
 //! With a session key, the watcher also records which Claude Code session
 //! owns the name (see `members`).
 //!
+//! While `sleep/<name>` exists, the watcher prints `CQ-SLEEP` and exits 7
+//! (see `sleep`). As a backup to the sender's own wake, a coordinator's
+//! watcher also prints one `CQ-WAKE` line per message that has waited
+//! `WAKE_AFTER` for a sleeping name, and never claims or moves it.
+//!
 //! There is no parent-process check. Under Git Bash the parent of `cq.exe`
 //! is a forked bash whose lifetime Cygwin controls, not the Monitor, and the
 //! check was the only path that could end a watcher with exit 0 and no
@@ -29,6 +34,7 @@ use crate::message::{EVENT_SUBJECT_MAX, event_text, header};
 use crate::names::{check_name, is_valid_id};
 use crate::platform;
 use crate::root::{Root, message_file};
+use crate::sleep;
 use crate::timefmt::{self, local_hhmm, rfc3339};
 
 pub const DEFAULT_MAX_SECONDS: u64 = 1790;
@@ -42,6 +48,21 @@ const FALLBACK_RESCAN: Duration = Duration::from_secs(5);
 const TICK: Duration = Duration::from_millis(250);
 /// How long `--takeover` waits for the old watcher to release the lock.
 const TAKEOVER_WAIT: Duration = Duration::from_secs(5);
+/// How often a coordinator's watcher scans the inboxes of sleeping names.
+const WAKE_SCAN_EVERY: Duration = Duration::from_secs(1);
+/// A coordinator's watcher reports a message for a sleeping name once it
+/// has been in the inbox this long (by the file's modified time), which
+/// gives the sender time to wake the name itself.
+pub const WAKE_AFTER: Duration = Duration::from_secs(120);
+
+/// How a watcher run ended without an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    /// `--max-seconds`, or stdout closed: the session re-arms.
+    Normal,
+    /// The name is asleep: exit 7, and the session does not re-arm.
+    Asleep,
+}
 
 #[derive(Debug, Clone)]
 pub struct WatchOptions {
@@ -71,12 +92,18 @@ impl WatchOptions {
     }
 }
 
-/// Run the watcher until `--max-seconds`, or until `out` can no longer be
-/// written. Each of these is a normal exit, and each prints one line to
+/// Run the watcher until `--max-seconds`, until `out` can no longer be
+/// written, or until the name is asleep. Each of these prints one line to
 /// stderr saying why, so an exit is never silent.
-pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<()> {
+pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<Ended> {
     let name = opts.name.as_str();
     check_name("--as", name)?;
+    // Asleep at start: take no lock and record nothing.
+    if let Some(rec) = sleep::read(root, name) {
+        say_asleep(out, &rec);
+        let _ = writeln!(io::stderr(), "cq watch: exiting: asleep");
+        return Ok(Ended::Asleep);
+    }
     root.ensure_session_dirs(name)?;
     let started = Instant::now();
     let deadline = started + Duration::from_secs(opts.max_seconds);
@@ -116,11 +143,21 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<(
     let mut next_rescan = started + rescan;
     let mut next_heartbeat = started;
     let mut next_prune = started;
+    let coordinator = sleep::is_coordinator(root, name);
+    let mut woken: HashSet<String> = HashSet::new();
+    let mut next_wake_scan = started;
 
-    let reason = loop {
+    let (reason, ended) = loop {
         let now = Instant::now();
         if now >= deadline {
-            break format!("--max-seconds {} reached", opts.max_seconds);
+            break (
+                format!("--max-seconds {} reached", opts.max_seconds),
+                Ended::Normal,
+            );
+        }
+        if let Some(rec) = sleep::read(root, name) {
+            say_asleep(out, &rec);
+            break ("asleep".to_owned(), Ended::Asleep);
         }
         if now >= next_heartbeat {
             heartbeat(root, name);
@@ -145,7 +182,19 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<(
             pending = false;
             if let Err(e) = scan(root, name, &mut announced, out) {
                 // Nobody reads the output any more.
-                break format!("stdout can no longer be written ({e})");
+                break (
+                    format!("stdout can no longer be written ({e})"),
+                    Ended::Normal,
+                );
+            }
+        }
+        if coordinator && !paused && now >= next_wake_scan {
+            next_wake_scan = now + WAKE_SCAN_EVERY;
+            if let Err(e) = wake_scan(root, name, &mut woken, out) {
+                break (
+                    format!("stdout can no longer be written ({e})"),
+                    Ended::Normal,
+                );
             }
         }
 
@@ -182,7 +231,13 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Write) -> Result<(
     }
     // Ignore a failed write: stderr may be the same closed pipe as stdout.
     let _ = writeln!(io::stderr(), "cq watch: exiting: {reason}");
-    Ok(())
+    Ok(ended)
+}
+
+/// Print the `CQ-SLEEP` line. A failed write is ignored: the watcher exits
+/// either way.
+fn say_asleep(out: &mut impl Write, rec: &sleep::Sleep) {
+    let _ = writeln!(out, "CQ-SLEEP {}", rec.describe()).and_then(|()| out.flush());
 }
 
 /// Take the exclusive lock on `heartbeat/<name>.lock`. The OS releases it
@@ -265,21 +320,65 @@ fn scan(
             // Announce it anyway; `cq claim` decides what happens to it.
             Err(_) => Vec::new(),
         };
-        let h = header(&bytes);
-        let now = timefmt::now();
-        writeln!(
-            out,
-            "CQ-NEW {} ({}) to={name} from={} type={} id={id} subject={}",
-            rfc3339(now),
-            local_hhmm(now),
-            h.from,
-            h.kind,
-            event_text(&h.subject, EVENT_SUBJECT_MAX)
-        )?;
+        writeln!(out, "{}", event_line("CQ-NEW", name, &id, &bytes))?;
         out.flush()?;
         announced.insert(id);
     }
     Ok(())
+}
+
+/// For a coordinator: one `CQ-WAKE` line per message that has waited at
+/// least `WAKE_AFTER` in the inbox of a name that is still asleep, at most
+/// once per message per watcher run. Reads only; the message stays where it
+/// is.
+fn wake_scan(
+    root: &Root,
+    name: &str,
+    woken: &mut HashSet<String>,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    for to in sleep::asleep(root) {
+        if to == name {
+            continue;
+        }
+        let inbox = root.inbox(&to);
+        for id in fsutil::json_stems(&inbox, is_valid_id) {
+            if woken.contains(&id) {
+                continue;
+            }
+            let path = message_file(&inbox, &id);
+            let waited = fsutil::modified(&path)
+                .and_then(|m| SystemTime::now().duration_since(m).ok())
+                .is_some_and(|age| age >= WAKE_AFTER);
+            if !waited {
+                continue;
+            }
+            let bytes = match fsutil::read_with_retry(&path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(_) => Vec::new(),
+            };
+            writeln!(out, "{}", event_line("CQ-WAKE", &to, &id, &bytes))?;
+            out.flush()?;
+            woken.insert(id);
+        }
+    }
+    Ok(())
+}
+
+/// `<kind> <UTC> (<local>) to=... from=... type=... id=... subject="..."`,
+/// timed now.
+fn event_line(kind: &str, to: &str, id: &str, bytes: &[u8]) -> String {
+    let h = header(bytes);
+    let now = timefmt::now();
+    format!(
+        "{kind} {} ({}) to={to} from={} type={} id={id} subject={}",
+        rfc3339(now),
+        local_hhmm(now),
+        h.from,
+        h.kind,
+        event_text(&h.subject, EVENT_SUBJECT_MAX)
+    )
 }
 
 pub(crate) fn heartbeat(root: &Root, name: &str) {

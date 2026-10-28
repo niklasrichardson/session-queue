@@ -85,6 +85,11 @@ impl Screen {
 struct Watcher {
     name: String,
     beat_age: Option<i64>,
+    /// `sleep/<name>` exists: the watcher stopped on purpose and is not stale.
+    asleep: bool,
+    /// The folder key of the watcher's working folder, from line 3 of its `members/` record,
+    /// so the Sessions screen can find a sleeping name, whose watcher has no process.
+    folder: Option<String>,
     pid: String,
     session: String,
     queued: usize,
@@ -100,6 +105,9 @@ impl Watcher {
     }
 
     fn busy(&self) -> Busy {
+        if self.asleep {
+            return Busy::Asleep;
+        }
         match (self.stale(), self.claimed + self.queued) {
             (true, _) => Busy::Stale,
             (false, 0) => Busy::Idle,
@@ -112,6 +120,7 @@ impl Watcher {
 /// What a watcher is doing right now, for the Busy bars.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Busy {
+    Asleep,
     Stale,
     Idle,
     Backlog,
@@ -121,6 +130,7 @@ enum Busy {
 impl Busy {
     fn label(self) -> &'static str {
         match self {
+            Busy::Asleep => "asleep",
             Busy::Stale => "STALE",
             Busy::Idle => "idle",
             Busy::Backlog => "backlog",
@@ -556,20 +566,25 @@ fn snapshot(root: &cq::Root, beats: &mut Beats) -> Snapshot {
 /// A message moving between folders during a refresh can be counted twice or missed once;
 /// the next refresh is right again (see `docs/CQ-TOP.md`).
 fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
-    // name -> Claude Code session key, from members/<key> (line 1 is the name).
+    // name -> Claude Code session key, from members/<key> (line 1 is the name), and
+    // name -> the watcher's working folder (line 3, written by newer cq).
     let mut sessions: BTreeMap<String, String> = BTreeMap::new();
+    let mut folders: BTreeMap<String, String> = BTreeMap::new();
     for e in fs::read_dir(root.members()).into_iter().flatten().flatten() {
         if let Ok(t) = fs::read_to_string(e.path())
             && let Some(name) = t.lines().next()
         {
-            sessions.insert(
-                name.trim().to_string(),
-                e.file_name().to_string_lossy().into_owned(),
-            );
+            let name = name.trim().to_string();
+            if let Some(dir) = t.lines().nth(2).map(str::trim).filter(|d| !d.is_empty()) {
+                folders.insert(name.clone(), sessions::folder_key(Path::new(dir)));
+            }
+            sessions.insert(name, e.file_name().to_string_lossy().into_owned());
         }
     }
+    let asleep = cq::sleep::asleep(root);
 
     let mut names: BTreeSet<String> = sessions.keys().cloned().collect();
+    names.extend(asleep.iter().cloned());
     for d in ["inbox", "done", "rejected", "dlq"] {
         names.extend(subdirs(&root.path().join(d)));
     }
@@ -611,6 +626,8 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
         watchers.push(Watcher {
             name: name.clone(),
             beat_age,
+            asleep: asleep.contains(name),
+            folder: folders.get(name).cloned(),
             pid,
             session,
             queued: queued.len(),
@@ -854,17 +871,35 @@ mod tests {
         Snapshot {
             now: 1_793_100_400,
             paused: false,
-            watchers: vec![Watcher {
-                name: "w1".into(),
-                beat_age: Some(10),
-                pid: "42".into(),
-                session: "abcd1234".into(),
-                queued: 1,
-                claimed: 1,
-                done: 2,
-                rejected: 0,
-                dead: 0,
-            }],
+            watchers: vec![
+                Watcher {
+                    name: "w1".into(),
+                    beat_age: Some(10),
+                    asleep: false,
+                    folder: None,
+                    pid: "42".into(),
+                    session: "abcd1234".into(),
+                    queued: 1,
+                    claimed: 1,
+                    done: 2,
+                    rejected: 0,
+                    dead: 0,
+                },
+                // Asleep: its watcher stopped, so its heartbeat is old but it is not stale.
+                Watcher {
+                    name: "napper".into(),
+                    beat_age: Some(4000),
+                    asleep: true,
+                    folder: Some("d--code-nap".into()),
+                    pid: String::new(),
+                    session: "nap12345".into(),
+                    queued: 2,
+                    claimed: 0,
+                    done: 0,
+                    rejected: 0,
+                    dead: 0,
+                },
+            ],
             in_flight: vec![msg("queued", "task"), msg("claimed", "task")],
             recent: vec![msg("done", "result")],
             window: vec![msg("done", "result"), msg("queued", "task")],
@@ -1046,6 +1081,95 @@ mod tests {
         ] {
             assert!(page.contains(section), "{section}");
         }
+    }
+
+    #[test]
+    fn snapshot_reads_sleeping_names_and_their_folders() {
+        let (_dir, root) = temp_queue();
+        fs::create_dir_all(root.sleep_dir()).unwrap();
+        fs::write(root.sleep_file("napper"), r#"{"by":"napper","time":"x"}"#).unwrap();
+        fs::write(
+            root.members().join("local_nap"),
+            "napper\n2026-10-27T11:00:00Z\nD:\\Code\\nap\n",
+        )
+        .unwrap();
+        fs::write(root.heartbeat("napper"), "2026-10-27T10:00:00Z\n").unwrap();
+
+        let s = snap(&root, &mut Beats::new());
+        let w = s.watchers.iter().find(|w| w.name == "napper").unwrap();
+        assert!(w.asleep);
+        assert_eq!(w.busy(), Busy::Asleep);
+        assert_eq!(
+            w.folder.as_deref(),
+            Some(sessions::folder_key(Path::new("D:\\Code\\nap")).as_str())
+        );
+        let w1 = s.watchers.iter().find(|w| w.name == "w1").unwrap();
+        assert!(!w1.asleep && w1.folder.is_none());
+    }
+
+    /// A sleeping watcher shows `asleep`, not `STALE`, on Overview, on the Sessions screen
+    /// (found by the folder in its `members/` record), and in both HTML exports.
+    #[test]
+    fn asleep_is_shown_on_screens_and_exports() {
+        let mut snap = sample();
+        snap.sessions.rows.push(sessions::Row {
+            name: "Nap session".into(),
+            folder_key: "d--code-nap".into(),
+            state: sessions::State::Idle,
+            active: 1_793_090_000,
+            ..Default::default()
+        });
+        let row = snap.sessions.rows.last().unwrap();
+        assert_eq!(
+            draw::session_watcher(&snap, row).map(|w| w.name.as_str()),
+            Some("napper")
+        );
+        // Last seen in this folder while cq-top ran: found by name too.
+        let seen = sessions::Row {
+            cq_last: Some("napper".into()),
+            ..Default::default()
+        };
+        assert!(draw::session_watcher(&snap, &seen).is_some());
+        // An awake watcher is found only while its process runs.
+        let gone = sessions::Row {
+            cq_last: Some("w1".into()),
+            ..Default::default()
+        };
+        assert!(draw::session_watcher(&snap, &gone).is_none());
+
+        for screen in [Screen::Overview, Screen::Sessions] {
+            let mut term = Terminal::new(TestBackend::new(140, 42)).unwrap();
+            term.draw(|f| draw(f, Path::new("/queue"), &snap, false, screen, &THEMES[0]))
+                .unwrap();
+            let text: String = term
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("asleep"), "{screen:?}");
+            assert!(!text.contains("STALE"), "{screen:?}");
+        }
+
+        let page = html::dashboard(Path::new("/queue"), &snap);
+        assert!(page.contains("asleep"));
+        assert!(!page.contains("STALE"));
+        assert!(!page.contains("stale (heartbeat"));
+        let sessions = screens::page(
+            Path::new("/queue"),
+            &snap,
+            Screen::Sessions,
+            &THEMES[0],
+            140,
+            42,
+        );
+        // One span per cell: join the cells' text.
+        let cells: String = sessions
+            .split("</span>")
+            .filter_map(|p| p.rsplit('>').next())
+            .collect();
+        assert!(cells.contains("asleep"));
     }
 
     #[test]

@@ -52,7 +52,7 @@ cq-top --html-screens shots         # shots/overview.html, flow.html, rejected.h
 
 ## Overview screen
 
-- **Watchers.** One row per name: heartbeat age, watcher process ID, Claude Code session, and the number of queued, claimed, done, rejected and dead-lettered messages. A heartbeat older than 90 seconds shows as `STALE`.
+- **Watchers.** One row per name: heartbeat age, watcher process ID, Claude Code session, and the number of queued, claimed, done, rejected and dead-lettered messages. A heartbeat older than 90 seconds shows as `STALE`. A name that is asleep (`sleep/<name>` exists) shows `asleep` instead, and gets a row even with no heartbeat.
 - **In flight.** Queued and claimed messages, oldest first. A message that stays here for a long time is probably stuck.
 - **Recent.** The 40 newest finished, rejected and dead-lettered messages.
 
@@ -63,7 +63,7 @@ The state glyphs are `◌` queued, `◐` claimed, `●` done, `✕` rejected and
 - **Messages sent, last hour.** A sparkline of messages over time. The oldest is on the left and the newest is on the right.
 - **Who talks to whom.** The number of messages for each sender and receiver.
 - **Turnaround, task to reply.** For each worker, the median time from the task being sent to its reply being sent.
-- **Busy now.** Claimed plus queued messages for each worker. The bar is full at 4.
+- **Busy now.** Claimed plus queued messages for each worker. The bar is full at 4. A sleeping worker shows `asleep`.
 
 ## Rejected screen
 
@@ -93,7 +93,7 @@ One row per Claude Code session on this computer, with what it costs today and w
 | cpu% | CPU of the session's process and its child processes. 100 is one core. |
 | mem | Memory of the same processes. |
 | sub | Subagent transcripts written in the last 10 minutes. |
-| cq, wait, claim | The cq watcher's heartbeat age (`off` without a heartbeat, `STALE` after 90 seconds, `-` when no watcher runs in the folder), and its queued and claimed messages. |
+| cq, wait, claim | The cq watcher's heartbeat age (`off` without a heartbeat, `STALE` after 90 seconds, `asleep` when its name is asleep, `-` when no watcher runs in the folder), and its queued and claimed messages. |
 | last change | The newest of the last commit on the folder's own `HEAD` and the newest file that `git status` lists in that worktree. Sessions in different worktrees of one repo show their own work. |
 | age | Time since the transcript, or a subagent transcript, was last written. |
 
@@ -115,6 +115,7 @@ The rule is `sessions::state`, and the warning is `sessions::warn`.
 - A folder is shown when a Claude process runs in it, or when its transcript was written in the last 24 hours.
 - A Claude process is a process named `claude`. Helper processes with a `--type=` argument count in the Claude totals but are not sessions. Each other process is matched to a folder by encoding its working folder.
 - A cq watcher is a `cq` process. Its name comes from `cq watch --as NAME` in its arguments, or else from its `heartbeat/NAME.pid` file in the queue root. It belongs to the nearest session process among its parents, up to 10 steps up, because a session often runs `cq watch` from another folder. A watcher with no session above it belongs to its own working folder.
+- A sleeping name has no `cq` process. Its row is the one that last showed that name while `cq-top` ran, or else the folder in line 3 of its `members/` record (the watcher's working folder). A name that matches neither shows only on the Overview screen.
 
 ### Tokens and cost
 
