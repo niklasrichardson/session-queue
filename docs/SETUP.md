@@ -54,7 +54,7 @@ Set up `cq` in three parts, in this order:
 These facts are the same for every agent:
 
 - Each session gets its own queue name, such as `lead` or `worker-a`. Never put a fixed name in a shared instruction file: several sessions can share one folder.
-- The [queue rules block](QUEUE-RULES.md#1-queue-rules-block) is the same for every agent. Each repo that takes queue work also gets a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block).
+- The [queue rules block](QUEUE-RULES.md#1-queue-rules-block) is the same for every agent. Codex has a [Codex-only block](CODEX.md#give-the-chat-its-rules) that holds the same rules. Each repo that takes queue work also gets a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block).
 - `cq claim`, `cq done` and `cq send` write files in the queue root, so an unattended session must be able to run them without an approval prompt.
 - Each agent page also says how to recover after `/clear`, a new chat or a restart.
 
@@ -63,7 +63,7 @@ The rest differs per agent. Follow the page for your agent, then come back to [S
 | Agent | Rules file | No prompts | Wake route | Page |
 | --- | --- | --- | --- | --- |
 | Claude Code | `~/.claude/CLAUDE.md`, with the Claude Code block. The queue name goes in the start prompt. | `Bash(cq *)` in `permissions.allow` | `cq watch --to-inbox`, in the session | [Claude Code setup](CLAUDE-CODE.md) |
-| Codex | `~/.codex/AGENTS.md` or the repo's `AGENTS.md`, with one section per queue name | The queue root writable from the chat's sandbox. A setup where Codex never asks for approval is not tested yet. | `cq watch --to-codex`, outside the chat | [Codex setup](CODEX.md) |
+| Codex | `~/.codex/AGENTS.md` or the repo's `AGENTS.md`, with the Codex-only block once per queue name | The queue root writable from the chat's sandbox. A setup where Codex never asks for approval is not tested yet. | `cq watch --to-codex`, outside the chat | [Codex setup](CODEX.md) |
 | Other agents | The agent's own instruction file | Depends on the agent | A wake feature, a fresh run per task, or polling | [Other agents](OTHER-AGENTS.md) |
 
 ## Send a test message
@@ -72,11 +72,15 @@ Do this after your agent's page. From another session:
 
 ```bash
 cq send --from lead --to worker-a --type task <<'EOF'
-{"subject": "Run the tests", "body": "Run cargo test and report failures."}
+{"subject": "Queue test", "body": "Summarise README.md in one line. Do not edit files."}
 EOF
 ```
 
+The task asks only for a one-line summary, so it fits the sample scope ("summarise a file") on every agent page. If the receiving repo has no `README.md`, name another file.
+
 Expected result: the receiving session starts a turn within seconds, claims the task and replies. A Claude Code session gets a message from `cq` with a `CQ-NEW` line. A Codex watcher prints one `queued a check` line, and the chat starts a turn. An agent that polls handles the task at its next run.
+
+PowerShell has no heredoc. The PowerShell form of this send is in [A round trip in PowerShell](CODEX.md#a-round-trip-in-powershell).
 
 ## Sleep and wake
 

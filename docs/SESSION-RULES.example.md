@@ -28,9 +28,9 @@ Use this only when `cq watch --to-inbox` exits 64, because the session has no in
 
 ### Codex chat
 
-A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a fixed prompt that names NAME. On that prompt, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If there are none, end the turn with no other work and no update. Do not start, stop or take over a watcher from the chat. See [Codex setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md#set-up-a-codex-chat).
+A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a fixed prompt that names NAME. On that prompt, run `cq list --as NAME`. If the first line starts with `ASLEEP`, or there are no UNCLAIMED messages, end the turn with no other work and no update. Otherwise handle each UNCLAIMED message, oldest first. Pass reply and reason JSON with --input FILE, from a UTF-8 file without a byte order mark. If cq send warns that a name is asleep, tell the user which name. Do not start, stop or take over a watcher from the chat.
 
-The Claude Code parts do not apply to a Codex chat: skip Monitor mode, the `Watching` turn ending, the SessionStart reminder, and /cq-start and /cq-stop.
+The other parts for Claude Code do not apply to a Codex chat. For a block to paste into AGENTS.md as is, use the [Codex-only rules block](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md#give-the-chat-its-rules) instead of this file.
 
 ### Other agents
 
