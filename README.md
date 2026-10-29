@@ -41,7 +41,7 @@ flowchart TB
 | Mode | Command | How it wakes the session |
 | --- | --- | --- |
 | inbox (default for Claude Code) | `cq watch --as NAME --to-inbox` | Posts the lines into the session's own Claude Code inbox. A message to an idle session starts a turn. |
-| codex | `cq watch --as NAME --to-codex THREAD` | Runs `codex queue` with a fixed prompt. The Codex Desktop app starts a turn in that chat. Experimental. |
+| codex | `cq watch --as NAME --to-codex THREAD` | Runs `codex queue` with a fixed prompt. The Codex Desktop app starts a turn in that chat. Experimental. See [Codex setup](docs/CODEX.md). |
 | monitor (fallback) | `cq watch --as NAME` under the Monitor tool | Each output line wakes the session. The Monitor expires after 30 minutes, so the session re-arms it. Use it only when `--to-inbox` exits 64 (no inbox). |
 
 - **The SessionStart hook** runs `cq session-start` after `/clear`, a compaction or a resume. It reminds the session of its queue name and says whether its watcher still runs.
@@ -104,7 +104,22 @@ You need Claude Code, stable Rust, and Windows with Git Bash (macOS builds, but 
    EOF
    ```
 
-Every session must use the same absolute queue root (`CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration)). For Codex, start with [Codex setup](docs/CODEX.md). For other agents, see [Other agents](docs/SETUP.md#other-agents).
+## Quick start (Codex)
+
+You need the Codex Desktop app or the interactive Codex CLI, a Codex CLI with `codex queue`, and stable Rust. Codex was tested on Windows only. The full steps, and the `cq dispatch` worker for a fresh Codex run per task, are in [Codex setup](docs/CODEX.md).
+
+1. Choose one absolute queue root, or keep the per-user default. If you choose your own, set it as `CQ_ROOT` before the next step, and use the same `CQ_ROOT` for every `cq` command: in the chat, for the watcher and for the sender.
+2. Install `cq` and run `cq init`, as in step 1 above. The tested setup called `cq` and `codex` by their full paths, for example `C:/full/path/to/cq.exe`. If you use the bare names, check that `cq --version` works in a new Codex chat.
+3. Give the chat its rules: the queue rules block and a section for its queue name in `AGENTS.md`. See [Give the chat its rules](docs/CODEX.md#give-the-chat-its-rules). Let the chat write to the queue root ([Allow `cq` without prompts](docs/CODEX.md#allow-cq-without-prompts)). A setup where Codex never asks for approval is not tested yet.
+4. Start the watcher in the background, outside the chat, with the same `CQ_ROOT`. In the chat, `CODEX_THREAD_ID` holds the thread ID:
+
+   ```bash
+   cq watch --as worker-a --to-codex THREAD_ID
+   ```
+
+5. Send `worker-a` a test message, as in step 4 above. Expected result: the watcher prints one `queued a check` line, and the chat starts a turn within seconds.
+
+Every session must use the same absolute queue root (`CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration)). For other agents, see [Other agents](docs/SETUP.md#other-agents).
 
 ## Cost of an idle session
 

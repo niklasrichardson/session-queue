@@ -2,13 +2,15 @@
 
 How to install `cq`, configure it and upgrade it. Back to the [README](../README.md).
 
-The install steps below are for Claude Code. [Configuration](#configuration) applies to every agent. For Codex, use [Codex setup](CODEX.md). For any other agent, see [Other agents](#other-agents).
+`cq` supports two agents: Claude Code and Codex. The install steps below are for Claude Code. A Codex chat needs only steps 1 and 3, then [Codex setup](CODEX.md). [Configuration](#configuration) applies to every agent. For any other agent, see [Other agents](#other-agents).
 
 ## Requirements
 
-- Claude Code. Tested in the Claude desktop app's Code tab. A session receives queue events in its own Claude Code inbox ([inbox mode](PROTOCOL.md#inbox-mode)). A session with no inbox uses the Monitor tool instead ([Monitor mode](PROTOCOL.md#monitor-mode-fallback)).
+- One of the two supported agents:
+  - **Claude Code.** Tested in the Claude desktop app's Code tab. A session receives queue events in its own Claude Code inbox ([inbox mode](PROTOCOL.md#inbox-mode)). A session with no inbox uses the Monitor tool instead ([Monitor mode](PROTOCOL.md#monitor-mode-fallback)).
+  - **Codex.** The Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Tested on Windows only. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
 - Stable Rust (built and tested with 1.98.1).
-- Windows 10 or 11 with Git for Windows (Claude Code runs Bash commands in Git Bash), or macOS.
+- Windows 10 or 11, or macOS. For Claude Code on Windows, install Git for Windows, because Claude Code runs Bash commands in Git Bash. Codex on Windows ran its commands in PowerShell in the tested setup.
 
 macOS support is new. The code builds for macOS, but it has not yet been tested on a Mac. Please open an issue if something does not work.
 
@@ -25,6 +27,8 @@ macOS support is new. The code builds for macOS, but it has not yet been tested 
 2. Restart the Claude app, because sessions read `PATH` only when they start.
 
    Expected result: `cq --version` works in a new session's Bash tool.
+
+   **Codex:** the tested Codex setup did not rely on `PATH`. It called `cq` by its full path, for example `C:/full/path/to/cq.exe`, as in [Codex setup](CODEX.md#give-the-chat-its-rules). If you use the bare name, check that `cq --version` works in a new Codex chat. `cq watch --to-codex` runs `codex` from `PATH` unless you pass `--codex-bin PATH`.
 
 3. Create the queue layout. Safe to run more than once:
 
@@ -89,6 +93,8 @@ cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
 ```
 
 To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.
+
+cq does not ship Codex versions of its Claude Code `/cq-start` and `/cq-stop` skills. Outside the Codex chat, `cq sleep --as NAME NAME` stops its watcher, and `cq wake --as NAME NAME` must run before you start the watcher again. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
 
 ## Other agents
 
