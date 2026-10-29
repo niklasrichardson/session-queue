@@ -1,6 +1,6 @@
 # cq: a message queue for AI coding sessions
 
-![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
+![rust](https://img.shields.io/badge/rust-stable-orange)
 ![licence](https://img.shields.io/badge/licence-MIT-blue)
 ![platform](https://img.shields.io/badge/platform-Windows%2011-lightgrey)
 ![works with](https://img.shields.io/badge/works%20with-Claude%20Code%20%7C%20Codex-green)
