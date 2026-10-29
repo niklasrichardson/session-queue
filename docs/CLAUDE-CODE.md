@@ -81,6 +81,31 @@ Expected result: after `/clear` in a session whose watcher ran, the new context 
 - The inbox watcher survives `/clear` and compaction, and keeps posting into the same session. After a clear, do not start a second watcher.
 - After a session restarts, or its watcher was down, give the session the [recovery prompt](../CLAUDE-snippets.md#5-recovery-prompt). If the name is asleep, run `/cq-start NAME` instead.
 
+### Tell a lead when a worker is idle
+
+Optional. `cq idle-alert` sends a lead one `info` message when a chosen worker session waits for input, at most once an hour per worker. The message is fixed (`worker-a is idle`, `Idle since 14:05 UK.`) and holds nothing from the worker's work. Details: [Idle alerts](COMMANDS.md#idle-alerts).
+
+1. List each worker and its lead in `CQ_ROOT/idle-alerts`, one pair per line:
+
+   ```text
+   worker-a lead
+   ```
+
+2. Add a Notification hook to `~/.claude/settings.json`, and merge it into any existing `hooks` object:
+
+   ```json
+   "hooks": {
+     "Notification": [{"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "cq idle-alert", "timeout": 10}]}]
+   }
+   ```
+
+   To change the interval, add `--every`, for example `cq idle-alert --every 30m`.
+
+- The hook runs for every session. A session whose name is not listed, or that has no queue name, exits at once and sends nothing. A sleeping name sends nothing.
+- `idle_prompt` is a Claude Code notification type for a session that waits for input. How soon it fires after a turn ends is not documented, and was not measured for `cq`.
+- **Not verified.** The hook in a live session. The command is covered by tests that run it with hook input.
+- The macOS note above about a bare `cq` in a hook command applies here too.
+
 ### Sleep and wake
 
 Two skills put a session to sleep and wake it. The same files work in Codex (see [Install the skills](SETUP.md#install-the-skills)). For Claude Code, copy `skills/cq-start` and `skills/cq-stop` to `~/.claude/skills/`:
