@@ -55,6 +55,7 @@ fn watch_cmd(env: &Env, name: &str, mode: &str, flags: &[&str]) -> Command {
         .env("CQ_FAKE_MODE", mode)
         // Never the real Codex queue database.
         .env("CODEX_HOME", env.path("codex-home"))
+        .env_remove("CODEX_SQLITE_HOME")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -203,6 +204,7 @@ fn bad_arguments_exit_64() {
         &["watch", "--as", "b", "--codex-bin", "codex"],
         &["watch", "--as", "b", "--codex-check-seconds", "5"],
         &["watch", "--as", "b", "--debug"],
+        &["watch", "--as", "b", "--codex-queue-db", "q.sqlite"],
         &["watch", "--as", "b", "--to-codex", " "],
         &[
             "watch",
@@ -294,9 +296,10 @@ fn session_start_for_a_codex_watcher() {
     assert!(!text.contains("Monitor"), "{text}");
 }
 
-/// A Codex queue database in the watcher's `CODEX_HOME` holding `ids`.
-fn fake_queue_db(env: &Env, ids: &[&str]) {
-    let dir = env.path("codex-home");
+/// A Codex queue database in `rel` (`codex-home` is the watcher's
+/// `CODEX_HOME`) holding `ids`.
+fn fake_queue_db(env: &Env, rel: &str, ids: &[&str]) {
+    let dir = env.path(rel);
     fs::create_dir_all(&dir).unwrap();
     let conn = rusqlite::Connection::open(dir.join("queue_1.sqlite")).unwrap();
     conn.execute_batch(
@@ -328,7 +331,7 @@ const NOT_TAKEN: &str = "has not taken the queued check after 1 s (the chat may 
 fn a_check_still_queued_says_to_open_the_chat_once() {
     for (ids, warns) in [(&["q-1"][..], true), (&["q-2"][..], false)] {
         let env = Env::new();
-        fake_queue_db(&env, ids);
+        fake_queue_db(&env, "codex-home", ids);
         env.send("a", "b", "task", SUBJECT, BODY);
         let w = Watcher::spawn(watch_cmd(&env, "b", "ok", &["--codex-check-seconds", "1"]));
         let log = w.line(Duration::from_secs(10)).expect("a log line");
@@ -373,4 +376,49 @@ fn a_missing_queue_database_is_skipped() {
         "{err}"
     );
     assert!(err.contains("no such file"), "{err}");
+}
+
+/// The database is in Codex's SQLite home when that differs from
+/// `CODEX_HOME`: `sqlite_home` in `config.toml`, then `CODEX_SQLITE_HOME`.
+/// `--codex-queue-db` names it directly.
+#[test]
+fn the_queue_database_is_found_in_the_sqlite_home() {
+    for case in ["setting", "variable", "flag"] {
+        let env = Env::new();
+        fake_queue_db(&env, "sqlite-home", &["q-1"]);
+        let sqlite_home = env.path("sqlite-home");
+        fs::create_dir_all(env.path("codex-home")).unwrap();
+        let mut flags = vec!["--codex-check-seconds", "1"];
+        let db = sqlite_home.join("queue_1.sqlite").display().to_string();
+        if case == "flag" {
+            flags.extend(["--codex-queue-db", &db]);
+        }
+        let mut c = watch_cmd(&env, "b", "ok", &flags);
+        match case {
+            "setting" => {
+                // A decoy CODEX_SQLITE_HOME that the setting overrides.
+                fake_queue_db(&env, "decoy", &[]);
+                fs::write(
+                    env.path("codex-home/config.toml"),
+                    format!(
+                        "sqlite_home = '{}'
+",
+                        sqlite_home.display()
+                    ),
+                )
+                .unwrap();
+                c.env("CODEX_SQLITE_HOME", env.path("decoy"));
+            }
+            "variable" => {
+                c.env("CODEX_SQLITE_HOME", &sqlite_home);
+            }
+            _ => {}
+        }
+        env.send("a", "b", "task", SUBJECT, BODY);
+        let w = Watcher::spawn(c);
+        assert!(w.line(Duration::from_secs(10)).is_some(), "{case}");
+        let rest = w.lines_for(Duration::from_secs(3));
+        assert_eq!(rest.len(), 1, "{case}: {rest:?}");
+        assert!(rest[0].contains(NOT_TAKEN), "{case}: {}", rest[0]);
+    }
 }

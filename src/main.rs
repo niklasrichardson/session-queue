@@ -188,6 +188,10 @@ enum Cmd {
         #[arg(long, value_name = "SECS", requires = "to_codex",
               default_value_t = CHECK_AFTER.as_secs())]
         codex_check_seconds: u64,
+        /// Codex's queue database for that look-up, instead of
+        /// queue_1.sqlite in Codex's SQLite home.
+        #[arg(long, value_name = "PATH", requires = "to_codex")]
+        codex_queue_db: Option<PathBuf>,
         /// With --to-codex, print to stderr, once, why the look-up in Codex's
         /// queue database was skipped.
         #[arg(long, requires = "to_codex")]
@@ -419,9 +423,10 @@ fn watch_to_codex(
     bin: Option<OsString>,
     prompt: Option<String>,
     check_after: Duration,
+    db: Option<PathBuf>,
     debug: bool,
 ) -> Result<Ended> {
-    let mut codex = CodexQueue::start(&opts.name, thread, bin, prompt, check_after, debug)?;
+    let mut codex = CodexQueue::start(&opts.name, thread, bin, prompt, check_after, db, debug)?;
     if let Err(e) = platform::install_interrupt_handler() {
         eprintln!("cq watch: a signal will stop the watcher before it queues held messages ({e})");
     }
@@ -482,6 +487,7 @@ fn run(cmd: Cmd) -> Result<i32> {
             codex_bin,
             codex_prompt,
             codex_check_seconds,
+            codex_queue_db,
             debug,
         } => {
             let mode = match (&to_codex, to_inbox) {
@@ -505,7 +511,15 @@ fn run(cmd: Cmd) -> Result<i32> {
             };
             let ended = if let Some(thread) = &to_codex {
                 let check_after = Duration::from_secs(codex_check_seconds);
-                watch_to_codex(&opts, thread, codex_bin, codex_prompt, check_after, debug)?
+                watch_to_codex(
+                    &opts,
+                    thread,
+                    codex_bin,
+                    codex_prompt,
+                    check_after,
+                    codex_queue_db,
+                    debug,
+                )?
             } else if to_inbox {
                 watch_to_inbox(&opts)?
             } else {
