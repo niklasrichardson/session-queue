@@ -283,12 +283,19 @@ impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
 
     /// Queue what is held, unless the name is asleep: then the messages
     /// wait until it wakes.
-    fn stopped(&mut self, _reason: &str, ended: Ended) {
-        if ended == Ended::Normal
-            && self.held > 0
-            && let Err(e) = self.post()
-        {
-            eprintln!("cq watch: could not queue the last check into the Codex chat ({e})");
+    fn stopped(&mut self, _reason: &str, ended: Ended) -> bool {
+        if self.held == 0 {
+            return true;
+        }
+        if ended != Ended::Normal {
+            return false;
+        }
+        match self.post() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("cq watch: could not queue the last check into the Codex chat ({e})");
+                false
+            }
         }
     }
 

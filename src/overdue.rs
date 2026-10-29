@@ -12,6 +12,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -256,15 +257,19 @@ fn scan_dir(
 /// A claimed file's age once no claim for `to` is in progress: `cq claim`
 /// renames the file into `.processing/` and then sets its modified time,
 /// both under the claim lock. Waits for that lock, without creating it,
-/// then reads the time again. `None` when the file has gone or was touched
-/// after `now`.
+/// then reads the time again. `None` when the file has gone, was touched
+/// after `now`, or the lock cannot be opened or taken: the next scan tries
+/// again.
 fn settled_age(root: &Root, to: &str, path: &Path, now: SystemTime) -> Option<Duration> {
-    // No lock file: no claim has ever run for `to`, so none is in progress.
-    let lock = fs::File::open(root.claim_lock(to)).ok();
-    if let Some(f) = &lock {
-        // A lock that fails gives the time as read; at worst one early report.
-        let _ = f.lock_shared();
-    }
+    let _lock = match fs::File::open(root.claim_lock(to)) {
+        Ok(f) => {
+            f.lock_shared().ok()?;
+            Some(f)
+        }
+        // No lock file: no claim has ever run for `to`, so none is in progress.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(_) => return None,
+    };
     fsutil::modified(path).and_then(|m| now.duration_since(m).ok())
 }
 
@@ -516,5 +521,31 @@ mod tests {
             lock.unlock().unwrap();
             assert!(scanning.join().unwrap().is_empty());
         });
+    }
+
+    /// A claim lock that exists but cannot be opened is not "no claim":
+    /// the claimed task is skipped this scan. The lock is never created.
+    /// Windows: a directory cannot be opened as a file.
+    #[cfg(windows)]
+    #[test]
+    fn a_claim_lock_that_cannot_be_opened_skips_the_claimed_task() {
+        let fx = Fixture::new();
+        let lock = fx.root.claim_lock("worker-a");
+        fs::create_dir(&lock).unwrap();
+        assert!(fs::File::open(&lock).is_err());
+        let unclaimed = fx.put(&fx.root.inbox("worker-a"), 1, "task", 45 * MIN);
+        fx.put(&fx.root.processing("worker-a"), 2, "task", 150 * MIN);
+        assert_eq!(fx.ids(), [(unclaimed, State::Unclaimed)]);
+        assert!(lock.is_dir());
+    }
+
+    /// Without a lock file, no claim has run, so the time is trusted, and
+    /// the scan does not create the lock.
+    #[test]
+    fn no_claim_lock_trusts_the_claimed_time() {
+        let fx = Fixture::new();
+        let id = fx.put(&fx.root.processing("worker-a"), 1, "task", 150 * MIN);
+        assert_eq!(fx.ids(), [(id, State::Claimed)]);
+        assert!(!fx.root.claim_lock("worker-a").exists());
     }
 }

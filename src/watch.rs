@@ -132,8 +132,11 @@ pub trait Sink {
         false
     }
     /// The watcher is stopping without an error: deliver what is held back
-    /// and, where someone can act on it, say why.
-    fn stopped(&mut self, _reason: &str, _ended: Ended) {}
+    /// and, where someone can act on it, say why. True when every line given
+    /// to `line` has been delivered, or dropped by design.
+    fn stopped(&mut self, _reason: &str, _ended: Ended) -> bool {
+        true
+    }
     /// A failed `line` or `tick`: `Ok` with the reason for a normal stop,
     /// or the error the watcher exits with.
     fn failed(&mut self, e: io::Error) -> Result<String>;
@@ -322,7 +325,10 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
         let _ = fs::remove_file(&pid_file);
     }
     let (reason, ended) = end?;
-    out.stopped(&reason, ended);
+    // The last lines go out only now; save them once they are delivered.
+    if out.stopped(&reason, ended) && reported != saved {
+        save_reported(root, name, &reported);
+    }
     // Ignore a failed write: stderr may be the same closed pipe as stdout.
     let _ = writeln!(io::stderr(), "cq watch: exiting: {reason}");
     Ok(ended)

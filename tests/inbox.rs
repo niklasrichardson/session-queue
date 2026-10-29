@@ -466,3 +466,53 @@ fn session_start_monitor_after_inbox_and_old_records() {
         monitor_reminder("c")
     );
 }
+
+/// A coordinator's `CQ-OVERDUE` lines that go out only in the stopped
+/// message (an early `--max-seconds` stop, before the 2 s batch window
+/// closes) are saved once that post succeeds, so a restart does not repeat
+/// them.
+#[test]
+fn overdue_lines_in_the_stopped_message_are_not_repeated() {
+    let env = Env::new();
+    fs::write(
+        env.path("coordinators"),
+        "lead
+",
+    )
+    .unwrap();
+    let id = env.send("lead", "worker-a", "task", "old", "x");
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(env.path(&format!("inbox/worker-a/{id}.json")))
+        .unwrap();
+    f.set_modified(std::time::SystemTime::now() - Duration::from_secs(45 * 60))
+        .unwrap();
+    drop(f);
+
+    let inbox = FakeInbox::start();
+    let mut w = watch_to(&env, "lead", &inbox.addr, &["--max-seconds", "1"]);
+    let post = inbox
+        .post(Duration::from_secs(15))
+        .expect("the stopped message");
+    assert!(
+        post.lines()
+            .any(|l| l.starts_with("CQ-OVERDUE ") && l.contains(&format!(" id={id} "))),
+        "{post}"
+    );
+    assert!(post.contains("cq watch (lead) stopped: "), "{post}");
+    assert_eq!(exit_code(&mut w, Duration::from_secs(10)), 0);
+    assert_eq!(
+        fs::read_to_string(env.path("heartbeat/lead.overdue")).unwrap(),
+        format!(
+            "{id}
+"
+        )
+    );
+
+    let again = env.watch("lead", &["--max-seconds", "2"]);
+    let lines = again.lines_for(Duration::from_secs(4));
+    assert!(
+        !lines.iter().any(|l| l.starts_with("CQ-OVERDUE ")),
+        "{lines:?}"
+    );
+}
