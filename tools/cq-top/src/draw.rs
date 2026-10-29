@@ -24,6 +24,10 @@ pub struct Theme {
     bad: Style,
     info: Style,
     alt: Style,
+    /// Codex's share in the CPU and Memory graphs (Claude's is `alt`).
+    codex: Style,
+    /// The context cell above `sessions::CONTEXT_WARN` tokens: orange in every theme.
+    hot: Style,
     /// Header badge and the active tab.
     head: Style,
     bars: symbols::bar::Set<'static>,
@@ -33,6 +37,7 @@ pub struct Theme {
 
 const AMBER: Color = Color::Rgb(255, 176, 0);
 const AMBER_DIM: Color = Color::Rgb(160, 104, 0);
+const AMBER_PALE: Color = Color::Rgb(255, 222, 150);
 const AMBER_BG: Color = Color::Rgb(18, 11, 0);
 const NEON_BG: Color = Color::Rgb(13, 17, 33);
 
@@ -50,6 +55,8 @@ pub static THEMES: [Theme; 3] = [
         bad: Style::new().fg(Color::Red),
         info: Style::new().fg(Color::Cyan),
         alt: Style::new().fg(Color::Magenta),
+        codex: Style::new().fg(Color::LightBlue),
+        hot: Style::new().fg(Color::Indexed(208)),
         head: Style::new().add_modifier(Modifier::REVERSED),
         bars: symbols::bar::NINE_LEVELS,
         gauge_filled: "─",
@@ -72,6 +79,10 @@ pub static THEMES: [Theme; 3] = [
             .add_modifier(Modifier::BOLD),
         info: Style::new().fg(AMBER).add_modifier(Modifier::UNDERLINED),
         alt: Style::new().fg(AMBER_DIM).add_modifier(Modifier::ITALIC),
+        codex: Style::new().fg(AMBER_PALE),
+        hot: Style::new()
+            .fg(Color::Rgb(255, 128, 0))
+            .add_modifier(Modifier::BOLD),
         head: Style::new()
             .fg(AMBER_BG)
             .bg(AMBER)
@@ -97,6 +108,8 @@ pub static THEMES: [Theme; 3] = [
             .add_modifier(Modifier::BOLD),
         info: Style::new().fg(Color::Rgb(0, 224, 255)),
         alt: Style::new().fg(Color::Rgb(184, 124, 255)),
+        codex: Style::new().fg(Color::Rgb(255, 150, 60)),
+        hot: Style::new().fg(Color::Rgb(255, 128, 0)),
         head: Style::new()
             .fg(NEON_BG)
             .bg(Color::Rgb(255, 64, 200))
@@ -753,7 +766,7 @@ const MACHINE_ROWS: u16 = 9;
 const GRAPH_MIN: u16 = 12;
 
 /// The CPU and Memory boxes side by side: figures on the left, and on the right a graph of
-/// the whole computer with Claude's share drawn over it in a second colour.
+/// the whole computer with Claude's and Codex's shares drawn over it, each in its own colour.
 fn draw_machine(f: &mut Frame, area: Rect, r: &sessions::Report, t: &Theme) {
     let m = match (&r.machine, r.ready) {
         (Some(m), true) => m,
@@ -778,8 +791,12 @@ fn draw_machine(f: &mut Frame, area: Rect, r: &sessions::Report, t: &Theme) {
         cpu,
         " CPU ",
         &m.cpu_figures(),
-        (now.cpu, now.claude_cpu),
-        (series(|s| s.cpu), series(|s| s.claude_cpu)),
+        (now.cpu, now.claude_cpu, now.codex_cpu),
+        (
+            series(|s| s.cpu),
+            series(|s| s.claude_cpu),
+            series(|s| s.codex_cpu),
+        ),
         t,
     );
     machine_box(
@@ -787,8 +804,12 @@ fn draw_machine(f: &mut Frame, area: Rect, r: &sessions::Report, t: &Theme) {
         mem,
         " Memory ",
         &m.mem_figures(),
-        (now.mem, now.claude_mem),
-        (series(|s| s.mem), series(|s| s.claude_mem)),
+        (now.mem, now.claude_mem, now.codex_mem),
+        (
+            series(|s| s.mem),
+            series(|s| s.claude_mem),
+            series(|s| s.codex_mem),
+        ),
         t,
     );
 }
@@ -839,20 +860,21 @@ fn figures_box(
     graph
 }
 
-/// One box. `now` and `history` are (whole computer, Claude), 0 to 100.
+/// One box. `now` and `history` are (whole computer, Claude, Codex), 0 to 100. Claude and
+/// Codex are stacked: Claude from the bottom, then Codex on top of it.
 fn machine_box(
     f: &mut Frame,
     area: Rect,
     title: &str,
     figures: &[(&str, String)],
-    now: (f32, f32),
-    history: (Vec<f32>, Vec<f32>),
+    now: (f32, f32, f32),
+    history: (Vec<f32>, Vec<f32>, Vec<f32>),
     t: &Theme,
 ) {
     use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
-    // The whole computer, and Claude's share of it.
-    let (whole, claude) = (t.ok, t.alt);
-    // The first figure is the whole computer's, and the one labelled Claude is Claude's.
+    // The whole computer, and Claude's and Codex's shares of it.
+    let (whole, claude, codex) = (t.ok, t.alt, t.codex);
+    // The first figure is the whole computer's; the ones labelled Claude and Codex are theirs.
     let figures = figures
         .iter()
         .enumerate()
@@ -860,6 +882,7 @@ fn machine_box(
             let mark = match (i, *label) {
                 (0, _) => Some(whole),
                 (_, "Claude") => Some(claude),
+                (_, "Codex") => Some(codex),
                 _ => None,
             };
             (*label, value.clone(), mark)
@@ -879,7 +902,14 @@ fn machine_box(
                 .map(|(i, y)| ((start + i) as f64, f64::from(*y)))
                 .collect::<Vec<_>>()
         };
-        let (a, b) = (points(&history.0), points(&history.1));
+        // Codex's bar starts where Claude's ends, so it is drawn to their sum, under Claude's.
+        let both: Vec<f32> = history
+            .1
+            .iter()
+            .zip(&history.2)
+            .map(|(a, b)| a + b)
+            .collect();
+        let (a, b, c) = (points(&history.0), points(&history.1), points(&both));
         let set = |data, style| {
             Dataset::default()
                 .marker(symbols::Marker::Braille)
@@ -888,7 +918,7 @@ fn machine_box(
                 .data(data)
         };
         f.render_widget(
-            Chart::new(vec![set(&a, whole), set(&b, claude)])
+            Chart::new(vec![set(&a, whole), set(&c, codex), set(&b, claude)])
                 .x_axis(Axis::default().bounds([0.0, (cap - 1) as f64]))
                 .y_axis(
                     Axis::default()
@@ -901,14 +931,17 @@ fn machine_box(
         return;
     }
 
-    // A one-shot export has no history: one bar for now, Claude's share first.
+    // A one-shot export has no history: one bar for now, Claude's share first, then Codex's.
     let w = usize::from(graph.width);
     let cells = |v: f32| ((f64::from(v) / 100.0 * w as f64).round() as usize).min(w);
-    let (all, mine) = (cells(now.0), cells(now.1).min(cells(now.0)));
+    let all = cells(now.0);
+    let mine = cells(now.1).min(all);
+    let both = cells(now.1 + now.2).clamp(mine, all);
     let full = t.bars.full;
     let bar = Line::from(vec![
         Span::styled(full.repeat(mine), claude),
-        Span::styled(full.repeat(all - mine), whole),
+        Span::styled(full.repeat(both - mine), codex),
+        Span::styled(full.repeat(all - both), whole),
         Span::styled("░".repeat(w - all), t.dim),
     ]);
     let mut rows = vec![Line::default(); usize::from(graph.height.saturating_sub(5) / 2)];
@@ -924,7 +957,7 @@ fn machine_box(
 /// The Sessions screen: CPU and Memory boxes for the whole computer, then one row per Claude
 /// Code session. Only counts, times, model names and titles are shown, never message text.
 fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
-    use sessions::{State, bytes, count, usd};
+    use sessions::{Context, State, bytes, count, usd};
     let [head, strip, table] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(MACHINE_ROWS),
@@ -988,7 +1021,15 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 } else {
                     Cell::from(row.model.clone())
                 },
-                opt(row.context.map(count)),
+                // Only the context cell is coloured when the context is large.
+                match row.context {
+                    Some(n) => Cell::from(count(n)).style(match sessions::context(n) {
+                        Context::Normal => t.text,
+                        Context::Warn => t.hot,
+                        Context::Bad => t.bad,
+                    }),
+                    None => dash(),
+                },
                 Cell::from(count(row.tokens_today)),
                 Cell::from(usd(row.cost_today)),
                 opt(row.cpu.map(|c| format!("{c:.1}"))),

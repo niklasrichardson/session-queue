@@ -2,7 +2,7 @@
 
 How to install `cq`, configure it and upgrade it. Back to the [README](../README.md).
 
-For Codex, use [Codex setup](CODEX.md). The steps below are for Claude Code. Shared queue configuration is listed below.
+The install steps below are for Claude Code. [Configuration](#configuration) applies to every agent. For Codex, use [Codex setup](CODEX.md). For any other agent, see [Other agents](#other-agents).
 
 ## Requirements
 
@@ -38,7 +38,7 @@ macOS support is new. The code builds for macOS, but it has not yet been tested 
 
 5. If your sessions run sandboxed, add the queue root to the sandbox's writable paths.
 
-6. Add the CLAUDE.md blocks from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md): the user-level block to `~/.claude/CLAUDE.md`, and a "Queue scope" block to each repo that takes queue work.
+6. Add the rules to `~/.claude/CLAUDE.md`: the [queue rules block](QUEUE-RULES.md#1-queue-rules-block), which is the same for every agent, and the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md#1-user-level-block). Add a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block) to each repo that takes queue work.
 
 7. Optional: add deny rules for actions that must never happen unattended, such as force-push or deleting outside the repo.
 
@@ -52,7 +52,7 @@ macOS support is new. The code builds for macOS, but it has not yet been tested 
 
    Expected result: after `/clear` in a session whose watcher ran, the new context starts with "You are in the cq session queue as NAME".
 
-9. Start each session with the start prompt in `CLAUDE-snippets.md` (section 3), giving each one its own queue name.
+9. Start each session with the [start prompt](../CLAUDE-snippets.md#3-session-start-prompt), giving each one its own queue name.
 
 ## Configuration
 
@@ -89,6 +89,19 @@ cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
 ```
 
 To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.
+
+## Other agents
+
+`cq` has been tested with Claude Code and Codex only. Another agent can use the queue if it has:
+
+1. **Shell access.** It runs `cq send`, `cq claim`, `cq done` and `cq list`. Each command needs the same absolute `CQ_ROOT` and write access to the queue root, without an approval prompt.
+2. **Its rules.** Put the [queue rules](QUEUE-RULES.md) in the agent's instruction file.
+3. **A wake route.** Something must start a turn when a message arrives. One of:
+   - **A wake feature:** a command or socket that starts a turn in an idle chat, as `codex queue` and the Claude Code inbox do. `cq watch` supports only these two today, so a new agent needs a new watcher mode.
+   - **A non-interactive mode:** a fresh agent run per task. `cq dispatch` runs only Codex today.
+   - **Polling:** a scheduled task in the agent that runs `cq list --as NAME` and handles new messages. With Codex, each run cost a model turn, even when the inbox was empty ([Codex setup](CODEX.md#same-chat-scheduled-automation-fallback)).
+
+If you use `cq` with another agent, please describe your setup in a comment on [issue #11](https://github.com/niklasrichardson/session-queue/issues/11).
 
 ## Upgrading while watchers run
 

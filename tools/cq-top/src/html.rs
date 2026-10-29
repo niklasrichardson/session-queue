@@ -630,6 +630,21 @@ fn problem_table(b: &mut String, s: &Snapshot) {
     b.push_str("</tbody></table></div></section>");
 }
 
+/// The context figure, orange above `CONTEXT_WARN` tokens and red above `CONTEXT_BAD`.
+fn context_cell(tokens: u64) -> String {
+    let n = sessions::count(tokens);
+    let (class, over) = match sessions::context(tokens) {
+        sessions::Context::Normal => return n,
+        sessions::Context::Warn => (Tone::Serious, sessions::CONTEXT_WARN),
+        sessions::Context::Bad => (Tone::Critical, sessions::CONTEXT_BAD),
+    };
+    format!(
+        "<span class=\"{}\" title=\"over {} tokens\">{n}</span>",
+        class.class(),
+        sessions::count(over)
+    )
+}
+
 /// Claude Code sessions, as on the Sessions screen. Titles are escaped; no message text is
 /// ever read into the report.
 fn sessions_table(b: &mut String, s: &Snapshot) {
@@ -643,11 +658,13 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
     };
     let machine = match &r.machine {
         Some(m) => format!(
-            "This computer. CPU: {}. Memory: {}. Claude is its {} processes together, and \
-             its CPU here is a share of the whole computer. A busy core is one at {}% or more.",
+            "This computer. CPU: {}. Memory: {}. Claude is {} processes and Codex is {}, each \
+             with the processes it started, and their CPU here is a share of the whole \
+             computer. A busy core is one at {}% or more.",
             list(&m.cpu_figures()),
             list(&m.mem_figures()),
             m.claude_procs,
+            m.codex_procs,
             sessions::BUSY_CORE
         ),
         None => "Process data unavailable: CPU and memory show -, and the state uses file \
@@ -691,7 +708,7 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
              <td class=\"n\">{}</td><td class=\"nowrap\">{}</td><td class=\"n\">{}</td></tr>",
             esc(&row.name),
             opt(Some(row.model.clone()).filter(|m| !m.is_empty())),
-            opt(row.context.map(count)),
+            row.context.map_or_else(dash, context_cell),
             count(row.tokens_today),
             esc(&usd(row.cost_today)),
             opt(row.cpu.map(|c| format!("{c:.1}"))),
