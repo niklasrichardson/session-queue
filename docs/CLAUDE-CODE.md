@@ -124,3 +124,25 @@ An inbox-mode watcher never re-arms, so it keeps running the old binary. Ask eac
 ## Session identity
 
 `cq` records which session owns a queue name in `members/`. In Claude Code, the key is `CLAUDE_CODE_HOST_SESSION_ID` (the desktop app's `local_...` ID), else `CLAUDE_CODE_SESSION_ID`. `CQ_SESSION_ID` takes precedence over both. Never set one global `CQ_SESSION_ID` shared by Claude Code sessions: every session would get the same key and replace the others' records. See [Rejoin after /clear](PROTOCOL.md#rejoin-after-clear).
+
+### Claude Code CLI: start with a stable key
+
+Without `CQ_SESSION_ID`, a Claude Code CLI session loses its queue name on `/clear` ([#5](https://github.com/niklasrichardson/session-queue/issues/5)). The CLI has no host session ID, and its `CLAUDE_CODE_SESSION_ID` changes on `/clear`, so `cq session-start` finds no record for the new key. The desktop app does not need this: its host session ID survives `/clear`.
+
+So start each CLI worker with its own `CQ_SESSION_ID`. The watcher, the SessionStart hook and every `cq` command inherit it from the `claude` process, and it comes first in the key order. In Git Bash:
+
+```bash
+CQ_SESSION_ID=worker-a claude "Your queue name is worker-a. ..."
+```
+
+In PowerShell:
+
+```powershell
+$env:CQ_SESSION_ID = 'worker-a'; claude "Your queue name is worker-a. ..."
+```
+
+In PowerShell the variable stays set in that window after `claude` exits, so start each worker in its own window. Use the start prompt from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md#3-session-start-prompt) in place of `...`. The CLI asks you to trust the folder when it starts; answer that once.
+
+Use a different value for each worker. Two sessions with the same `CQ_SESSION_ID` share one record, `members/<key>`. Each `cq watch` rewrites that record with its own name, so after `/clear` both sessions are told the name of the session whose watcher started last. One of them then works as the wrong name.
+
+Not yet re-tested: rejoin after `/clear` with `CQ_SESSION_ID` set ([#5](https://github.com/niklasrichardson/session-queue/issues/5)).
