@@ -20,7 +20,7 @@ pub struct Theme {
     dim: Style,
     accent: Style,
     ok: Style,
-    warn: Style,
+    pub warn: Style,
     bad: Style,
     info: Style,
     alt: Style,
@@ -145,6 +145,9 @@ impl Theme {
     }
 }
 
+/// Marks an overdue task, and the overdue count in the header.
+pub const OVERDUE_MARK: &str = "▲";
+
 /// The widest name in a name column, so names are not cut: at least the header, at most 24.
 fn name_width<'a>(header: &str, names: impl Iterator<Item = &'a str>) -> u16 {
     names
@@ -180,10 +183,17 @@ fn header(
     } else {
         ("running", t.ok)
     };
+    // Overdue tasks are counted while PAUSE exists too: the count only reads.
+    let overdue = match s.overdue() {
+        0 => Span::styled("0 overdue", t.dim),
+        n => Span::styled(format!("{OVERDUE_MARK} {n} overdue"), t.warn),
+    };
     let mut spans = vec![
         Span::styled(" cq-top ", t.head),
         Span::styled(format!(" {}  ", root.display()), t.text),
         Span::styled(state, style),
+        Span::raw("  "),
+        overdue,
         Span::raw("  "),
     ];
     // One tab per screen, in tab order; the number is its key.
@@ -359,7 +369,17 @@ fn empty_note(f: &mut Frame, area: Rect, skip: u16, note: &'static str, t: &Them
 
 /// One row per worker: its watcher's state and load now, and its replies in the last hour.
 fn draw_workers(f: &mut Frame, area: Rect, s: &Snapshot, rows: &[Worker], t: &Theme) {
-    let block = t.block(" Workers: load now, replies in the last hour ");
+    // The overdue rule goes under the box: the caption is full at 100 columns.
+    let block = t
+        .block(" Workers: load now, replies in the last hour ")
+        .title_bottom(Span::styled(
+            format!(
+                " overdue: a task unclaimed {}m or claimed {}m ",
+                s.limits.unclaimed.as_secs() / 60,
+                s.limits.claimed.as_secs() / 60
+            ),
+            t.dim,
+        ));
     let inner = block.inner(area);
     f.render_widget(block, area);
     let [caption, table] =
@@ -375,19 +395,20 @@ fn draw_workers(f: &mut Frame, area: Rect, s: &Snapshot, rows: &[Worker], t: &Th
         caption,
     );
 
-    let cols: [(&str, u16, u8); 8] = [
+    let cols: [(&str, u16, u8); 9] = [
         (
             "worker",
             name_width("worker", rows.iter().map(|w| w.name.as_str())),
             0,
         ),
         ("state", 6, 1),
-        ("mode", 5, 6),
+        ("mode", 5, 7),
         ("queued", 6, 2),
         ("claimed", 7, 3),
+        ("overdue", 7, 6),
         ("load", 8, 4),
         ("median task→reply", 17, 5),
-        ("replies", 7, 7),
+        ("replies", 7, 8),
     ];
     let keep = fit_columns(&cols, table.width);
     let dash = || Cell::from("-").style(t.dim);
@@ -413,11 +434,13 @@ fn draw_workers(f: &mut Frame, area: Rect, s: &Snapshot, rows: &[Worker], t: &Th
                     Busy::Working => t.info,
                 };
                 let ratio = (w.queued + w.claimed) as f64 / LOAD_FULL as f64;
-                bar(ratio, cols[5].1, style, t)
+                bar(ratio, cols[6].1, style, t)
             });
+            let overdue = s.overdue_for(&r.name);
             Row::new(kept(
                 [
-                    Cell::from(r.name.clone()).style(t.accent),
+                    // A worker with overdue tasks is named in the warning style.
+                    Cell::from(r.name.clone()).style(if overdue > 0 { t.warn } else { t.accent }),
                     Cell::from(state).style(state_style),
                     match w.and_then(|w| s.mode(w)) {
                         Some(Mode::Monitor) => Cell::from("mon"),
@@ -426,6 +449,11 @@ fn draw_workers(f: &mut Frame, area: Rect, s: &Snapshot, rows: &[Worker], t: &Th
                     },
                     w.map_or_else(dash, |w| Cell::from(w.queued.to_string())),
                     w.map_or_else(dash, |w| Cell::from(w.claimed.to_string())),
+                    match (w, overdue) {
+                        (None, 0) => dash(),
+                        (_, 0) => Cell::from("0").style(t.dim),
+                        (_, n) => Cell::from(format!("{OVERDUE_MARK} {n}")).style(t.warn),
+                    },
                     load.map_or_else(dash, Cell::from),
                     r.median.map_or_else(dash, |m| Cell::from(age(m))),
                     Cell::from(r.replies.to_string()).style(if r.replies > 0 {
@@ -610,14 +638,21 @@ fn msg_table(
         } else {
             format!("{glyph} {} {}", m.bucket, m.status)
         };
+        // An overdue task: a mark before its age, and the row in the warning style.
+        let (when, row_style) = if m.overdue {
+            (format!("{OVERDUE_MARK} {}", age(now - m.ts)), t.warn)
+        } else {
+            (age(now - m.ts), Style::new())
+        };
         Row::new(vec![
-            Cell::from(age(now - m.ts)),
+            Cell::from(when),
             Cell::from(m.from.clone()),
             Cell::from(m.to.clone()),
             Cell::from(m.kind.clone()),
             Cell::from(state).style(style),
             Cell::from(text),
         ])
+        .style(row_style)
     });
     // The subject has the lowest priority: in a narrow terminal it shrinks first.
     Table::new(

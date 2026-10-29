@@ -77,6 +77,15 @@ Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7
 
 The skills are in [`skills/`](../skills/); [Setup](SETUP.md#skills) says how to install them. When sleep pays off is in [Design](DESIGN.md#sleep).
 
+## Overdue tasks
+
+[Issue #21](https://github.com/niklasrichardson/session-queue/issues/21). A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 minutes without `cq done`. The limits, `cq list --overdue` and the `CQ-OVERDUE` line are in [Commands](COMMANDS.md#overdue-tasks).
+
+- **The coordinator acts.** A coordinator's watcher prints one `CQ-OVERDUE` line per task when it becomes overdue. The coordinator then checks on the task: it asks the worker, wakes a sleeping worker with `/cq-start NAME`, or tells the user. Workers do not act on overdue reports.
+- **`cq` changes nothing.** No command resends, reclaims or moves an overdue task. A resend is a new task, sent by a person or the coordinator with `cq send`.
+- **Anyone can look.** `cq list --overdue` and `cq-top` show overdue tasks to any name. They only read, so they work under `PAUSE`. Under `PAUSE` the coordinator's watcher prints no `CQ-OVERDUE` lines until `PAUSE` is removed.
+- Without a `coordinators` file, nobody gets `CQ-OVERDUE` lines; use `cq list --overdue` or `cq-top`.
+
 ## Storm limits
 
 `cq send` enforces these. Each refusal exits 5, names the limit, and writes nothing. The values are constants in `src/message.rs`, and `cq send --help` lists them.

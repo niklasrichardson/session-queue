@@ -21,10 +21,7 @@ pub fn requeue(root: &Root, name: &str, id: &str) -> Result<Option<String>> {
     // Hold the recipient's claim lock, as `cq claim` does, until the reason
     // file is gone. Otherwise a fast claim and reject of the requeued
     // message could write a new reason file that this one then removes.
-    let claim_lock_path = root
-        .path()
-        .join("heartbeat")
-        .join(format!("{name}.claim.lock"));
+    let claim_lock_path = root.claim_lock(name);
     let claim_lock =
         fsutil::open_lock_file(&claim_lock_path).map_err(|e| CqError::io("open claim lock", e))?;
     claim_lock

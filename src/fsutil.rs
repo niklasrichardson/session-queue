@@ -112,6 +112,21 @@ pub fn touch(path: &Path) -> io::Result<()> {
     f.set_modified(SystemTime::now())
 }
 
+/// `touch`, retrying errors other than "not found".
+pub fn touch_with_retry(path: &Path) -> io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match touch(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound || attempt >= RETRIES => return Err(e),
+            Err(_) => {
+                attempt += 1;
+                sleep(RETRY_DELAY);
+            }
+        }
+    }
+}
+
 pub fn modified(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }

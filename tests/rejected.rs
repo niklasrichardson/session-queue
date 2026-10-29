@@ -239,11 +239,20 @@ fn list_rejected_shows_both_directions() {
     let out = env.run(&["list", "--as", "dave", "--rejected"], None);
     assert_eq!(stdout(&out), "TOTAL rejected_in=0 rejected_out=0\n");
 
-    // --rejected does not take --stale-minutes.
-    let out = env.run(
-        &["list", "--as", "bob", "--rejected", "--stale-minutes", "5"],
-        None,
-    );
+    // --rejected does not take --stale-minutes, --overdue or the overdue
+    // limits.
+    for extra in [
+        &["--stale-minutes", "5"][..],
+        &["--overdue"][..],
+        &["--unclaimed-minutes", "5"][..],
+        &["--claimed-minutes", "5"][..],
+    ] {
+        let mut args = vec!["list", "--as", "bob", "--rejected"];
+        args.extend_from_slice(extra);
+        let out = env.run(&args, None);
+        assert_eq!(code(&out), 64, "{extra:?}: {}", stderr(&out));
+    }
+    let out = env.run(&["list", "--rejected", "--overdue"], None);
     assert_eq!(code(&out), 64, "{}", stderr(&out));
 }
 

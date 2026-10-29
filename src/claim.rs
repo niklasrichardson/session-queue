@@ -21,10 +21,7 @@ pub fn claim(root: &Root, name: &str, id: &str) -> Result<Vec<u8>> {
     // either moves it, then both report success for the same destination.
     // Serialise the claim transaction per recipient; never remove this lock
     // file while another process could hold an open handle to it.
-    let claim_lock_path = root
-        .path()
-        .join("heartbeat")
-        .join(format!("{name}.claim.lock"));
+    let claim_lock_path = root.claim_lock(name);
     let claim_lock =
         fsutil::open_lock_file(&claim_lock_path).map_err(|e| CqError::io("open claim lock", e))?;
     claim_lock
@@ -55,8 +52,20 @@ pub fn claim(root: &Root, name: &str, id: &str) -> Result<Vec<u8>> {
             ));
         }
     }
-    // The modified time records the claim, for `cq list --stale-minutes`.
-    let _ = fsutil::touch(&dst);
+    // The modified time records the claim, for `cq list --stale-minutes`
+    // and overdue tasks. Without it, the message would look claimed since it
+    // arrived, so put it back and fail. Overdue scans take the claim lock
+    // before they trust a claimed file's time.
+    if let Err(e) = fsutil::touch_with_retry(&dst) {
+        let undo = match fsutil::move_with_retry(&dst, &src) {
+            Ok(()) => format!("it is back in inbox/{name}/"),
+            Err(m) => format!("it stays in inbox/{name}/.processing/ ({m:?})"),
+        };
+        return Err(CqError::io(
+            format!("record the claim time of {id}; {undo}"),
+            e,
+        ));
+    }
 
     let bytes = fsutil::read_with_retry(&dst)
         .map_err(|e| CqError::io(format!("read {}", dst.display()), e))?;

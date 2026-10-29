@@ -23,7 +23,7 @@ use cq::send::{self, Hops, Outgoing};
 use cq::watch::{
     self, DEFAULT_MAX_SECONDS, DEFAULT_RESCAN_SECONDS, Ended, Lines, Sink, WatchOptions,
 };
-use cq::{Root, claim, list, members, platform, sleep, timefmt};
+use cq::{Root, claim, list, members, overdue, platform, sleep, timefmt};
 
 const EXIT_CODES: &str = "\
 Exit codes:
@@ -58,6 +58,24 @@ here: {root}
 The local time in CQ-NEW and list lines uses CQ_TZ (an IANA time zone name)
 and CQ_TZ_LABEL; here: {}.",
         timefmt::local_description()
+    )
+}
+
+/// The overdue rule for `cq list --overdue`, then the exit codes.
+fn overdue_help() -> String {
+    format!(
+        "Overdue (--overdue): a task is overdue when it is still unclaimed {}
+minutes after it arrived, or claimed with no done {} minutes after the claim
+(the defaults; set {} and {}, or the flags).
+Results and info are never overdue. It reads only, and works while PAUSE
+exists; cq never moves, re-sends or answers an overdue task.
+
+{}",
+        overdue::DEFAULT_UNCLAIMED_MINUTES,
+        overdue::DEFAULT_CLAIMED_MINUTES,
+        overdue::ENV_UNCLAIMED,
+        overdue::ENV_CLAIMED,
+        exit_help()
     )
 }
 
@@ -241,18 +259,33 @@ enum Cmd {
     },
 
     /// List unclaimed, stale claimed and dead-lettered messages, oldest first.
-    #[command(after_help = exit_help())]
+    /// With --overdue, list the overdue tasks in every inbox instead.
+    #[command(after_help = overdue_help())]
     List {
         /// Your session name.
-        #[arg(long = "as", value_name = "NAME")]
-        name: String,
+        #[arg(long = "as", value_name = "NAME", required_unless_present = "overdue")]
+        name: Option<String>,
         /// A claimed message counts as stale after this many minutes.
-        #[arg(long, default_value_t = 60)]
+        #[arg(long, default_value_t = 60, conflicts_with = "overdue")]
         stale_minutes: u64,
         /// List rejected messages instead: those you rejected (REJECTED-IN)
         /// and those you sent that others rejected (REJECTED-OUT).
-        #[arg(long, conflicts_with = "stale_minutes")]
+        #[arg(long, conflicts_with_all = ["stale_minutes", "overdue"])]
         rejected: bool,
+        /// List overdue tasks across all inboxes: unclaimed or claimed for
+        /// too long. Read only; works while PAUSE exists.
+        #[arg(long, conflicts_with = "name")]
+        overdue: bool,
+        /// With --overdue: an unclaimed task is overdue after this many
+        /// minutes. Default: CQ_OVERDUE_UNCLAIMED_MINUTES, else 30.
+        #[arg(long, value_name = "N",
+              value_parser = clap::value_parser!(u64).range(1..))]
+        unclaimed_minutes: Option<u64>,
+        /// With --overdue: a claimed task with no done is overdue after this
+        /// many minutes. Default: CQ_OVERDUE_CLAIMED_MINUTES, else 120.
+        #[arg(long, value_name = "M",
+              value_parser = clap::value_parser!(u64).range(1..))]
+        claimed_minutes: Option<u64>,
     },
 
     /// Leave the queue: forget which Claude Code session owns this name.
@@ -556,12 +589,26 @@ fn run(cmd: Cmd) -> Result<i32> {
             name,
             stale_minutes,
             rejected,
+            overdue: show_overdue,
+            unclaimed_minutes,
+            claimed_minutes,
         } => {
-            let root = Root::open()?;
-            let lines = if rejected {
-                list::rejected(&root, &name)?
+            let lines = if show_overdue {
+                let limits =
+                    overdue::Limits::from_env()?.with_minutes(unclaimed_minutes, claimed_minutes);
+                overdue::list(&Root::open()?, &limits)
+            } else if unclaimed_minutes.is_some() || claimed_minutes.is_some() {
+                // Checked here: clap counts a flag's default as present.
+                return Err(CqError::usage(
+                    "--unclaimed-minutes and --claimed-minutes need --overdue",
+                ));
             } else {
-                list::list(&root, &name, stale_minutes)?
+                let name = name.ok_or_else(|| CqError::usage("--as is required"))?;
+                if rejected {
+                    list::rejected(&Root::open()?, &name)?
+                } else {
+                    list::list(&Root::open()?, &name, stale_minutes)?
+                }
             };
             for line in lines {
                 println!("{line}");
