@@ -274,6 +274,42 @@ fn single_watcher_and_takeover() {
     assert_eq!(event_id(&lines[0]), id);
 }
 
+/// An install renames the live `cq` executable and copies the new one in.
+/// `--takeover` still stops a watcher that runs from the renamed file.
+#[test]
+fn takeover_stops_watcher_with_renamed_exe() {
+    use std::process::{Command, Stdio};
+
+    let env = Env::new();
+    let bin = tempfile::tempdir().unwrap();
+    let name = Path::new(CQ).file_name().unwrap().to_str().unwrap();
+    let copy = bin.path().join(name);
+    fs::copy(CQ, &copy).unwrap();
+    let mut c = Command::new(&copy);
+    c.args(["watch", "--as", "b", "--rescan-seconds", "1"])
+        .args(["--max-seconds", "60"])
+        .env("CQ_ROOT", env.root())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut first = Watcher::spawn(c);
+    ready(&env, "b");
+    assert_eq!(env.pid_of_watcher("b"), Some(first.child.id()));
+
+    // The running file can be renamed, also on Windows.
+    fs::rename(&copy, bin.path().join(format!("{name}.old-0156"))).unwrap();
+
+    let second = env.watch("b", &["--takeover", "--rescan-seconds", "1"]);
+    assert!(
+        first.closed_within(Duration::from_secs(10)),
+        "--takeover stopped the watcher with the renamed exe"
+    );
+    assert!(!first.child.wait().unwrap().success());
+    assert!(wait_until(Duration::from_secs(5), || env
+        .pid_of_watcher("b")
+        == Some(second.child.id())));
+}
+
 /// T14: kill only the watcher's parent. The orphaned watcher keeps its lock
 /// (there is no parent check; `--max-seconds` bounds it), so a second
 /// watcher without `--takeover` refuses. With `--takeover` it stops the
