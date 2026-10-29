@@ -18,22 +18,25 @@ const PIPE_GRACE: Duration = Duration::from_millis(100);
 
 /// True when the lowercase file name `theirs` is our executable `mine`, or
 /// a copy of it renamed by an install. An install on Windows renames the
-/// live `cq.exe` (to `cq.exe.old-0156` or `cq.old.exe`, say), and an old
-/// watcher keeps running from the renamed file. So any name that starts
-/// with our stem and a dot counts; other names do not, so a reused process
-/// ID is never stopped.
+/// live `cq.exe`, and an old watcher keeps running from the renamed file.
+/// A renamed copy is `<mine>.old` or `<stem>.old`, then `-`, `.` or the
+/// end: `cq.exe.old-0156`, `cq.old-2026-10-28-2333.exe`, `cq.old.exe`.
+/// Other names are refused, so a reused process ID is never stopped.
 fn is_cq_name(theirs: &OsStr, mine: &OsStr) -> bool {
     if theirs == mine {
         return true;
     }
-    let Some(stem) = Path::new(mine).file_stem() else {
-        return false;
-    };
-    let mut prefix = stem.to_os_string();
-    prefix.push(".");
-    theirs
-        .as_encoded_bytes()
-        .starts_with(prefix.as_encoded_bytes())
+    let theirs = theirs.as_encoded_bytes();
+    let stem = Path::new(mine).file_stem().map(OsStr::as_encoded_bytes);
+    [Some(mine.as_encoded_bytes()), stem]
+        .into_iter()
+        .flatten()
+        .any(|base| {
+            theirs
+                .strip_prefix(base)
+                .and_then(|rest| rest.strip_prefix(b".old"))
+                .is_some_and(|rest| matches!(rest.first(), None | Some(b'-' | b'.')))
+        })
 }
 
 #[cfg(windows)]
@@ -592,6 +595,7 @@ mod tests {
         assert!(ok("cq.exe.old-0156", "cq.exe"));
         assert!(ok("cq.old-2026-10-28-2333.exe", "cq.exe"));
         assert!(ok("cq.old.exe", "cq.exe"));
+        assert!(ok("cq.exe.old", "cq.exe"));
         assert!(ok("cq", "cq"));
         assert!(ok("cq.old-0156", "cq"));
     }
@@ -603,6 +607,13 @@ mod tests {
         assert!(!ok("cq-helper.exe", "cq.exe"));
         assert!(!ok("cq_old.exe", "cq.exe"));
         assert!(!ok("old.cq.exe", "cq.exe"));
+        assert!(!ok("cq.helper.exe", "cq.exe"));
+        assert!(!ok("cq.exe.bak", "cq.exe"));
+        assert!(!ok("cq.older.exe", "cq.exe"));
+        assert!(!ok("cq.exe.older", "cq.exe"));
+        assert!(!ok("cq.exe.helper", "cq.exe"));
+        assert!(!ok("cq.old_1.exe", "cq.exe"));
+        assert!(!ok("cq.helper", "cq"));
         assert!(!ok("cqd", "cq"));
         assert!(!ok("", "cq.exe"));
         assert!(!ok("cq.exe", ""));
