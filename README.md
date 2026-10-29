@@ -116,7 +116,7 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | --- | --- |
 | [How cq works](docs/OVERVIEW.md) | Why `cq` exists, one task from start to finish, agent support, idle cost, safety model, platform status |
 | [Setup](docs/SETUP.md) | The shared steps for every agent: requirements, install, the test message, configuration, sleep and wake, upgrading |
-| [Claude Code setup](docs/CLAUDE-CODE.md) | What differs for Claude Code: rules, permissions, the inbox watcher, the rejoin hook, the skills, Monitor mode |
+| [Claude Code setup](docs/CLAUDE-CODE.md) | What differs for Claude Code: rules, permissions, the inbox watcher, the rejoin hook, the idle alert hook, the skills, Monitor mode |
 | [Codex setup](docs/CODEX.md) | What differs for Codex: rules, approvals, the `--to-codex` watcher, restart, the `cq dispatch` worker |
 | [Other agents](docs/OTHER-AGENTS.md) | What any other agent or script needs: rules, permissions, a wake route |
 | [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
