@@ -4,7 +4,7 @@ Implementation choices that the specification left open, and what `cq` does. The
 
 ## CLI and exit codes
 
-- Exit codes are as in the table above. No general error uses exit 1, because a session treats `claim` exit 1 as "already handled". Clap's own usage errors (normally exit 2) are mapped to 64, because 2 means a rename failed.
+- Exit codes are as in the table in [Commands](COMMANDS.md#exit-codes). No general error uses exit 1, because a session treats `claim` exit 1 as "already handled". Clap's own usage errors (normally exit 2) are mapped to 64, because 2 means a rename failed.
 - `cq init` creates the layout. Every other command refuses to run (exit 70) until it has. Per-name directories are created on demand.
 - `CQ_ROOT` must be absolute. A relative path is refused, so that sessions in different worktrees cannot end up with different queues.
 - `send` reads stdin only when it is not a terminal and `--input FILE` is not given. A leading UTF-8 BOM in the input is removed. Unknown input fields are refused (exit 64).
