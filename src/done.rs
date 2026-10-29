@@ -1,12 +1,18 @@
 //! `cq done`: finish a claimed message, with a reply (`--reply`), a
 //! rejection (`--reject`) or neither.
+//!
+//! A rejected task's sender gets a `rejected` result. A rejected info or
+//! result's sender gets a short `info` notice instead, unless the message
+//! was itself a rejection, so two sessions cannot reject back and forth.
 
 use serde_json::json;
 
 use crate::error::{CqError, Result, exit};
 use crate::fsutil::{self, MoveError};
-use crate::message::{DoneInput, MAX_BODY_BYTES, Message, MsgType, Status};
-use crate::names::{check_id, check_name};
+use crate::message::{
+    DoneInput, EVENT_SUBJECT_MAX, MAX_BODY_BYTES, Message, MsgType, Status, event_text,
+};
+use crate::names::{check_id, check_name, id_parts};
 use crate::root::{Root, message_file, reason_file};
 use crate::send::{self, Hops, Outgoing};
 use crate::timefmt;
@@ -31,6 +37,9 @@ pub struct DoneReport {
     pub reply_id: Option<String>,
     pub note: Option<String>,
 }
+
+/// Subject prefix of a `rejected` result and of a reject notice.
+const REJECTED_PREFIX: &str = "Rejected: ";
 
 pub fn done(root: &Root, req: DoneRequest) -> Result<DoneReport> {
     check_name("--as", &req.name)?;
@@ -162,12 +171,40 @@ pub fn done(root: &Root, req: DoneRequest) -> Result<DoneReport> {
         return Ok(report);
     };
 
+    if req.reject && original.kind != MsgType::Task {
+        if is_rejection(&original) {
+            return Ok(report);
+        }
+        let notice = Outgoing {
+            from: name.to_owned(),
+            to: original.from.clone(),
+            kind: MsgType::Info,
+            subject: format!("{REJECTED_PREFIX}{}", original.subject),
+            body: notice_body(name, id, &original, reason.as_deref().unwrap_or_default()),
+            reply_to: Some(id.to_owned()),
+            parent: None,
+            status: None,
+        };
+        // The reject stands even when the notice cannot be sent.
+        match send::send(root, notice, Hops::After(original.hops)) {
+            Ok(nid) => report.reply_id = Some(nid),
+            Err(e) => add_note(
+                &mut report.note,
+                format!(
+                    "message {id} moved to rejected/{name}/, but {} was not told: {e}",
+                    original.from
+                ),
+            ),
+        }
+        return Ok(report);
+    }
+
     let outgoing = match original.kind {
         MsgType::Task if req.reject => Some(Outgoing {
             from: name.to_owned(),
             to: original.from.clone(),
             kind: MsgType::Result,
-            subject: format!("Rejected: {}", original.subject),
+            subject: format!("{REJECTED_PREFIX}{}", original.subject),
             body: reason.unwrap_or_default(),
             reply_to: Some(id.to_owned()),
             parent: None,
@@ -199,4 +236,47 @@ pub fn done(root: &Root, req: DoneRequest) -> Result<DoneReport> {
         }
     }
     Ok(report)
+}
+
+/// True for a message that reports a rejection: a `rejected` result, or a
+/// reject notice (an info with the `Rejected: ` subject whose `reply_to` is
+/// a message its recipient sent). Rejecting one sends nothing back.
+fn is_rejection(m: &Message) -> bool {
+    match m.kind {
+        MsgType::Result => m.status == Some(Status::Rejected),
+        MsgType::Info => {
+            m.subject.starts_with(REJECTED_PREFIX)
+                && m.reply_to
+                    .as_deref()
+                    .and_then(id_parts)
+                    .is_some_and(|(_, from)| from == m.to)
+        }
+        MsgType::Task => false,
+    }
+}
+
+/// The body of a reject notice: who rejected which message, and why. Cut
+/// to `MAX_BODY_BYTES`, as the reason alone may use the whole limit.
+fn notice_body(name: &str, id: &str, original: &Message, reason: &str) -> String {
+    let mut body = format!(
+        "{name} rejected your {} {id} (subject {}).\nReason: {reason}",
+        original.kind.as_str(),
+        event_text(&original.subject, EVENT_SUBJECT_MAX)
+    );
+    if body.len() > MAX_BODY_BYTES {
+        let mut end = MAX_BODY_BYTES;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body.truncate(end);
+    }
+    body
+}
+
+/// Add `text` to the note, after any note already there.
+fn add_note(note: &mut Option<String>, text: String) {
+    *note = Some(match note.take() {
+        Some(first) => format!("{first}; {text}"),
+        None => text,
+    });
 }

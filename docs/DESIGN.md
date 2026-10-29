@@ -20,12 +20,14 @@ Implementation choices that the specification left open, and what `cq` does. The
 - The pair, recipient and sender limits count files by name (the time stamp and sender in the ID), across the inbox, `.processing/`, `done/`, `rejected/` and `dlq/` of the recipient (pair, recipient) or of every recipient (sender). The recipient is the directory name. Messages pruned after 14 days are long outside the 1-hour window.
 - The checks run in this order: arguments, body size, `PAUSE`, hops, pair, recipient, sender. The first one that fails is reported.
 - The recipient limit stops many senders flooding one session; the sender limit stops one session fanning out to many. Both were added on 24 Oct 2026.
-- `PAUSE` refuses sends as well as silencing watchers, so a storm stops at the source. A `done --reply` or `--reject` under `PAUSE` still moves the message and exits 4 (reply not sent). A `claim` that dead-letters a message still exits 3; its stderr line says the sender could not be told.
+- `PAUSE` refuses sends as well as silencing watchers, so a storm stops at the source. A `done --reply`, or a `--reject` of a task, under `PAUSE` still moves the message and exits 4 (reply not sent). A `--reject` of an info or result exits 0 and warns on stderr that the sender was not told. A `claim` that dead-letters a message still exits 3; its stderr line says the sender could not be told.
 - The 20 KB limit is 20480 bytes of UTF-8 in `body` (and in a `done` reply or reason). The subject has no limit in the file; the event line shows at most 80 characters.
 - Validation goes beyond the schema: `id` must match the file name, `to` must match the inbox, `created` must be RFC 3339 ending in `Z`, `reply_to` and `parent` must be IDs, a `result` needs a status, a `task` or `info` must have status null, and a file starting with a BOM is invalid.
 - Schema: `reply_to`, `parent`, `status`, `from_session_id` and `from_host_session_id` are optional (null when absent). `cq` always writes every field.
 - A DLQ notice (a `failed` result, subject `Not processed: <id>`) goes to the sender named in `from`, or, when the JSON is unreadable, to the sender named in the file's ID. It is sent for any message type, following the brief; the hop count and rate limit stop loops.
-- Reply subjects: `Re: <subject>`, and `Rejected: <subject>` for a rejection. The rejection body is the reason.
+- Reply subjects: `Re: <subject>`, and `Rejected: <subject>` for a rejection. The body of a task's `rejected` result is the reason.
+- Rejecting an info or result sends the sender an `info` notice ([issue #20](https://github.com/niklasrichardson/session-queue/issues/20)): `reply_to` is the rejected ID, and the body names the ID, the subject and the reason. It is an `info`, not a result, because only tasks get results. The reject is the main action, so a notice that a limit blocks only gives a stderr warning. Rejecting a `rejected` result or a notice sends nothing, so two sessions cannot reject back and forth; the hop limit is a second stop.
+- `cq requeue` moves a message only from the session's own `rejected/` folder to its inbox, by rename, so the ID and contents stay the same. It sets the file's modified time to now, so the watcher announces it again and a coordinator's `CQ-WAKE` counts from the requeue. It holds the recipient's claim lock (`heartbeat/<name>.claim.lock`) until the reason file is removed, so a claim cannot start before then.
 - `done` checks its input first, and for `--reply` the message type, and moves nothing if either is wrong. It then moves the file and sends the reply. If the reply cannot be sent, it exits 4 with the message already in `done/` or `rejected/`.
 - Reason files are `<id>.reason.json` (`id`, `inbox`, `reason`, `time`), next to the message in `dlq/` or `rejected/`.
 - Moves never replace an existing file. If a send's ID is already taken, `cq` picks a new random suffix (up to 5 tries).
@@ -33,7 +35,7 @@ Implementation choices that the specification left open, and what `cq` does. The
 ## Watcher
 
 - Any file-system event in the inbox triggers a full inbox scan. The scan decides what is new, so events never need parsing. If `notify` cannot start or stops, the watcher rescans every 5 seconds and says so on stderr.
-- A message is announced once per watcher run. A restarted watcher announces every unclaimed message again, once; `cq claim` exit 1 makes repeats harmless.
+- A message is announced once per watcher run. A restarted watcher announces every unclaimed message again, once; `cq claim` exit 1 makes repeats harmless. The watcher knows a message by its ID and modified time, so a message that `cq requeue` puts back (with a new modified time) is announced again, even when the claim, reject and requeue all happen between two scans.
 - Only files whose name is a valid ID are announced or listed. A file with any other name cannot be claimed.
 - The event time is when the watcher saw the message, not the `created` time.
 - Unreadable `from` or `type` fields show as `?` in event and list lines. Such a message still gets announced, so that `cq claim` can send it to the DLQ.

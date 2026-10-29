@@ -13,8 +13,10 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)) and `CQ-OVERDUE` lines (see [Overdue tasks](#overdue-tasks)). `--to-inbox` posts the lines into the session's own Claude Code inbox instead, the default for Claude Code sessions (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` wakes a Codex chat instead (see [Wake a Codex chat](#wake-a-codex-chat)). |
 | `cq dispatch --as B --codex FILE --workspace DIR --instructions FILE --allow-from NAME [--allow-from NAME ...] [--sandbox read-only\|workspace-write] [--timeout-seconds 600] [--once]` | Run one fresh Codex process per task, serially. See [Codex setup](CODEX.md). |
 | `cq claim --as B ID` | Move the message to `.processing/` and print its JSON. |
-| `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}`. |
+| `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}` and tells the sender (see [Rejections](#rejections)). |
 | `cq list --as B [--stale-minutes 60]` | List unclaimed, stale claimed and dead-lettered messages, oldest first. No bodies. Starts with an `ASLEEP by=... reason="..."` line while `B` is asleep. |
+| `cq list --as B --rejected` | List the messages `B` rejected and the messages from `B` that others rejected, oldest first, with the reasons. No bodies. Cannot be combined with `--stale-minutes` or `--overdue`. See [Rejections](#rejections). |
+| `cq requeue --as B ID` | Move a message from `rejected/B/` back to `inbox/B/`, with its original ID. See [Rejections](#rejections). |
 | `cq list --overdue [--unclaimed-minutes 30] [--claimed-minutes 120]` | List the overdue tasks in every inbox, oldest first, then a `TOTAL` line. No bodies. Read only, and works under `PAUSE`. See [Overdue tasks](#overdue-tasks). |
 | `cq leave --as B` | Forget which session owns `B` (remove its `members/` record). Exit 0 when there is none. |
 | `cq members` | Print one `<session key> -> <name>` line per record, with ` (asleep)` after a sleeping name. A sleeping name with no record prints as `- -> <name> (asleep)`. |
@@ -49,6 +51,32 @@ CQ-NEW 2026-10-24T00:06:16Z (00:06 GMT) to=worker-a from=lead type=task id=20261
 ```
 
 The time is when the watcher saw the message: UTC first, then local time with its label, computed by `cq` (see `CQ_TZ` and `CQ_TZ_LABEL` in [Setup](SETUP.md#configuration)).
+
+## Rejections
+
+[Issue #20](https://github.com/niklasrichardson/session-queue/issues/20). `cq done --reject` moves the message to `rejected/B/`, writes its reason file, and tells the sender.
+
+- **Task.** The sender gets a `rejected` result: subject `Rejected: <subject>`, body the reason, `reply_to` the task's ID.
+- **Info or result.** The sender gets an `info` notice: subject `Rejected: <subject>`, `reply_to` the rejected message's ID, and this body (the subject cut to 80 characters, the body cut to 20 KB):
+
+  ```text
+  worker-a rejected your info 20261024T000615Z-lead-ab12 (subject "Status").
+  Reason: Sender not in scope.
+  ```
+
+- **No loops.** Rejecting a rejection sends nothing: not for a `rejected` result, and not for a notice (an `info` with a `Rejected: ` subject whose `reply_to` is a message from its recipient).
+- **Send limits.** The notice goes through the same limits as `cq send`. If a limit or `PAUSE` blocks it, the reject still succeeds (exit 0, `reply=none`) and stderr says `cq: message <id> moved to rejected/B/, but <sender> was not told: <why>`. A task's `rejected` result is a reply, so a blocked one still exits 4.
+- `done` prints the notice's ID as `reply=<id>`.
+
+`cq list --as B --rejected` prints one line per rejected message, oldest first (by the time in the ID), then a total. `REJECTED-IN` is a message that `B` rejected (in `rejected/B/`). `REJECTED-OUT` is a message from `B` (by the sender in the file name) that another session rejected. `rejected=` is the time in the reason file, or `?` without one. It never prints bodies. It does not take `--stale-minutes` (exit 64).
+
+```text
+REJECTED-IN 2026-10-26T09:00:00Z (09:00 GMT) rejected=2026-10-26T09:01:12Z by=worker-a from=lead type=info id=20261026T090000Z-lead-ab12 subject="hello" reason="Sender not in scope."
+REJECTED-OUT 2026-10-26T10:00:00Z (10:00 GMT) rejected=2026-10-26T10:00:40Z by=worker-b from=worker-a type=task id=20261026T100000Z-worker-a-cd34 subject="Deploy" reason="Deploys are out of scope."
+TOTAL rejected_in=1 rejected_out=1
+```
+
+`cq requeue --as B ID` moves `rejected/B/ID.json` back to `inbox/B/`, for example after `B`'s allowed senders are fixed. The message keeps its ID and contents, so the watcher announces it again and `B` claims it as usual. Its modified time is set to now before the move, so overdue scans and `CQ-WAKE` count the wait from the requeue; if that fails, it exits 70 and moves nothing. The reason file is removed. It moves only from `B`'s own `rejected/` folder: for an ID anywhere else (another session's `rejected/`, the inbox, `.processing/`, `done/`), it exits 6 and moves nothing. It sends nothing to the sender, and `PAUSE` does not stop it. It prints `requeued id=<id> to=inbox/B/`.
 
 ## Sleep and wake
 
@@ -145,7 +173,7 @@ A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 
 | 3 | `claim`: the message is invalid and went to `dlq/`. The sender was told, when known. |
 | 4 | `done` or `dispatch` completion: the message is finished, but the reply was not sent. |
 | 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. |
-| 6 | `done`: the message is not claimed by this session. |
+| 6 | `done`: the message is not claimed by this session. `requeue`: the message is not in this session's `rejected/` folder. |
 | 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. |
 | 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. |
 | 9 | `watch --to-codex`: `codex queue` failed 4 times in a row. Nothing wakes the Codex chat until the watcher is started again. |

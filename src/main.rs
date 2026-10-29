@@ -34,7 +34,8 @@ Exit codes:
   4   done: the message is finished, but the reply was not sent
   5   refused (name, size, hop or send limit, PAUSE, missing parent, watcher
       running, sleeping another name without being a coordinator)
-  6   done: the message is not claimed by this session
+  6   done: the message is not claimed by this session; requeue: the
+      message is not in this session's rejected/
   7   watch: the name is asleep; do not re-arm
   8   watch --to-inbox: the session's inbox cannot be reached (session gone)
   9   watch --to-codex: codex queue failed 4 times; the Codex chat is not woken
@@ -247,8 +248,8 @@ enum Cmd {
         /// Reply to a task: read {"reply": "..."}. Refused for a result or info.
         #[arg(long, conflicts_with = "reject")]
         reply: bool,
-        /// Decline the message: read {"reason": "..."}; a task's sender gets a
-        /// rejected result.
+        /// Decline the message: read {"reason": "..."}. A task's sender gets a
+        /// rejected result; an info or result's sender gets an info notice.
         #[arg(long)]
         reject: bool,
         /// Read the JSON from this file instead of stdin ("-" for stdin).
@@ -267,6 +268,10 @@ enum Cmd {
         /// A claimed message counts as stale after this many minutes.
         #[arg(long, default_value_t = 60, conflicts_with = "overdue")]
         stale_minutes: u64,
+        /// List rejected messages instead: those you rejected (REJECTED-IN)
+        /// and those you sent that others rejected (REJECTED-OUT).
+        #[arg(long, conflicts_with_all = ["stale_minutes", "overdue"])]
+        rejected: bool,
         /// List overdue tasks across all inboxes: unclaimed or claimed for
         /// too long. Read only; works while PAUSE exists.
         #[arg(long, conflicts_with = "name")]
@@ -290,6 +295,17 @@ enum Cmd {
         /// Your session name.
         #[arg(long = "as", value_name = "NAME")]
         name: String,
+    },
+
+    /// Move a message you rejected back to your inbox, with its original
+    /// ID, so you can claim it again. Only from your own rejected/ folder.
+    #[command(after_help = exit_help())]
+    Requeue {
+        /// Your session name.
+        #[arg(long = "as", value_name = "NAME")]
+        name: String,
+        /// The rejected message ID.
+        id: String,
     },
 
     /// Print one "<session key> -> <name>" line per recorded session, with
@@ -572,6 +588,7 @@ fn run(cmd: Cmd) -> Result<i32> {
         Cmd::List {
             name,
             stale_minutes,
+            rejected,
             overdue: show_overdue,
             unclaimed_minutes,
             claimed_minutes,
@@ -587,7 +604,11 @@ fn run(cmd: Cmd) -> Result<i32> {
                 ));
             } else {
                 let name = name.ok_or_else(|| CqError::usage("--as is required"))?;
-                list::list(&Root::open()?, &name, stale_minutes)?
+                if rejected {
+                    list::rejected(&Root::open()?, &name)?
+                } else {
+                    list::list(&Root::open()?, &name, stale_minutes)?
+                }
             };
             for line in lines {
                 println!("{line}");
@@ -601,6 +622,14 @@ fn run(cmd: Cmd) -> Result<i32> {
                 println!("no session recorded for {name}");
             } else {
                 println!("left: {name} (session {})", removed.join(", "));
+            }
+        }
+        Cmd::Requeue { name, id } => {
+            let root = Root::open()?;
+            let note = cq::requeue::requeue(&root, &name, &id)?;
+            println!("requeued id={id} to=inbox/{name}/");
+            if let Some(note) = note {
+                eprintln!("cq: {note}");
             }
         }
         Cmd::Members => {

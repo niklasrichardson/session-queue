@@ -19,7 +19,8 @@ pub mod exit {
     /// recipient or sender limit, `PAUSE`, missing parent, watcher already
     /// running, sleeping another name without being a coordinator).
     pub const REFUSED: i32 = 5;
-    /// `cq done`: the message is not claimed by this session.
+    /// `cq done`: the message is not claimed by this session. `cq requeue`:
+    /// the message is not in this session's `rejected/`.
     pub const NOT_FOUND: i32 = 6;
     /// `cq watch`: the name is asleep (`sleep/<name>` exists). The session
     /// does not re-arm.

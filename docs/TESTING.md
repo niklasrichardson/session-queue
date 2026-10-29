@@ -15,6 +15,14 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Rejection notices, list and requeue, 29 October 2026
+
+`cq done --reject` notices for info and result messages, `cq list --rejected` and `cq requeue` ([issue #20](https://github.com/niklasrichardson/session-queue/issues/20), see [Rejections](COMMANDS.md#rejections)). Checked on Windows 11 with `cargo test --workspace` (197 tests after merging main, 0 failed; 51 in cq-top), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
+
+- Integration tests in `tests/rejected.rs`: the notice for an info and for a result (ID, subject, reason, `reply_to`, hops, no original body); a task still gets only its `rejected` result; rejecting a notice or a `rejected` result sends nothing; `PAUSE` and the hop limit block the notice but not the reject (exit 0, stderr warning); a 20 KB reason is cut to the body limit; `cq list --rejected` in both directions, with no bodies, and exit 64 with `--stale-minutes`, `--overdue` or the overdue limits; `cq requeue` keeps the ID, removes the reason file, and refuses messages outside the session's own `rejected/` (exit 6) or a path as an ID (exit 5); a running watcher announces a requeued message again, also when the claim, reject and requeue all happen between two scans; `cq requeue` waits for the recipient's claim lock; on Windows, a requeue that cannot set the message's time exits 70 and leaves it in `rejected/`. The three regressions (requeue between scans, claim lock, requeue time) failed before their fixes.
+
+Not verified: live use by queue sessions; macOS and Linux.
+
 ## Overdue task warnings, 29 October 2026
 
 `cq list --overdue`, the coordinator's `CQ-OVERDUE` line and the cq-top overdue marks ([issue #21](https://github.com/niklasrichardson/session-queue/issues/21), see [Commands](COMMANDS.md#overdue-tasks)). Checked on Windows 11 with `cargo test --workspace` (184 tests after merging main, 0 failed; 51 in cq-top), `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`. All passed.

@@ -74,7 +74,7 @@ sequenceDiagram
 ```
 
 - **One claim wins.** `cq claim` moves the file into `.processing/`. If two turns try, only one wins. The other gets exit 1 and ignores the message.
-- **Rejection.** `cq done --reject` sends the sender a `rejected` result with a reason. An invalid message goes to `dlq/`, and the sender is told.
+- **Rejection.** `cq done --reject` tells the sender why: a `rejected` result for a task, an `info` notice for an info or result. `cq list --rejected` shows rejections both ways, and `cq requeue` puts a message back in the inbox. An invalid message goes to `dlq/`, and the sender is told.
 - **Sleep and wake.** `cq sleep` stops a session's watcher (it prints `CQ-SLEEP` and exits 7), so the session takes no turns until it is woken. Messages to a sleeping name still arrive, and `cq send` warns the sender to wake it with `/cq-start NAME`. See [Sleep and wake](docs/PROTOCOL.md#sleep-and-wake).
 - **Stopped message.** When an inbox watcher stops, it posts one last message: `cq watch (NAME) stopped: ... Run /cq-start to re-arm.` A watcher that is killed without warning posts nothing; cq-top then shows its heartbeat as `STALE` after 90 seconds. See [Known risks](docs/DESIGN.md#known-risks).
 

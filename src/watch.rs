@@ -28,7 +28,7 @@
 //! check was the only path that could end a watcher with exit 0 and no
 //! output while its Monitor still ran.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, TryLockError};
 use std::io::{self, Write};
 use std::path::Path;
@@ -211,7 +211,7 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
         (None, None, opts.rescan)
     };
 
-    let mut announced: HashSet<String> = HashSet::new();
+    let mut announced: HashMap<String, Option<SystemTime>> = HashMap::new();
     let mut pending = true; // the start scan
     let mut was_paused = false;
     let mut next_rescan = started + rescan;
@@ -418,21 +418,25 @@ fn start_fs_events(inbox: &Path) -> notify::Result<(RecommendedWatcher, Receiver
 }
 
 /// Announce each message in the inbox that has not been announced yet,
-/// oldest first. Forgets messages that have left the inbox.
+/// oldest first. Forgets messages that have left the inbox. A message is
+/// known by its ID and modified time, so one that left and came back
+/// between two scans (`cq requeue` sets a new time) is announced again.
 fn scan(
     root: &Root,
     name: &str,
-    announced: &mut HashSet<String>,
+    announced: &mut HashMap<String, Option<SystemTime>>,
     out: &mut impl Sink,
 ) -> io::Result<()> {
     let inbox = root.inbox(name);
     let present = fsutil::json_stems(&inbox, is_valid_id);
-    announced.retain(|id| present.binary_search(id).is_ok());
+    announced.retain(|id, _| present.binary_search(id).is_ok());
     for id in present {
-        if announced.contains(&id) {
+        let path = message_file(&inbox, &id);
+        let modified = fsutil::modified(&path);
+        if announced.get(&id) == Some(&modified) {
             continue;
         }
-        let bytes = match fsutil::read_with_retry(&message_file(&inbox, &id)) {
+        let bytes = match fsutil::read_with_retry(&path) {
             Ok(b) => b,
             // Claimed since the directory was listed.
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -440,7 +444,7 @@ fn scan(
             Err(_) => Vec::new(),
         };
         out.line(&event_line("CQ-NEW", name, &id, &bytes))?;
-        announced.insert(id);
+        announced.insert(id, modified);
     }
     Ok(())
 }
