@@ -86,9 +86,9 @@ On Windows, you also need Git for Windows. The full steps, including the rejoin 
 You also need the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex was tested on Windows only. The full steps, and the `cq dispatch` worker for a fresh Codex run per task, are in [Codex setup](docs/CODEX.md).
 
 1. The tested setup called `cq` and `codex` by their full paths, for example `C:/full/path/to/cq.exe`. If you use the bare names, check that `cq --version` works in a new Codex chat.
-2. Give the chat its rules: the queue rules block and a section for its queue name in `AGENTS.md`. See [Give the chat its rules](docs/CODEX.md#give-the-chat-its-rules).
+2. Paste the Codex-only rules block into `AGENTS.md`, with the chat's queue name. See [Give the chat its rules](docs/CODEX.md#give-the-chat-its-rules).
 3. Let the chat write to the queue root ([Allow `cq` without prompts](docs/CODEX.md#allow-cq-without-prompts)). A setup where Codex never asks for approval is not tested yet.
-4. Start the watcher in the background, outside the chat, with the same `CQ_ROOT`. In the chat, `CODEX_THREAD_ID` holds the thread ID:
+4. Get the chat's thread ID: ask the chat to run `$env:CODEX_THREAD_ID` in PowerShell, or `echo "$CODEX_THREAD_ID"` in Git Bash. Then start the watcher in the background, from any terminal outside the chat, with the same `CQ_ROOT`. The PowerShell form is in [Wake a Codex chat](docs/CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex):
 
    ```bash
    cq watch --as worker-a --to-codex THREAD_ID
@@ -104,7 +104,7 @@ From another session:
 
 ```bash
 cq send --from lead --to worker-a --type task <<'EOF'
-{"subject": "Run the tests", "body": "Run cargo test and report failures."}
+{"subject": "Queue test", "body": "Summarise README.md in one line. Do not edit files."}
 EOF
 ```
 
