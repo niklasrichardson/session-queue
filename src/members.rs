@@ -10,6 +10,11 @@
 //! sleeping name beside its session), and the watcher's mode on line 4:
 //! `monitor`, `inbox` for `cq watch --to-inbox`, whose watcher outlives
 //! `/clear`, or `codex` for `cq watch --to-codex`, which wakes a Codex chat.
+//! Line 5, only when the key is `CLAUDE_CODE_SESSION_ID` (the Claude Code
+//! CLI), is the owner process: the ID and start time of the nearest `claude`
+//! process above the watcher. The CLI starts a new session ID on `/clear` but
+//! keeps its process, so `cq session-start` can find the record by the
+//! process and move it to the new key (see `rejoin`).
 //! Readers of the name use line 1 only, so a record from an older
 //! `cq` still works; a missing or unknown mode reads as `monitor`.
 //! `members/` is created on demand, so an older root without it still works.
@@ -20,6 +25,7 @@ use std::path::Path;
 use crate::error::{CqError, Result};
 use crate::fsutil;
 use crate::names::is_valid_name;
+use crate::platform;
 use crate::root::Root;
 use crate::timefmt::{self, rfc3339};
 
@@ -64,10 +70,47 @@ impl Mode {
 
 /// The first non-empty key: CQ_SESSION_ID, Claude host ID, Claude session ID.
 pub fn session_key() -> Option<String> {
+    key_and_source().map(|(key, _)| key)
+}
+
+/// The session key when it comes from `CLAUDE_CODE_SESSION_ID` alone, as in
+/// the Claude Code CLI: no CQ_SESSION_ID and no host ID. Only such a key
+/// changes on `/clear` while its `claude` process stays.
+pub fn cli_session_key() -> Option<String> {
+    key_and_source()
+        .filter(|(_, var)| *var == ENV_SESSION)
+        .map(|(key, _)| key)
+}
+
+fn key_and_source() -> Option<(String, &'static str)> {
     [ENV_GENERIC_SESSION, ENV_HOST_SESSION, ENV_SESSION]
-        .iter()
-        .filter_map(|v| std::env::var(v).ok())
-        .find_map(|v| sanitise_key(&v))
+        .into_iter()
+        .find_map(|var| Some((sanitise_key(&std::env::var(var).ok()?)?, var)))
+}
+
+/// The process that holds a Claude Code CLI session: line 5 of the record.
+/// The start time guards against a reused process ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Owner {
+    pub pid: u32,
+    pub start: u64,
+}
+
+impl Owner {
+    /// The nearest `claude` process above this one, if any.
+    pub fn find() -> Option<Owner> {
+        platform::claude_ancestor().map(|(pid, start)| Owner { pid, start })
+    }
+
+    /// Line 5 of a record: `<pid> <start>`. `None` for anything else.
+    pub fn parse(line: Option<&str>) -> Option<Owner> {
+        let mut parts = line?.split_whitespace();
+        let owner = Owner {
+            pid: parts.next()?.parse().ok()?,
+            start: parts.next()?.parse().ok()?,
+        };
+        parts.next().is_none().then_some(owner)
+    }
 }
 
 /// The key of a `--to-codex` watcher for `name`: CQ_SESSION_ID when set,
@@ -99,20 +142,30 @@ pub fn sanitise_key(raw: &str) -> Option<String> {
     (!key.is_empty()).then_some(key)
 }
 
-/// Record that `key` owns `name` with a watcher in `mode`, and remove any
-/// other key's record of `name`.
-pub fn record(root: &Root, key: &str, name: &str, mode: Mode) -> Result<()> {
+/// Record that `key` owns `name` with a watcher in `mode`, held by `owner`
+/// when known, and remove any other key's record of `name`.
+pub fn record(root: &Root, key: &str, name: &str, mode: Mode, owner: Option<Owner>) -> Result<()> {
     let dir = root.members();
     fs::create_dir_all(&dir).map_err(|e| CqError::io(format!("create {}", dir.display()), e))?;
-    let path = dir.join(key);
     let folder = std::env::current_dir()
         .map(|d| d.display().to_string().replace(['\r', '\n'], ""))
         .unwrap_or_default();
-    let text = format!(
+    let mut text = format!(
         "{name}\n{}\n{folder}\n{}\n",
         rfc3339(timefmt::now()),
         mode.as_str()
     );
+    if let Some(o) = owner {
+        text.push_str(&format!("{} {}\n", o.pid, o.start));
+    }
+    write_record(root, key, name, &text)
+}
+
+/// Write `text` as the record of `key`, then remove any other key's record
+/// of `name`.
+fn write_record(root: &Root, key: &str, name: &str, text: &str) -> Result<()> {
+    let dir = root.members();
+    let path = dir.join(key);
     fsutil::write_atomic(&root.tmp(), &path, text.as_bytes())
         .map_err(|e| CqError::io(format!("write {}", path.display()), e))?;
     for (other, n) in members(root) {
@@ -121,6 +174,25 @@ pub fn record(root: &Root, key: &str, name: &str, mode: Mode) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// After `/clear` in the Claude Code CLI: move the one record held by
+/// `owner` to the new `key`, and return its name. The caller checks that
+/// the key is a CLI key with no record of its own. `None`, with nothing
+/// changed, unless exactly one record names this process ID and start
+/// time: two would mean the records cannot tell the sessions apart.
+pub fn rejoin(root: &Root, key: &str, owner: Owner) -> Option<String> {
+    let dir = root.members();
+    let mut held = members(root).into_iter().filter_map(|(k, name)| {
+        let text = fs::read_to_string(dir.join(&k)).ok()?;
+        (k != key && Owner::parse(text.lines().nth(4)) == Some(owner)).then_some((name, text))
+    });
+    let (name, text) = held.next()?;
+    if held.next().is_some() {
+        return None;
+    }
+    write_record(root, key, &name, &text).ok()?;
+    Some(name)
 }
 
 /// The name `key` owns, if any.
@@ -202,5 +274,19 @@ mod tests {
         assert_eq!(Mode::parse(Some(" codex ")), Mode::Codex);
         assert_eq!(Mode::parse(Some("other")), Mode::Monitor);
         assert_eq!(Mode::parse(None), Mode::Monitor);
+    }
+
+    #[test]
+    fn owner_line_parses_strictly() {
+        let o = Owner {
+            pid: 71597,
+            start: 1730212345,
+        };
+        assert_eq!(Owner::parse(Some("71597 1730212345")), Some(o));
+        assert_eq!(Owner::parse(Some(" 71597  1730212345 ")), Some(o));
+        for bad in ["", "71597", "71597 x", "-1 5", "1 2 3", "monitor"] {
+            assert_eq!(Owner::parse(Some(bad)), None, "{bad:?}");
+        }
+        assert_eq!(Owner::parse(None), None);
     }
 }

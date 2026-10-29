@@ -4,8 +4,10 @@
 mod common;
 
 use std::fs;
-use std::io::Write;
-use std::process::{Command, Output, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdout, Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use common::*;
@@ -223,4 +225,263 @@ fn generic_session_id_precedes_claude_and_empty_falls_back() {
     let long = "x".repeat(90);
     watch_once(&env, "long", &[("CQ_SESSION_ID", &long)]);
     assert_eq!(member_name(&env, &"x".repeat(64)).as_deref(), Some("long"));
+}
+
+/// The fake Claude Code CLI (`tests/support/fake_claude.rs`), built once per
+/// test run as `claude` in a folder of its own.
+fn fake_claude_bin() -> &'static Path {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("fake-claude");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        });
+        let out = Command::new("rustc")
+            .args(["--edition=2024", "tests/support/fake_claude.rs", "-o"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        path
+    })
+}
+
+/// One fake `claude` process that runs `cq` commands for its sessions.
+struct FakeClaude {
+    child: Child,
+    lines: BufReader<ChildStdout>,
+}
+
+/// One `cq` run inside a `FakeClaude`.
+struct Step {
+    code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+impl FakeClaude {
+    /// Start it with these extra variables, which every `cq` it runs
+    /// inherits.
+    fn start(env: &Env, vars: &[(&str, &str)]) -> FakeClaude {
+        let mut c = env.cmd_for(fake_claude_bin(), &[]);
+        c.env("CQ_BIN", CQ)
+            .envs(vars.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = c.spawn().expect("start the fake claude");
+        let lines = BufReader::new(child.stdout.take().unwrap());
+        FakeClaude { child, lines }
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Run `cq ARGS` with `CLAUDE_CODE_SESSION_ID=session` and `hook` on
+    /// stdin (see the fake for the format).
+    fn run(&mut self, session: &str, hook: &str, args: &str) -> Step {
+        let pipe = self.child.stdin.as_mut().unwrap();
+        writeln!(pipe, "{session}\t{hook}\t{args}").unwrap();
+        pipe.flush().unwrap();
+        let (mut stdout, mut stderr, mut in_err) = (String::new(), String::new(), false);
+        loop {
+            let mut line = String::new();
+            assert!(
+                self.lines.read_line(&mut line).unwrap() > 0,
+                "fake claude ended"
+            );
+            if let Some(code) = line.strip_prefix("\x01END ") {
+                return Step {
+                    code: code.trim().parse().unwrap(),
+                    stdout,
+                    stderr,
+                };
+            }
+            if line == "\x01ERR\n" {
+                in_err = true;
+            } else if in_err {
+                stderr.push_str(&line);
+            } else {
+                stdout.push_str(&line);
+            }
+        }
+    }
+
+    /// A one-second Monitor watcher for `name` in session `session`.
+    fn watch(&mut self, session: &str, name: &str) {
+        let step = self.run(session, "-", &format!("watch --as {name} --max-seconds 1"));
+        assert_eq!(step.code, 0, "{}", step.stderr);
+    }
+
+    /// The SessionStart hook in session `session`, from `hook`.
+    fn session_start(&mut self, session: &str, hook: &str) -> Step {
+        let step = self.run(session, hook, "session-start");
+        assert_eq!(step.code, 0);
+        assert_eq!(step.stderr, "");
+        step
+    }
+}
+
+impl Drop for FakeClaude {
+    fn drop(&mut self) {
+        drop(self.child.stdin.take());
+        let _ = self.child.wait();
+    }
+}
+
+fn record_line(env: &Env, key: &str, n: usize) -> Option<String> {
+    let text = fs::read_to_string(env.path(&format!("members/{key}"))).ok()?;
+    text.lines().nth(n).map(str::to_owned)
+}
+
+/// Replace line 5 of a record (or drop it, for a record from an older `cq`).
+fn set_owner_line(env: &Env, key: &str, owner: Option<&str>) {
+    let path = env.path(&format!("members/{key}"));
+    let text = fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<&str> = text.lines().take(4).collect();
+    lines.extend(owner);
+    fs::write(&path, lines.join("\n") + "\n").unwrap();
+}
+
+/// The CLI starts a new session ID on `/clear` and keeps its process. The
+/// hook finds the record by that process and moves it to the new ID.
+#[test]
+fn cli_clear_rejoins_through_the_claude_process() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-old", "cli-worker");
+
+    let owner = record_line(&env, "s-old", 4).expect("an owner line");
+    let (pid, start) = owner.split_once(' ').unwrap();
+    assert_eq!(pid, cli.pid().to_string());
+    assert!(start.parse::<u64>().unwrap() > 0, "{owner:?}");
+
+    let step = cli.session_start("s-new", "clear");
+    assert_eq!(step.stdout, reminder("cli-worker"));
+    assert!(!env.path("members/s-old").exists());
+    assert_eq!(member_name(&env, "s-new").as_deref(), Some("cli-worker"));
+    assert_eq!(record_line(&env, "s-new", 4), Some(owner.clone()));
+    assert_eq!(record_line(&env, "s-new", 3).as_deref(), Some("monitor"));
+
+    // The moved record keeps its owner, so a second /clear works too.
+    let step = cli.session_start("s-newer", "clear");
+    assert_eq!(step.stdout, reminder("cli-worker"));
+    assert_eq!(member_name(&env, "s-newer").as_deref(), Some("cli-worker"));
+    assert_eq!(
+        stdout(&env.run(&["members"], None)),
+        "s-newer -> cli-worker\n"
+    );
+}
+
+/// Only a `/clear` moves a record, and only for the session the hook JSON
+/// names: a resume may open another conversation in the same process.
+#[test]
+fn cli_rejoin_needs_a_clear_for_this_session() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-old", "cli-worker");
+
+    for hook in [
+        "-",
+        "startup",
+        "resume",
+        "compact",
+        "{not json",
+        r#"{"session_id":"s-other","source":"clear"}"#,
+        r#"{"source":"resume"}"#,
+    ] {
+        let step = cli.session_start("s-new", hook);
+        assert_eq!(step.stdout, "", "{hook:?}");
+        assert!(!env.path("members/s-new").exists(), "{hook:?}");
+        assert_eq!(member_name(&env, "s-old").as_deref(), Some("cli-worker"));
+    }
+
+    // Hook JSON without a session ID is enough with source "clear".
+    let step = cli.session_start("s-new", r#"{"source":"clear"}"#);
+    assert_eq!(step.stdout, reminder("cli-worker"));
+}
+
+/// A record is moved only to the same process, started at the same time,
+/// and only when that process holds exactly one record.
+#[test]
+fn cli_rejoin_refuses_a_wrong_or_unclear_owner() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-old", "cli-worker");
+    let owner = record_line(&env, "s-old", 4).unwrap();
+
+    // Another CLI process, for example another terminal in the same folder.
+    let mut other = FakeClaude::start(&env, &[]);
+    assert_eq!(other.session_start("s-new", "clear").stdout, "");
+    assert_eq!(member_name(&env, "s-old").as_deref(), Some("cli-worker"));
+
+    // The same process ID with another start time: a reused ID.
+    let (pid, start) = owner.split_once(' ').unwrap();
+    let later = format!("{pid} {}", start.parse::<u64>().unwrap() + 1);
+    set_owner_line(&env, "s-old", Some(&later));
+    assert_eq!(cli.session_start("s-new", "clear").stdout, "");
+    assert!(!env.path("members/s-new").exists());
+
+    // A record from an older cq, with no owner line.
+    set_owner_line(&env, "s-old", None);
+    assert_eq!(cli.session_start("s-new", "clear").stdout, "");
+    assert_eq!(member_name(&env, "s-old").as_deref(), Some("cli-worker"));
+
+    // Two records of one process cannot be told apart: neither moves.
+    set_owner_line(&env, "s-old", Some(&owner));
+    cli.watch("s-two", "worker-b");
+    assert_eq!(record_line(&env, "s-two", 4), Some(owner));
+    assert_eq!(cli.session_start("s-new", "clear").stdout, "");
+    assert_eq!(
+        stdout(&env.run(&["members"], None)),
+        "s-old -> cli-worker\ns-two -> worker-b\n"
+    );
+}
+
+/// The desktop app's host ID and an explicit CQ_SESSION_ID outlive
+/// `/clear`, so their records get no owner line and never move.
+#[test]
+fn stable_keys_record_no_owner_and_never_move() {
+    let env = Env::new();
+    let mut desktop = FakeClaude::start(&env, &[(HOST, "local_aaa")]);
+    desktop.watch("s-old", "lead");
+    assert_eq!(
+        record_line(&env, "local_aaa", 3).as_deref(),
+        Some("monitor")
+    );
+    assert_eq!(record_line(&env, "local_aaa", 4), None);
+    // After /clear the host ID still matches, as before.
+    assert_eq!(
+        desktop.session_start("s-new", "clear").stdout,
+        reminder("lead")
+    );
+    drop(desktop);
+
+    // A new desktop session in another process, with no record of its own.
+    let mut fresh = FakeClaude::start(&env, &[(HOST, "local_bbb")]);
+    assert_eq!(fresh.session_start("s-other", "clear").stdout, "");
+    assert_eq!(member_name(&env, "local_aaa").as_deref(), Some("lead"));
+    drop(fresh);
+
+    // A host ID with no record never falls back to the process, even in
+    // the process that holds a CLI record.
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-cli", "cli-worker");
+    assert!(record_line(&env, "s-cli", 4).is_some());
+    assert_eq!(cli.session_start("s-new,local_ccc", "clear").stdout, "");
+    assert!(!env.path("members/local_ccc").exists());
+    assert_eq!(member_name(&env, "s-cli").as_deref(), Some("cli-worker"));
+    drop(cli);
+
+    let mut pinned = FakeClaude::start(&env, &[("CQ_SESSION_ID", "worker-a")]);
+    pinned.watch("s-old", "worker-a");
+    assert_eq!(record_line(&env, "worker-a", 4), None);
+    assert_eq!(
+        pinned.session_start("s-new", "clear").stdout,
+        reminder("worker-a")
+    );
 }

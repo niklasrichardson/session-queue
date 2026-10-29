@@ -1,5 +1,6 @@
 //! Process helpers: stop an old watcher, check stdin for input without
-//! blocking, and connect to a Claude Code session's inbox.
+//! blocking, connect to a Claude Code session's inbox, and find the
+//! `claude` process that runs this one.
 //!
 //! Windows and macOS are the targets; the Unix version also works on Linux.
 
@@ -9,6 +10,7 @@ use std::time::Duration;
 
 use crate::error::{CqError, Result};
 
+use imp::Procs;
 pub use imp::{InboxConn, open_inbox, stdin_has_input, terminate};
 
 /// How long `stdin_has_input` waits for the first byte on an open, empty
@@ -39,9 +41,56 @@ fn is_cq_name(theirs: &OsStr, mine: &OsStr) -> bool {
         })
 }
 
+/// How many parent processes `claude_ancestor` looks at.
+const MAX_ANCESTORS: usize = 10;
+
+/// What `claude_ancestor` needs to know about one process.
+struct ProcInfo {
+    ppid: u32,
+    /// Comparable between processes on one computer: Windows creation time,
+    /// macOS microseconds since 1970, Linux clock ticks since boot.
+    start: u64,
+    claude: bool,
+}
+
+/// The ID and start time of the nearest process above this one that runs
+/// `claude` (the Claude Code CLI), up to `MAX_ANCESTORS` levels. `None`
+/// when there is none, or a parent looks newer than its child: then the
+/// parent exited and its ID was reused, so the chain is broken.
+pub fn claude_ancestor() -> Option<(u32, u64)> {
+    let procs = Procs::snapshot()?;
+    let mut child = procs.info(std::process::id())?;
+    for _ in 0..MAX_ANCESTORS {
+        let pid = child.ppid;
+        if pid <= 1 {
+            return None;
+        }
+        let parent = procs.info(pid)?;
+        if parent.start > child.start {
+            return None;
+        }
+        if parent.claude {
+            return Some((pid, parent.start));
+        }
+        child = parent;
+    }
+    None
+}
+
+/// True when a process name or executable path ends in `claude`, or
+/// `claude.exe`, in any case.
+fn is_claude_name(name: &OsStr) -> bool {
+    Path::new(name)
+        .file_name()
+        .map(|n| n.to_ascii_lowercase())
+        .is_some_and(|n| n == "claude" || n == "claude.exe")
+}
+
 #[cfg(windows)]
 mod imp {
+    use std::collections::HashMap;
     use std::ffi::OsString;
+    use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use std::path::Path;
@@ -49,14 +98,19 @@ mod imp {
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileSizeEx, GetFileType,
     };
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+        GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
+        WaitForSingleObject,
     };
 
     use super::{CqError, PIPE_GRACE, Result};
@@ -170,6 +224,57 @@ mod imp {
             WaitForSingleObject(h.0, 5000);
         }
         Ok(())
+    }
+
+    /// Every process's parent and executable name, from one snapshot.
+    pub struct Procs(HashMap<u32, (u32, bool)>);
+
+    impl Procs {
+        pub fn snapshot() -> Option<Procs> {
+            // SAFETY: plain FFI call; the handle is checked, then closed by Handle.
+            let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+            if snap.is_null() || snap == INVALID_HANDLE_VALUE {
+                return None;
+            }
+            let snap = Handle(snap);
+            // SAFETY: PROCESSENTRY32W is a plain Win32 output structure.
+            let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
+            entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+            let mut map = HashMap::new();
+            // SAFETY: snapshot handle and output pointer are valid.
+            let mut found = unsafe { Process32FirstW(snap.0, &mut entry) };
+            while found != 0 {
+                let len = entry.szExeFile.iter().position(|&c| c == 0);
+                let exe = OsString::from_wide(&entry.szExeFile[..len.unwrap_or(0)]);
+                map.insert(
+                    entry.th32ProcessID,
+                    (entry.th32ParentProcessID, super::is_claude_name(&exe)),
+                );
+                // SAFETY: snapshot handle and output pointer remain valid.
+                found = unsafe { Process32NextW(snap.0, &mut entry) };
+            }
+            Some(Procs(map))
+        }
+
+        pub fn info(&self, pid: u32) -> Option<super::ProcInfo> {
+            let &(ppid, claude) = self.0.get(&pid)?;
+            let h = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+            let zero = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+            // SAFETY: valid handle; four live FILETIME outputs.
+            let ok =
+                unsafe { GetProcessTimes(h.0, &mut created, &mut exited, &mut kernel, &mut user) };
+            let start =
+                (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+            (ok != 0).then_some(super::ProcInfo {
+                ppid,
+                start,
+                claude,
+            })
+        }
     }
 }
 
@@ -304,6 +409,149 @@ mod imp {
 
     fn exe_name(p: &Path) -> Option<OsString> {
         p.file_name().map(|n| n.to_ascii_lowercase())
+    }
+
+    /// The bytes before the first NUL.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+    fn until_nul(bytes: &[u8]) -> &[u8] {
+        bytes.split(|&b| b == 0).next().unwrap_or_default()
+    }
+
+    /// True when any of these names is `claude`. A process counts when its
+    /// command name, its `argv[0]` or its executable is `claude`: the
+    /// native installer starts a versioned file through a `claude` link.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+    fn any_claude<'a>(names: impl IntoIterator<Item = &'a [u8]>, pid: libc::pid_t) -> bool {
+        use std::os::unix::ffi::OsStrExt;
+        names
+            .into_iter()
+            .any(|n| super::is_claude_name(std::ffi::OsStr::from_bytes(n)))
+            || exe_path(pid).is_some_and(|p| super::is_claude_name(p.as_os_str()))
+    }
+
+    /// Process details read one process at a time; nothing to snapshot.
+    pub struct Procs;
+
+    impl Procs {
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+        pub fn snapshot() -> Option<Procs> {
+            Some(Procs)
+        }
+
+        /// Not supported on other systems: no owner is recorded.
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+        pub fn snapshot() -> Option<Procs> {
+            None
+        }
+
+        /// From `/proc/<pid>/stat`, `comm`, `cmdline` and `exe`.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub fn info(&self, pid: u32) -> Option<super::ProcInfo> {
+            let raw = libc::pid_t::try_from(pid).ok()?;
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            // After the command name in brackets come fields 3 onwards:
+            // field 4 is the parent ID, field 22 the start time.
+            let fields: Vec<&str> = stat
+                .get(stat.rfind(')')? + 1..)?
+                .split_whitespace()
+                .collect();
+            let ppid = fields.get(1)?.parse().ok()?;
+            let start = fields.get(19)?.parse().ok()?;
+            let comm = std::fs::read(format!("/proc/{pid}/comm")).unwrap_or_default();
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            let claude = any_claude([comm.trim_ascii_end(), until_nul(&cmdline)], raw);
+            Some(super::ProcInfo {
+                ppid,
+                start,
+                claude,
+            })
+        }
+
+        /// From `proc_pidinfo` and the `KERN_PROCARGS2` arguments.
+        #[cfg(target_os = "macos")]
+        pub fn info(&self, pid: u32) -> Option<super::ProcInfo> {
+            use std::mem::{size_of, zeroed};
+            let raw = libc::pid_t::try_from(pid).ok()?;
+            // SAFETY: proc_bsdinfo is a plain C output structure.
+            let mut bsd: libc::proc_bsdinfo = unsafe { zeroed() };
+            let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            // SAFETY: bsd holds size bytes; the call writes at most that many.
+            let n = unsafe {
+                libc::proc_pidinfo(
+                    raw,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    (&mut bsd as *mut libc::proc_bsdinfo).cast(),
+                    size,
+                )
+            };
+            if n != size {
+                return None;
+            }
+            let comm: Vec<u8> = bsd.pbi_comm.iter().map(|&c| c as u8).collect();
+            let name: Vec<u8> = bsd.pbi_name.iter().map(|&c| c as u8).collect();
+            let args = procargs(raw).unwrap_or_default();
+            let claude = any_claude([until_nul(&comm), until_nul(&name), argv0(&args)], raw);
+            Some(super::ProcInfo {
+                ppid: bsd.pbi_ppid,
+                start: bsd
+                    .pbi_start_tvsec
+                    .saturating_mul(1_000_000)
+                    .saturating_add(bsd.pbi_start_tvusec),
+                claude,
+            })
+        }
+    }
+
+    /// A process's `KERN_PROCARGS2` block: the argument count, the
+    /// executable path, NUL padding, then the arguments.
+    #[cfg(target_os = "macos")]
+    fn procargs(pid: libc::pid_t) -> Option<Vec<u8>> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let mut size: libc::size_t = 0;
+        // SAFETY: a size query; no buffer is passed.
+        let r = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                std::ptr::null_mut(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if r != 0 || size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size];
+        // SAFETY: buf holds size bytes; size is updated to the length used.
+        let r = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                buf.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if r != 0 {
+            return None;
+        }
+        buf.truncate(size);
+        Some(buf)
+    }
+
+    /// `argv[0]` from a `KERN_PROCARGS2` block, or nothing.
+    #[cfg(target_os = "macos")]
+    fn argv0(args: &[u8]) -> &[u8] {
+        let Some(rest) = args.get(std::mem::size_of::<libc::c_int>()..) else {
+            return &[];
+        };
+        let path_end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+        let rest = &rest[path_end..];
+        let start = rest.iter().position(|&b| b != 0).unwrap_or(rest.len());
+        until_nul(&rest[start..])
     }
 
     /// `Ok` when the process runs an executable with our file name, or a
@@ -582,8 +830,30 @@ pub fn install_interrupt_handler() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_cq_name;
+    use super::{is_claude_name, is_cq_name};
     use std::ffi::OsStr;
+
+    #[test]
+    fn claude_names() {
+        for yes in [
+            "claude",
+            "claude.exe",
+            "Claude.EXE",
+            "/usr/local/bin/claude",
+        ] {
+            assert!(is_claude_name(OsStr::new(yes)), "{yes:?}");
+        }
+        for no in [
+            "node",
+            "claude-code",
+            "2.1.299",
+            "claude.old",
+            "",
+            "/claude/versions/2",
+        ] {
+            assert!(!is_claude_name(OsStr::new(no)), "{no:?}");
+        }
+    }
 
     fn ok(theirs: &str, mine: &str) -> bool {
         is_cq_name(OsStr::new(theirs), OsStr::new(mine))
