@@ -15,6 +15,15 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## cq-top screen order and Flow screen, 29 October 2026
+
+Screens reordered to Overview, Sessions, Flow, Rejected, and the Flow screen restyled (see [cq-top](CQ-TOP.md#flow-screen)). Checked on Windows 11 with `cargo test --workspace` (154 tests, 0 failed; 44 in cq-top), `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
+
+- Unit tests in `tools/cq-top/src/main.rs`: the screen order on the tab bar, for the number keys and for next and previous; saved view files with screen names still load; pairs sort by count, then newest; the Workers table joins watchers and reply times. Render tests use ratatui's `TestBackend` with fake data: the Flow screen in every theme at 100 columns (figures, a Braille graph, header rows, names in separate columns, no message text), smaller sizes down to 1x1 without a panic, the columns kept at 60 columns, and the empty state.
+- `cq-top --html` and `--html-screens` ran read-only against the live queue root, writing only to a temporary folder. The Flow export showed separate name columns and no message text.
+
+Not verified: the keys pressed in a real terminal; the screens at run time on macOS and Linux.
+
 ## Codex wake on Windows, 28 October 2026
 
 `cq watch --to-codex` (experimental, see [Commands](COMMANDS.md#wake-a-codex-chat)). Checked on Windows 11 with `cargo test --workspace` (149 tests, 0 failed), `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`. All passed. `cargo clippy -p cq --all-targets -- -D warnings` also passed for `aarch64-apple-darwin` and `x86_64-linux-android` (a compile check of the Unix code; nothing ran).

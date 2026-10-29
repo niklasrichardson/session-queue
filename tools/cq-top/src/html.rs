@@ -7,8 +7,6 @@ use std::fmt::Write;
 
 /// Slices in the "last hour" chart: 12 of 5 minutes.
 const CHART_SLICES: usize = 12;
-/// A watcher's Busy bar is full at this many claimed + queued messages, as on the Flow screen.
-const BUSY_FULL: usize = 4;
 const PAIRS_SHOWN: usize = 12;
 const PROBLEMS_SHOWN: usize = 20;
 /// Reasons are free text from the session that declined the message; long ones are cut.
@@ -154,14 +152,25 @@ fn mode_cell(s: &Snapshot, w: &Watcher) -> String {
     }
 }
 
-fn busy_tone(b: Busy) -> (Tone, &'static str) {
+/// The colour of a watcher's load bar.
+fn busy_tone(b: Busy) -> Tone {
     match b {
-        Busy::Asleep => (Tone::Muted, "z"),
-        Busy::Stale => (Tone::Critical, "▲"),
-        Busy::Idle => (Tone::Muted, "○"),
-        Busy::Backlog => (Tone::Warning, "◌"),
-        Busy::Working => (Tone::Accent, "◐"),
+        Busy::Asleep | Busy::Idle => Tone::Muted,
+        Busy::Stale => Tone::Critical,
+        Busy::Backlog => Tone::Warning,
+        Busy::Working => Tone::Accent,
     }
+}
+
+/// A bar filled to `ratio` (0 to 1), with `label` for screen readers.
+fn meter(tone: Tone, ratio: f64, label: &str) -> String {
+    let pct = (ratio.clamp(0.0, 1.0) * 100.0).round();
+    format!(
+        "<div class=\"meter {}\" role=\"img\" aria-label=\"{}\">\
+         <span style=\"width:{pct}%\"></span></div>",
+        tone.class(),
+        esc(label)
+    )
 }
 
 // ---------- the page ----------
@@ -304,82 +313,39 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
 
     sessions_table(b, s);
 
-    // Busy now and turnaround, side by side on a wide screen.
-    b.push_str("<div class=\"cols\">");
-    let _ = write!(
-        b,
-        "<section class=\"card\"><h2>Busy now</h2>\
-         <p class=\"sub\">Claimed + queued messages per watcher. The bar is full at {BUSY_FULL}.</p>"
-    );
-    for w in &s.watchers {
-        let busy = w.busy();
-        let (tone, glyph) = busy_tone(busy);
-        // The screens call a watcher with no heartbeat STALE too; here it says why.
-        let state = if w.beat_age.is_none() && !w.asleep {
-            chip(Tone::Muted, "○", "no heartbeat")
-        } else {
-            chip(tone, glyph, busy.label())
-        };
-        let backlog = w.claimed + w.queued;
-        let pct = (backlog.min(BUSY_FULL) * 100) / BUSY_FULL;
-        let _ = write!(
-            b,
-            "<div class=\"meter-row\"><strong class=\"name\">{}</strong>{state}\
-             <div class=\"meter {}\" role=\"img\" aria-label=\"{} of {BUSY_FULL}\">\
-             <span style=\"width:{pct}%\"></span></div>\
-             <span class=\"dim nums\">claimed {} · queued {}</span></div>",
-            esc(&w.name),
-            tone.class(),
-            backlog,
-            w.claimed,
-            w.queued
-        );
-    }
-    b.push_str("</section>");
-
-    let turn = turnaround(s);
-    let _ = write!(
-        b,
-        "<section class=\"card\"><h2>Task to reply, median</h2>\
-         <p class=\"sub\">Per worker, from a task being sent to its reply being sent. \
-         Replies in the last hour.</p>"
-    );
-    let longest = turn.iter().map(|t| t.2).max().unwrap_or(0).max(1);
-    for (worker, replies, med) in &turn {
-        hbar(
-            b,
-            &esc(worker),
-            *med as f64 / longest as f64,
-            &format!(
-                "{} · {replies} repl{}",
-                age(*med),
-                if *replies == 1 { "y" } else { "ies" }
-            ),
-        );
-    }
-    if turn.is_empty() {
-        b.push_str("<p class=\"dim\">No replies in the last hour.</p>");
-    }
-    b.push_str("</section></div>");
-
-    // Traffic over the last hour, then who talks to whom.
+    // Traffic over the last hour, then who talks to whom, as on the Flow screen.
     b.push_str("<div class=\"cols\">");
     slice_chart(b, s);
     let pairs = pairs(s);
     let _ = write!(
         b,
-        "<section class=\"card\"><h2>Who talks to whom</h2>\
-         <p class=\"sub\">Messages per sender and receiver, last hour.</p>"
+        "<section class=\"card\"><h2>Who talks to whom <span class=\"count\">{}</span></h2>\
+         <p class=\"sub\">Messages per sender and receiver, last hour. Most first, then newest.</p>\
+         <div class=\"scroll\"><table><thead><tr><th>From</th><th>To</th>\
+         <th class=\"n\">Messages</th><th class=\"n\">Last</th><th></th></tr></thead><tbody>",
+        pairs.len()
     );
-    let most = pairs.first().map_or(1, |p| p.1.max(1));
-    for ((from, to), n) in pairs.iter().take(PAIRS_SHOWN) {
-        hbar(
+    let most = pairs.first().map_or(1, |p| p.count.max(1));
+    for p in pairs.iter().take(PAIRS_SHOWN) {
+        let _ = write!(
             b,
-            &format!("{} → {}", esc(from), esc(to)),
-            *n as f64 / most as f64,
-            &n.to_string(),
+            "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\"><strong>{}</strong></td>\
+             <td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"meter-cell\">{}</td></tr>",
+            esc(&p.from),
+            esc(&p.to),
+            p.count,
+            age(s.now - p.last),
+            meter(
+                Tone::Accent,
+                p.count as f64 / most as f64,
+                &format!("{} of {most}", p.count)
+            )
         );
     }
+    if pairs.is_empty() {
+        b.push_str("<tr><td colspan=\"5\" class=\"dim\">No messages in the last hour.</td></tr>");
+    }
+    b.push_str("</tbody></table></div>");
     if pairs.len() > PAIRS_SHOWN {
         let _ = write!(
             b,
@@ -387,10 +353,60 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
             pairs.len() - PAIRS_SHOWN
         );
     }
-    if pairs.is_empty() {
-        b.push_str("<p class=\"dim\">No messages in the last hour.</p>");
-    }
     b.push_str("</section></div>");
+
+    // One row per worker: load now and replies in the last hour.
+    let _ = write!(
+        b,
+        "<section class=\"card\"><h2>Workers <span class=\"count\">load now, replies in the last hour</span></h2>\
+         <p class=\"sub\">Load is queued + claimed messages; the bar is full at {LOAD_FULL}. \
+         Median task → reply is the time from a task being sent to its reply being sent. \
+         State comes from the heartbeat.</p>\
+         <div class=\"scroll\"><table><thead><tr><th>Worker</th><th>State</th><th>Mode</th>\
+         <th class=\"n\">Queued</th><th class=\"n\">Claimed</th><th>Load</th>\
+         <th class=\"n\">Median task → reply</th><th class=\"n\">Replies</th></tr></thead><tbody>"
+    );
+    let rows = workers(s);
+    for r in &rows {
+        let dash = "<span class=\"dim\">-</span>";
+        let (state, mode, queued, claimed, load) = match r.watcher {
+            Some(w) => {
+                let backlog = w.queued + w.claimed;
+                (
+                    heartbeat_chip(w),
+                    mode_cell(s, w),
+                    w.queued.to_string(),
+                    w.claimed.to_string(),
+                    meter(
+                        busy_tone(w.busy()),
+                        backlog as f64 / LOAD_FULL as f64,
+                        &format!("{backlog} of {LOAD_FULL}"),
+                    ),
+                )
+            }
+            // Replied in the last hour, but has no watcher.
+            None => (
+                dash.to_string(),
+                dash.to_string(),
+                dash.to_string(),
+                dash.to_string(),
+                dash.to_string(),
+            ),
+        };
+        let _ = write!(
+            b,
+            "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\">{state}</td>\
+             <td>{mode}</td><td class=\"n\">{queued}</td><td class=\"n\">{claimed}</td>\
+             <td class=\"meter-cell\">{load}</td><td class=\"n\">{}</td><td class=\"n\">{}</td></tr>",
+            esc(&r.name),
+            r.median.map_or(dash.to_string(), age),
+            r.replies
+        );
+    }
+    if rows.is_empty() {
+        b.push_str("<tr><td colspan=\"8\" class=\"dim\">No watchers.</td></tr>");
+    }
+    b.push_str("</tbody></table></div></section>");
 
     msg_table(
         b,
@@ -418,20 +434,6 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
          <body><main>{body}<footer>Written by cq-top --html. A snapshot, not live: \
          run it again to refresh.</footer></main></body></html>\n"
     )
-}
-
-/// One horizontal bar: label, bar scaled to `ratio`, value at the tip.
-fn hbar(b: &mut String, label_html: &str, ratio: f64, value: &str) {
-    // The value text takes up to 7.5em after the bar; the bar scales within the rest.
-    let ratio = ratio.clamp(0.01, 1.0);
-    let _ = write!(
-        b,
-        "<div class=\"hbar\"><span class=\"lbl\">{label_html}</span>\
-         <span class=\"track\"><span class=\"fill\" \
-         style=\"width:calc((100% - 7.5em) * {ratio:.3})\"></span>\
-         <span class=\"val\">{}</span></span></div>",
-        esc(value)
-    );
 }
 
 /// The smallest of 1, 2, 5, 10, 20, 50 ... that splits `peak` into at most 4 steps.
@@ -783,22 +785,12 @@ tbody tr:last-child td{border-bottom:0}
 .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .nowrap{white-space:nowrap}
 .msgs td.subject{min-width:220px;overflow-wrap:anywhere}
-.meter-row{display:grid;grid-template-columns:minmax(0,10.5em) 8.5em minmax(60px,1fr) auto;
- align-items:center;gap:4px 12px;padding:5px 0;border-bottom:1px solid var(--grid);font-size:14px}
-.meter-row:last-child{border-bottom:0}
-.meter-row .name{overflow-wrap:anywhere}
-@media (max-width:560px){.meter-row{grid-template-columns:1fr auto}
- .meter-row .meter{grid-column:1/-1;order:3}}
+.meter-cell{min-width:90px;width:22%}
+.meter-cell .meter{margin-top:5px}
 .meter{height:10px;border-radius:5px;overflow:hidden;
  background:color-mix(in srgb,currentColor 16%,var(--surface))}
 .meter span{display:block;height:100%;background:currentColor;border-radius:0 4px 4px 0}
 .meter.muted{background:var(--grid)}
-.hbar{display:grid;grid-template-columns:minmax(90px,38%) 1fr;align-items:center;gap:10px;
- margin-bottom:8px;font-size:14px}
-.hbar .lbl{overflow-wrap:anywhere}
-.track{display:flex;align-items:center;gap:8px;min-width:0}
-.fill{display:block;height:14px;background:var(--series);border-radius:0 4px 4px 0;flex:none}
-.val{white-space:nowrap;color:var(--ink);font-variant-numeric:tabular-nums}
 .chart{width:100%;height:auto;display:block}
 .chart .grid{stroke:var(--grid);stroke-width:1}
 .chart .base{stroke:var(--axis);stroke-width:1}

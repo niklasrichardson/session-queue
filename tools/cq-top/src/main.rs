@@ -54,17 +54,18 @@ struct Msg {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Screen {
     Overview,
+    Sessions,
     Flow,
     Rejected,
-    Sessions,
 }
 
 impl Screen {
+    /// The screens in tab order; key `1` is the first.
     const ALL: [Screen; 4] = [
         Screen::Overview,
+        Screen::Sessions,
         Screen::Flow,
         Screen::Rejected,
-        Screen::Sessions,
     ];
 
     /// The name in the saved view and in exported file names.
@@ -77,9 +78,33 @@ impl Screen {
         }
     }
 
+    /// The name on the tab bar.
+    fn title(self) -> &'static str {
+        match self {
+            Screen::Overview => "Overview",
+            Screen::Sessions => "Sessions",
+            Screen::Flow => "Flow",
+            Screen::Rejected => "Rejected",
+        }
+    }
+
     fn next(self) -> Screen {
+        self.step(1)
+    }
+
+    fn prev(self) -> Screen {
+        self.step(Screen::ALL.len() - 1)
+    }
+
+    fn step(self, by: usize) -> Screen {
         let i = Screen::ALL.iter().position(|s| *s == self).unwrap_or(0);
-        Screen::ALL[(i + 1) % Screen::ALL.len()]
+        Screen::ALL[(i + by) % Screen::ALL.len()]
+    }
+
+    /// The screen for a number key: `1` is the first in tab order.
+    fn for_key(c: char) -> Option<Screen> {
+        let i = c.to_digit(10)?.checked_sub(1)?;
+        Screen::ALL.get(i as usize).copied()
     }
 }
 
@@ -121,7 +146,7 @@ impl Watcher {
     }
 }
 
-/// What a watcher is doing right now, for the Busy bars.
+/// What a watcher is doing right now, for the colour of its load bar.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Busy {
     Asleep,
@@ -135,18 +160,6 @@ enum Busy {
 /// inbox or Codex watcher runs until it stops. Nothing in cq-top depends on any of them.
 fn mode_label(m: Mode) -> &'static str {
     m.as_str()
-}
-
-impl Busy {
-    fn label(self) -> &'static str {
-        match self {
-            Busy::Asleep => "asleep",
-            Busy::Stale => "STALE",
-            Busy::Idle => "idle",
-            Busy::Backlog => "backlog",
-            Busy::Working => "working",
-        }
-    }
 }
 
 struct Snapshot {
@@ -179,11 +192,12 @@ fn main() -> std::io::Result<()> {
         println!(
             "cq-top: live, read-only view of a cq queue.\n\
              The queue root is CQ_ROOT, or cq's per-user default.\n\
-             Keys: q quit, b bodies, tab or 1/2/3/4 switch screen, t next theme.\n\
+             Keys: q quit, b bodies, t next theme, tab, arrows or 1/2/3/4 switch screen\n\
+             (1 Overview, 2 Sessions, 3 Flow, 4 Rejected).\n\
              \n\
              --html PATH          write one snapshot as an HTML dashboard to PATH, then exit\n\
              --html-screens DIR   write the four screens as HTML pages (overview.html,\n\
-             \x20                    flow.html, rejected.html, sessions.html) to DIR, then exit\n\
+             \x20                    sessions.html, flow.html, rejected.html) to DIR, then exit\n\
              Neither may point inside the queue root. Message bodies are never exported."
         );
         return Ok(());
@@ -237,11 +251,12 @@ fn run(terminal: &mut DefaultTerminal, root: &cq::Root) -> std::io::Result<()> {
                 KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
                 KeyCode::Char('b') => show_bodies = !show_bodies,
                 KeyCode::Char('t') => theme = (theme + 1) % THEMES.len(),
-                KeyCode::Tab => screen = screen.next(),
-                KeyCode::Char('1') => screen = Screen::Overview,
-                KeyCode::Char('2') => screen = Screen::Flow,
-                KeyCode::Char('3') => screen = Screen::Rejected,
-                KeyCode::Char('4') => screen = Screen::Sessions,
+                KeyCode::Tab | KeyCode::Right => screen = screen.next(),
+                KeyCode::BackTab | KeyCode::Left => screen = screen.prev(),
+                KeyCode::Char(c) => match Screen::for_key(c) {
+                    Some(s) => screen = s,
+                    None => continue,
+                },
                 _ => continue,
             }
             save_view(screen, theme);
@@ -420,15 +435,78 @@ fn slices(s: &Snapshot, n: usize) -> Vec<u64> {
     slices
 }
 
-/// Messages per (sender, receiver) in the last hour, most first.
-fn pairs(s: &Snapshot) -> Vec<((String, String), u64)> {
-    let mut pairs: BTreeMap<(String, String), u64> = BTreeMap::new();
+/// Messages from one sender to one receiver in the last hour.
+#[derive(Debug, PartialEq)]
+struct Pair {
+    from: String,
+    to: String,
+    count: u64,
+    /// When the newest of them was sent.
+    last: i64,
+}
+
+/// Messages per (sender, receiver) in the last hour, most first, then newest first.
+fn pairs(s: &Snapshot) -> Vec<Pair> {
+    let mut pairs: BTreeMap<(&str, &str), (u64, i64)> = BTreeMap::new();
     for m in &s.window {
-        *pairs.entry((m.from.clone(), m.to.clone())).or_default() += 1;
+        let p = pairs.entry((&m.from, &m.to)).or_insert((0, m.ts));
+        p.0 += 1;
+        p.1 = p.1.max(m.ts);
     }
-    let mut pairs: Vec<_> = pairs.into_iter().collect();
-    pairs.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    let mut pairs: Vec<Pair> = pairs
+        .into_iter()
+        .map(|((from, to), (count, last))| Pair {
+            from: from.to_string(),
+            to: to.to_string(),
+            count,
+            last,
+        })
+        .collect();
+    // A stable sort: pairs with the same count and time keep their name order.
+    pairs.sort_by_key(|p| (std::cmp::Reverse(p.count), std::cmp::Reverse(p.last)));
     pairs
+}
+
+/// A watcher's load bar is full at this many queued + claimed messages.
+const LOAD_FULL: usize = 4;
+
+/// One row of the worker table: a watcher, or a name that replied in the last hour without
+/// being one.
+struct Worker<'a> {
+    name: String,
+    watcher: Option<&'a Watcher>,
+    /// Replies sent in the last hour.
+    replies: usize,
+    /// Median seconds from a task being sent to its reply being sent; `None` without replies.
+    median: Option<i64>,
+}
+
+/// Every watcher in name order, then any other name that replied in the last hour.
+fn workers(s: &Snapshot) -> Vec<Worker<'_>> {
+    let mut turn: BTreeMap<String, (usize, i64)> = turnaround(s)
+        .into_iter()
+        .map(|(name, n, med)| (name, (n, med)))
+        .collect();
+    let mut rows: Vec<Worker> = s
+        .watchers
+        .iter()
+        .map(|w| {
+            let t = turn.remove(&w.name);
+            Worker {
+                name: w.name.clone(),
+                watcher: Some(w),
+                replies: t.map_or(0, |t| t.0),
+                median: t.map(|t| t.1),
+            }
+        })
+        .collect();
+    rows.extend(turn.into_iter().map(|(name, (replies, med))| Worker {
+        name,
+        watcher: None,
+        replies,
+        median: Some(med),
+    }));
+    rows
 }
 
 /// Task -> reply turnaround per worker in the last hour: reply send time minus task send
@@ -754,9 +832,9 @@ mod tests {
         assert_eq!(parse_view("flow no-such-theme"), (Screen::Flow, 0));
         assert_eq!(parse_view("garbage"), (Screen::Overview, 0));
         // Tab goes round all four screens.
-        assert_eq!(Screen::Rejected.next(), Screen::Sessions);
-        assert_eq!(Screen::Sessions.next(), Screen::Overview);
-        assert_eq!(Screen::Overview.next().next(), Screen::Rejected);
+        assert_eq!(Screen::Sessions.next(), Screen::Flow);
+        assert_eq!(Screen::Rejected.next(), Screen::Overview);
+        assert_eq!(Screen::Overview.next().next(), Screen::Flow);
         assert_eq!(parse_view("sessions amber"), (Screen::Sessions, 1));
     }
 
@@ -983,6 +1061,262 @@ mod tests {
     /// A session title that tries HTML injection.
     const EVIL_TITLE: &str = "<b>RC</b> & \"x\"";
 
+    /// The screen drawn into a `w` x `h` off-screen terminal, one string per line.
+    fn screen_lines(
+        snap: &Snapshot,
+        screen: Screen,
+        theme: &draw::Theme,
+        w: u16,
+        h: u16,
+    ) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| draw(f, Path::new("/q"), snap, false, screen, theme))
+            .unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// The sample with an hour of traffic: three tasks from lead to w1 (two answered, after
+    /// 65 s and 130 s), a note to the sleeping napper, and a reply from a name with no watcher.
+    /// `sample()`'s now is 2026-10-27T11:26:40Z.
+    fn flow_sample() -> Snapshot {
+        let msg = |ts: i64, from: &str, to: &str, kind: &str, reply_to: &str, bucket| Msg {
+            ts,
+            from: from.into(),
+            to: to.into(),
+            kind: kind.into(),
+            subject: "s".into(),
+            status: String::new(),
+            reply_to: reply_to.into(),
+            body: BODY.into(),
+            bucket,
+            reason: String::new(),
+        };
+        let mut snap = sample();
+        snap.window = vec![
+            msg(1_793_097_600, "lead", "w1", "task", "", "done"),
+            msg(
+                1_793_097_665,
+                "w1",
+                "lead",
+                "result",
+                "20261027T104000Z-lead-1",
+                "done",
+            ),
+            msg(1_793_099_400, "lead", "w1", "task", "", "done"),
+            msg(
+                1_793_099_530,
+                "w1",
+                "lead",
+                "result",
+                "20261027T111000Z-lead-2",
+                "done",
+            ),
+            msg(1_793_100_300, "lead", "w1", "task", "", "queued"),
+            msg(1_793_098_800, "design-a", "napper", "info", "", "queued"),
+            msg(
+                1_793_100_000,
+                "reviewer",
+                "lead",
+                "result",
+                "20261027T111900Z-lead-3",
+                "done",
+            ),
+        ];
+        snap
+    }
+
+    /// The four screens in the order Overview, Sessions, Flow, Rejected: on the tab bar, for
+    /// the number keys and for Tab, Shift-Tab and the arrows. Saved names still load.
+    #[test]
+    fn screens_are_in_order_overview_sessions_flow_rejected() {
+        use Screen::*;
+        assert_eq!(Screen::ALL, [Overview, Sessions, Flow, Rejected]);
+        let keys: Vec<_> = "01234x".chars().map(Screen::for_key).collect();
+        assert_eq!(
+            keys,
+            [
+                None,
+                Some(Overview),
+                Some(Sessions),
+                Some(Flow),
+                Some(Rejected),
+                None
+            ]
+        );
+        assert_eq!(Overview.next(), Sessions);
+        assert_eq!(Rejected.next(), Overview);
+        assert_eq!(Overview.prev(), Rejected);
+        assert_eq!(Flow.prev(), Sessions);
+        for screen in Screen::ALL {
+            assert_eq!(screen.next().prev(), screen);
+        }
+        // A state file from before the reorder names screens, not numbers, so it still loads.
+        assert_eq!(parse_view("flow neon"), (Flow, 2));
+        assert_eq!(parse_view("rejected classic"), (Rejected, 0));
+        assert_eq!(parse_view("sessions amber"), (Sessions, 1));
+
+        let top = &screen_lines(&sample(), Flow, &THEMES[0], 160, 30)[0];
+        let at = |tab: &str| top.find(tab).unwrap_or_else(|| panic!("{tab} in {top}"));
+        assert!(at("1 Overview") < at("2 Sessions"));
+        assert!(at("2 Sessions") < at("3 Flow"));
+        assert!(at("3 Flow") < at("4 Rejected"));
+    }
+
+    #[test]
+    fn pairs_sort_by_count_then_newest() {
+        let snap = flow_sample();
+        let got: Vec<_> = pairs(&snap)
+            .into_iter()
+            .map(|p| (p.from, p.to, p.count, snap.now - p.last))
+            .collect();
+        let want = [
+            ("lead", "w1", 3, 100),
+            ("w1", "lead", 2, 870),
+            ("reviewer", "lead", 1, 400),
+            ("design-a", "napper", 1, 1600),
+        ];
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(want) {
+            assert_eq!((g.0.as_str(), g.1.as_str(), g.2, g.3), w);
+        }
+    }
+
+    #[test]
+    fn workers_join_watchers_and_reply_times() {
+        let snap = flow_sample();
+        let got: Vec<_> = workers(&snap)
+            .iter()
+            .map(|w| (w.name.clone(), w.watcher.is_some(), w.replies, w.median))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("w1".to_string(), true, 2, Some(130)),
+                ("napper".to_string(), true, 0, None),
+                // Replied, but has no watcher: listed after the watchers.
+                ("reviewer".to_string(), false, 1, Some(60)),
+            ]
+        );
+    }
+
+    /// The Flow screen at 100 columns: the Messages box has figures and a graph, and both
+    /// tables have a header row with names in their own columns.
+    #[test]
+    fn flow_screen_has_figures_a_graph_and_real_columns() {
+        let snap = flow_sample();
+        for theme in &THEMES {
+            let lines = screen_lines(&snap, Screen::Flow, theme, 100, 30);
+            let text = lines.join("\n");
+            for want in [
+                "Messages sent, last hour",
+                "Total",
+                "Last 5 min",
+                "Peak",
+                "1/min",
+                "oldest left, now right",
+                "Who talks to whom, last hour: 4 pairs",
+                "Workers: load now, replies in the last hour",
+                "load: queued + claimed, full at 4",
+            ] {
+                assert!(text.contains(want), "{want} in {}\n{text}", theme.name);
+            }
+            assert!(!text.contains(BODY));
+            // The graph is drawn in Braille, as on the Sessions screen.
+            assert!(text.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
+
+            // A row's words, with the left border as the first: `│`, or `║` in amber.
+            let words = |l: &String| {
+                l.replace(['│', '║'], " | ")
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
+            let line_with = |first: &str| {
+                lines
+                    .iter()
+                    .map(words)
+                    .find(|w| w.get(1).map(String::as_str) == Some(first))
+                    .unwrap_or_else(|| panic!("a row starting {first}\n{text}"))
+            };
+            // Header rows, then rows whose cells are separate words between the borders.
+            assert_eq!(line_with("from")[1..5], ["from", "to", "messages", "last"]);
+            assert_eq!(line_with("lead")[1..5], ["lead", "w1", "3", "1m40s"]);
+            assert_eq!(
+                line_with("design-a")[1..5],
+                ["design-a", "napper", "1", "26m40s"]
+            );
+            assert_eq!(
+                line_with("worker")[1..10],
+                [
+                    "worker",
+                    "state",
+                    "mode",
+                    "queued",
+                    "claimed",
+                    "load",
+                    "median",
+                    "task→reply",
+                    "replies"
+                ]
+            );
+            let w1 = line_with("w1");
+            // `w1 -> lead` in the pairs table comes first; the worker row has its state.
+            let worker = lines
+                .iter()
+                .map(words)
+                .find(|w| {
+                    w.get(1).map(String::as_str) == Some("w1") && w.contains(&"live".to_string())
+                })
+                .unwrap();
+            assert_eq!(w1[1..3], ["w1", "lead"]);
+            assert_eq!(worker[2..6], ["live", "mon", "1", "1"]);
+            assert!(worker.contains(&"2m10s".to_string()));
+            let napper = line_with("napper");
+            assert_eq!(napper[2..3], ["asleep"]);
+            let reviewer = lines
+                .iter()
+                .map(words)
+                .find(|w| {
+                    w.get(1).map(String::as_str) == Some("reviewer")
+                        && w.contains(&"1m00s".to_string())
+                })
+                .unwrap();
+            assert_eq!(reviewer[2], "-");
+            // Never a joined name such as `lead>w1` or `lead -> w1`.
+            assert!(!text.contains(">w1") && !text.contains("->"));
+        }
+    }
+
+    /// A narrow terminal drops the least important columns first, never the names.
+    #[test]
+    fn flow_screen_drops_columns_when_narrow() {
+        let snap = flow_sample();
+        for theme in &THEMES {
+            for (w, h) in [(60, 30), (40, 24), (20, 10), (1, 1)] {
+                // Must not panic at any size.
+                let text = screen_lines(&snap, Screen::Flow, theme, w, h).join("\n");
+                if w == 60 {
+                    let head = text.lines().find(|l| l.contains("worker")).unwrap();
+                    assert!(head.contains("state") && head.contains("median"), "{head}");
+                    assert!(
+                        !head.contains("replies") && !head.contains("mode"),
+                        "{head}"
+                    );
+                    assert!(text.contains("design-a") && text.contains("napper"));
+                }
+            }
+        }
+        // No traffic: the tables say so.
+        let mut quiet = sample();
+        quiet.window.clear();
+        let text = screen_lines(&quiet, Screen::Flow, &THEMES[0], 100, 30).join("\n");
+        assert!(text.contains("No messages in the last hour."));
+        assert!(text.contains("0 pairs"));
+    }
+
     #[test]
     fn every_theme_draws_both_screens() {
         let snap = sample();
@@ -1001,7 +1335,7 @@ mod tests {
                 assert!(text.contains("cq-top"), "{} {screen:?}", theme.name);
                 assert!(text.contains(match screen {
                     Screen::Overview => "Watchers",
-                    Screen::Flow => "Turnaround",
+                    Screen::Flow => "Who talks to whom",
                     Screen::Rejected => "not my job",
                     Screen::Sessions => "opus-5-5",
                 }));
@@ -1103,7 +1437,8 @@ mod tests {
             "In flight",
             "Recent",
             "Who talks to whom",
-            "Busy now",
+            "Workers",
+            "Median task → reply",
         ] {
             assert!(page.contains(section), "{section}");
         }
