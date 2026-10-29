@@ -22,7 +22,7 @@ Measured on Windows: in an overnight test with the earlier Monitor mode, a sessi
 | Fresh run per task | Not available | `cq dispatch` runs `codex exec` per task |
 | No prompts | `Bash(cq *)` in `permissions.allow` | The queue root must be writable from the sandbox. A setup with no approval prompt is not tested. |
 | After `/clear` or a new chat | The SessionStart hook runs `cq session-start`, which reminds the session of its name. Claude Code only. | No hook. Every wake prompt names the queue name. A new chat needs the watcher started again with its new thread ID. |
-| Sleep and wake | The `/cq-stop` and `/cq-start` skills. Claude Code only. | `cq sleep` and `cq wake`, run outside the chat |
+| Sleep and wake | The `/cq-stop` and `/cq-start` skills | The same skills as `$cq-stop` and `$cq-start` (not yet tested in Codex), or `cq sleep` and `cq wake`. The watcher starts again outside the chat. |
 | cq-top | Watchers with the mode `inbox` or `mon`, one row per session on the Sessions screen, and Claude's share of CPU and memory | Watchers with the mode `codex`, and Codex's share of CPU and memory. The Sessions screen lists Claude Code sessions only. |
 
 Any other agent can use the queue if it can run `cq` and has a wake route. That is not tested: see [Other agents](OTHER-AGENTS.md).

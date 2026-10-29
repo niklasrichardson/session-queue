@@ -83,7 +83,7 @@ Expected result: after `/clear` in a session whose watcher ran, the new context 
 
 ### Sleep and wake
 
-Two Claude Code skills put a session to sleep and wake it. Copy `skills/cq-start` and `skills/cq-stop` to `~/.claude/skills/`:
+Two skills put a session to sleep and wake it. The same files work in Codex (see [Install the skills](SETUP.md#install-the-skills)). For Claude Code, copy `skills/cq-start` and `skills/cq-stop` to `~/.claude/skills/`:
 
 ```bash
 cp -r skills/cq-start skills/cq-stop ~/.claude/skills/

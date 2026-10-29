@@ -30,7 +30,7 @@ Codex reads `AGENTS.md` files: the user-level `~/.codex/AGENTS.md` and the repos
 1. The [queue rules block](QUEUE-RULES.md#1-queue-rules-block), which is the same for every agent.
 2. One section per Codex queue name. The default wake prompt starts `Queue check as 'NAME'. Follow the 'NAME' section of AGENTS.md.`, so name the section after the queue name.
 
-If you start from [SESSION-RULES.example.md](SESSION-RULES.example.md), keep its "Codex chat" part. Delete the Claude Code parts: they do not apply to Codex. A Codex chat has no inbox mode, no Monitor mode and no `Watching` turn ending, does not use cq's Claude Code SessionStart hook, and has no `/cq-start` or `/cq-stop` skills.
+If you start from [SESSION-RULES.example.md](SESSION-RULES.example.md), keep its "Codex chat" part. Delete the Claude Code parts: they do not apply to Codex. A Codex chat has no inbox mode, no Monitor mode and no `Watching` turn ending, and does not use cq's Claude Code SessionStart hook.
 
 Example section, for a chat with the queue name `worker-a`:
 
@@ -107,7 +107,7 @@ Do not install `cq session-start` as a Codex hook: its reminder describes the Cl
 
 ### Sleep and wake
 
-cq does not ship Codex versions of its Claude Code `/cq-start` and `/cq-stop` skills. Outside the Codex chat, `cq sleep --as NAME NAME` stops its watcher with exit 7, and `cq wake --as NAME NAME` must run before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
+The `cq-start` and `cq-stop` skills work in Codex as `$cq-start` and `$cq-stop` (see [Install the skills](SETUP.md#install-the-skills); not yet tested in Codex). They cannot start the watcher, which runs outside the chat. Without the skills, outside the Codex chat, `cq sleep --as NAME NAME` stops its watcher with exit 7, and `cq wake --as NAME NAME` must run before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
 
 ## Waking Codex
 

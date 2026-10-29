@@ -75,7 +75,7 @@ Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7
 - **Backup:** a coordinator's watcher prints `CQ-WAKE ... to=NAME ...` for each message that has waited 2 minutes in a sleeping name's inbox. The coordinator then does what the sender should have done. `CQ-WAKE` does not claim or move the message.
 - After a `/clear`, `cq session-start` tells a sleeping session not to start a watcher.
 
-The skills are in [`skills/`](../skills/); [Claude Code setup](CLAUDE-CODE.md#sleep-and-wake) says how to install them. When sleep pays off is in [Design](DESIGN.md#sleep).
+The skills are in [`skills/`](../skills/), and work in Claude Code and Codex; [Install the skills](SETUP.md#install-the-skills) says how to install them. When sleep pays off is in [Design](DESIGN.md#sleep).
 
 ## Overdue tasks
 

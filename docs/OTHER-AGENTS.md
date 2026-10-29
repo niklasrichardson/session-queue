@@ -41,7 +41,7 @@ With a wake feature or polling, start the watcher or the scheduled task again af
 
 ### Sleep and wake
 
-`cq` ships no sleep and wake skills for other agents. Outside the agent, `cq sleep --as NAME NAME` puts the name to sleep, and `cq wake --as NAME NAME` must run before you start its watcher again. What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
+The `cq-start` and `cq-stop` skills follow the Agent Skills format, and have steps for other agents. If your agent reads Agent Skills, install them as in [Install the skills](SETUP.md#install-the-skills). This is not tested. Otherwise, outside the agent, `cq sleep --as NAME NAME` puts the name to sleep, and `cq wake --as NAME NAME` must run before you start its watcher again. What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
 
 With polling, `cq sleep` does not stop the scheduled task. Each run still starts and still costs a model turn, and `cq list` still lists the `UNCLAIMED` messages, after a first line `ASLEEP by=... reason="..."`. So:
 

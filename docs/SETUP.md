@@ -92,8 +92,34 @@ To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/
 | Agent | How to sleep and wake |
 | --- | --- |
 | Claude Code | The `/cq-stop` and `/cq-start` skills. See [Sleep and wake](CLAUDE-CODE.md#sleep-and-wake). |
-| Codex | No skills. Outside the chat, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. With the scheduled automation fallback, also pause the automation. See [Sleep and wake](CODEX.md#sleep-and-wake). |
-| Other agents | No skills. Run `cq sleep` and `cq wake` as for Codex, and pause a polling scheduler yourself. See [Sleep and wake](OTHER-AGENTS.md#sleep-and-wake). |
+| Codex | The same skills, as `$cq-stop` and `$cq-start` (not yet tested in Codex). Or, outside the chat, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. Either way, the watcher starts again outside the chat. With the scheduled automation fallback, also pause the automation. See [Sleep and wake](CODEX.md#sleep-and-wake). |
+| Other agents | The same skills, if the agent reads Agent Skills (not tested). Otherwise run `cq sleep` and `cq wake` as for Codex. Pause a polling scheduler yourself. See [Sleep and wake](OTHER-AGENTS.md#sleep-and-wake). |
+
+### Install the skills
+
+The `cq-start` and `cq-stop` skills in [`skills/`](../skills/) follow the [Agent Skills](https://agentskills.io/specification) format, so one copy works in Claude Code and Codex. Each skill has shared steps, then steps for Claude Code, for Codex and for other agents. Copy both folders to the folder that your agent reads:
+
+| Agent | Skills folder |
+| --- | --- |
+| Claude Code | `~/.claude/skills/<name>/` |
+| Codex | `~/.agents/skills/<name>/` ([Codex skills guide](https://learn.chatgpt.com/docs/build-skills)). On Windows this is probably `C:\Users\<you>\.agents\skills`: the guide gives only `$HOME/.agents/skills`. |
+| Other agents | The agent's own skills folder, if it reads Agent Skills |
+
+From the cq repo, in Git Bash:
+
+```bash
+cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
+mkdir -p ~/.agents/skills && cp -r skills/cq-start skills/cq-stop ~/.agents/skills/
+```
+
+In PowerShell 7, for Codex:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME/.agents/skills" | Out-Null
+Copy-Item -Recurse -Force skills/cq-start, skills/cq-stop "$HOME/.agents/skills/"
+```
+
+Copy them again after you update the repo. A session runs these skills without being asked, for example `cq-stop` on a `CQ-SLEEP` line, so cq does not make them manual-only. To make your installed copy manual-only anyway: in Claude Code, add `disable-model-invocation: true` to its frontmatter; in Codex, add `agents/openai.yaml` with `allow_implicit_invocation: false` under `policy` ([Codex skills guide](https://learn.chatgpt.com/docs/build-skills)). The session then no longer reacts to `CQ-SLEEP` by itself.
 
 ## Configuration
 
