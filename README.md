@@ -6,7 +6,7 @@
 
 ## Why
 
-Claude Code sessions can already send each other messages, but after 10 in a row a person has to type something before they carry on. With `cq`, a message reaches the receiving session as a queue event instead, so hand-offs continue when nobody is at the keyboard.
+A hand-off between coding sessions usually needs a person: to pass the message on, or to prompt the receiving session. With `cq`, a message wakes the receiving session itself, so hand-offs continue when nobody is at the keyboard. It works across agents: in tests, a Claude Code session sent a task to a Codex chat and got its reply. Built-in messaging can have its own limits; for example, Claude Code's cross-session messages stop for a person after 10 in a row.
 
 Measured on Windows: in an overnight test with the earlier Monitor mode, a session handled 27 queue turns in a row with no limit reached. In its first two days of real use, `cq` carried 361 messages between 10 sessions, and the median time from send to pick-up was 12 seconds.
 
@@ -104,7 +104,7 @@ You need Claude Code, stable Rust, and Windows with Git Bash (macOS builds, but 
    EOF
    ```
 
-Every session must use the same absolute queue root (`CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration)). For Codex, start with [Codex setup](docs/CODEX.md).
+Every session must use the same absolute queue root (`CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration)). For Codex, start with [Codex setup](docs/CODEX.md). For other agents, see [Other agents](docs/SETUP.md#other-agents).
 
 ## Cost of an idle session
 
@@ -140,11 +140,12 @@ The Claude Code CLI and Remote Control have not been tested. Details are in [Tes
 
 | Document | What it covers |
 | --- | --- |
-| [Setup](docs/SETUP.md) | Requirements, install steps, configuration, skills, upgrading |
-| [`CLAUDE-snippets.md`](CLAUDE-snippets.md) | CLAUDE.md blocks and session prompts to paste |
-| [Codex setup](docs/CODEX.md) | Waking a Codex chat, the `cq dispatch` worker, recovery |
+| [Setup](docs/SETUP.md) | Requirements, install steps, configuration, skills, other agents, upgrading |
+| [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
+| [`CLAUDE-snippets.md`](CLAUDE-snippets.md) | Claude Code blocks and session prompts to paste |
+| [Codex setup](docs/CODEX.md) | Setting up and waking a Codex chat, the `cq dispatch` worker, recovery |
 | [Session protocol](docs/PROTOCOL.md) | How a session watches, claims, replies, rejoins and sleeps; storm limits |
-| [Example session rules](docs/SESSION-RULES.example.md) | Queue rules to adapt for any coding agent |
+| [Example session rules](docs/SESSION-RULES.example.md) | A longer rules file to adapt, with a part for each agent |
 | [Commands](docs/COMMANDS.md) | Every command, the exit codes, the queue root layout |
 | [cq-top](docs/CQ-TOP.md) | The live, read-only terminal view of the queue |
 | [Design decisions](docs/DESIGN.md) | Why `cq` behaves as it does, and known risks |
