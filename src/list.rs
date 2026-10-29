@@ -1,6 +1,8 @@
 //! `cq list`: unclaimed, stale claimed and dead-lettered messages, after an
-//! `ASLEEP` line when the name is asleep.
+//! `ASLEEP` line when the name is asleep. `cq list --rejected`: rejected
+//! messages, both ways.
 
+use std::fs;
 use std::time::{Duration, SystemTime};
 
 use jiff::Timestamp;
@@ -9,7 +11,7 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::fsutil;
 use crate::message::{EVENT_SUBJECT_MAX, event_text, header};
-use crate::names::{check_name, id_parts, is_valid_id};
+use crate::names::{check_name, id_parts, is_valid_id, is_valid_name};
 use crate::root::{Root, message_file, reason_file};
 use crate::sleep;
 use crate::timefmt::{self, local_hhmm, rfc3339};
@@ -118,4 +120,84 @@ fn created_of(id: &str) -> Timestamp {
     id_parts(id)
         .and_then(|(stamp, _)| timefmt::parse_id_stamp(stamp))
         .unwrap_or(Timestamp::UNIX_EPOCH)
+}
+
+/// `cq list --rejected`: one line per message that `name` rejected
+/// (`REJECTED-IN`, from `rejected/<name>/`), and per message from `name`
+/// that another session rejected (`REJECTED-OUT`, by the sender in the
+/// file name), oldest first (by creation time), then a total. Never prints
+/// bodies.
+pub fn rejected(root: &Root, name: &str) -> Result<Vec<String>> {
+    check_name("--as", name)?;
+    let mut rows: Vec<(Timestamp, String)> = Vec::new();
+    let (mut rejected_in, mut rejected_out) = (0, 0);
+
+    for by in rejecters(root) {
+        let dir = root.rejected(&by);
+        for id in fsutil::json_stems(&dir, is_valid_id) {
+            let label = if by == name {
+                "REJECTED-IN"
+            } else if id_parts(&id).is_some_and(|(_, from)| from == name) {
+                "REJECTED-OUT"
+            } else {
+                continue;
+            };
+            let Ok(bytes) = fsutil::read_with_retry(&message_file(&dir, &id)) else {
+                continue;
+            };
+            let h = header(&bytes);
+            let reason = fsutil::read_with_retry(&reason_file(&dir, &id))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            let field = |k: &str| {
+                reason
+                    .as_ref()
+                    .and_then(|v| v.get(k).and_then(Value::as_str).map(str::to_owned))
+            };
+            let created = created_of(&id);
+            if by == name {
+                rejected_in += 1;
+            } else {
+                rejected_out += 1;
+            }
+            rows.push((
+                created,
+                format!(
+                    "{label} {} ({}) rejected={} by={by} from={} type={} id={id} subject={} reason={}",
+                    rfc3339(created),
+                    local_hhmm(created),
+                    field("time").unwrap_or_else(|| "?".to_owned()),
+                    h.from,
+                    h.kind,
+                    event_text(&h.subject, EVENT_SUBJECT_MAX),
+                    event_text(
+                        &field("reason").unwrap_or_else(|| "no reason file".to_owned()),
+                        REASON_MAX
+                    )
+                ),
+            ));
+        }
+    }
+
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut out: Vec<String> = rows.into_iter().map(|(_, line)| line).collect();
+    out.push(format!(
+        "TOTAL rejected_in={rejected_in} rejected_out={rejected_out}"
+    ));
+    Ok(out)
+}
+
+/// Every name with a directory under `rejected/`, sorted.
+fn rejecters(root: &Root) -> Vec<String> {
+    let Ok(rd) = fs::read_dir(root.path().join("rejected")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| is_valid_name(n))
+        .collect();
+    out.sort();
+    out
 }

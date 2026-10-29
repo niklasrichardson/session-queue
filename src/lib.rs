@@ -1,7 +1,7 @@
 //! `cq`: a file-based message queue for Claude Code sessions.
 //!
 //! One binary with subcommands `init`, `send`, `watch`, `dispatch`, `claim`,
-//! `done`, `list`, `leave`, `members`, `sleep`, `wake` and `session-start`. The library holds all queue logic so the integration tests can
+//! `done`, `list`, `requeue`, `leave`, `members`, `sleep`, `wake` and `session-start`. The library holds all queue logic so the integration tests can
 //! check the message validator directly.
 
 pub mod claim;
@@ -16,6 +16,7 @@ pub mod members;
 pub mod message;
 pub mod names;
 pub mod platform;
+pub mod requeue;
 pub mod root;
 pub mod send;
 pub mod sleep;

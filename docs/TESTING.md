@@ -15,6 +15,14 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Rejection notices, list and requeue, 29 October 2026
+
+`cq done --reject` notices for info and result messages, `cq list --rejected` and `cq requeue` ([issue #20](https://github.com/niklasrichardson/session-queue/issues/20), see [Rejections](COMMANDS.md#rejections)). Checked on Windows 11 with `cargo test --workspace` (168 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
+
+- Integration tests in `tests/rejected.rs`: the notice for an info and for a result (ID, subject, reason, `reply_to`, hops, no original body); a task still gets only its `rejected` result; rejecting a notice or a `rejected` result sends nothing; `PAUSE` and the hop limit block the notice but not the reject (exit 0, stderr warning); a 20 KB reason is cut to the body limit; `cq list --rejected` in both directions, with no bodies; `cq requeue` keeps the ID, removes the reason file, and refuses messages outside the session's own `rejected/` (exit 6) or a path as an ID (exit 5); a running watcher announces a requeued message again.
+
+Not verified: live use by queue sessions; macOS and Linux.
+
 ## cq-top screen order and Flow screen, 29 October 2026
 
 Screens reordered to Overview, Sessions, Flow, Rejected, and the Flow screen restyled (see [cq-top](CQ-TOP.md#flow-screen)). Checked on Windows 11 with `cargo test --workspace` (154 tests, 0 failed; 44 in cq-top), `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
