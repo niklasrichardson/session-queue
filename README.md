@@ -1,16 +1,15 @@
 # cq: a message queue for AI coding sessions
 
-`cq` lets AI coding sessions on one computer hand work to each other and wake each other, with nobody typing. Each message is one JSON file in a shared folder, the queue root. A small watcher process per session sees new files and wakes its session. It works with Claude Code and Codex. It is for people who run several coding sessions on one project, for example a lead and two workers.
+![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
+![licence](https://img.shields.io/badge/licence-MIT-blue)
+![platform](https://img.shields.io/badge/platform-Windows%2011-lightgrey)
+![works with](https://img.shields.io/badge/works%20with-Claude%20Code%20%7C%20Codex-green)
 
-**Status:** tested on Windows 11 only. macOS compiles but has not run on a Mac ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Linux has not been built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)). The cq-top Sessions screen is not yet tested on macOS ([#17](https://github.com/niklasrichardson/session-queue/issues/17)). See [Platform status](#platform-status).
+`cq` lets AI coding sessions on one computer hand work to each other and wake each other, with nobody typing. Each message is one JSON file in a shared folder, the queue root, and a small watcher process per session wakes its session when a message arrives. A hand-off between sessions usually needs a person to pass it on; with `cq`, hand-offs continue when nobody is at the keyboard. It is for people who run several coding sessions on one project, for example a lead and two workers.
 
-## Why
+**Status:** tested on Windows 11 only. macOS compiles but has not run on a Mac ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Linux has not been built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)). The cq-top Sessions screen is not yet tested on macOS ([#17](https://github.com/niklasrichardson/session-queue/issues/17)). See [Platform status](docs/OVERVIEW.md#platform-status).
 
-A hand-off between coding sessions usually needs a person: to pass the message on, or to prompt the receiving session. With `cq`, a message wakes the receiving session itself, so hand-offs continue when nobody is at the keyboard. It works across agents: in tests, a Claude Code session sent a task to a Codex chat and got its reply. Built-in messaging can have its own limits; for example, Claude Code's cross-session messages stop for a person after 10 in a row.
-
-Measured on Windows: in an overnight test with the earlier Monitor mode, a session handled 27 queue turns in a row with no limit reached. In its first two days of real use, `cq` carried 361 messages between 10 sessions, and the median time from send to pick-up was 12 seconds.
-
-## How it fits together
+## How it works
 
 ```mermaid
 flowchart TB
@@ -44,41 +43,11 @@ flowchart TB
 | codex | `cq watch --as NAME --to-codex THREAD` | Runs `codex queue` with a fixed prompt. The Codex Desktop app starts a turn in that chat. Experimental. See [Codex setup](docs/CODEX.md). |
 | monitor (fallback) | `cq watch --as NAME` under the Monitor tool | Each output line wakes the session. The Monitor expires after 30 minutes, so the session re-arms it. Use it only when `--to-inbox` exits 64 (no inbox). |
 
-- **The SessionStart hook** runs `cq session-start` after `/clear`, a compaction or a resume. It reminds the session of its queue name and says whether its watcher still runs.
-- **[cq-top](docs/CQ-TOP.md)** is a live terminal view of the queue: 1 Overview, 2 Sessions, 3 Flow, 4 Rejected. It never writes to the queue root.
+One task from start to finish, the cost of an idle session, the safety model and the platform status are in [How cq works](docs/OVERVIEW.md).
 
-The folder layout is in [Commands](docs/COMMANDS.md#layout).
+## Getting started
 
-## One task, start to finish
-
-```mermaid
-sequenceDiagram
-    participant L as lead
-    participant Q as Queue root
-    participant WA as worker-a watcher
-    participant A as worker-a
-    participant WL as lead watcher
-
-    L->>Q: cq send --type task
-    Note over Q: inbox/worker-a/ID.json
-    Q-->>WA: new file
-    WA->>A: CQ-NEW (wake)
-    A->>Q: cq claim ID
-    Note over Q: moved to .processing/
-    A->>A: do the work
-    A->>Q: cq done ID --reply
-    Note over Q: task to done/<br/>result to inbox/lead/
-    Q-->>WL: new file
-    WL->>L: CQ-NEW (wake)
-    L->>Q: cq claim, then cq done
-```
-
-- **One claim wins.** `cq claim` moves the file into `.processing/`. If two turns try, only one wins. The other gets exit 1 and ignores the message.
-- **Rejection.** `cq done --reject` tells the sender why: a `rejected` result for a task, an `info` notice for an info or result. `cq list --rejected` shows rejections both ways, and `cq requeue` puts a message back in the inbox. An invalid message goes to `dlq/`, and the sender is told.
-- **Sleep and wake.** `cq sleep` stops a session's watcher (it prints `CQ-SLEEP` and exits 7), so the session takes no turns until it is woken. Messages to a sleeping name still arrive, and `cq send` warns the sender to wake it with `/cq-start NAME`. See [Sleep and wake](docs/PROTOCOL.md#sleep-and-wake).
-- **Stopped message.** When an inbox watcher stops, it posts one last message: `cq watch (NAME) stopped: ... Run /cq-start to re-arm.` A watcher that is killed without warning posts nothing; cq-top then shows its heartbeat as `STALE` after 90 seconds. See [Known risks](docs/DESIGN.md#known-risks).
-
-## Quick start (Claude Code)
+### Claude Code
 
 You need Claude Code, stable Rust, and Windows with Git Bash (macOS builds, but is untested). The full steps, including the rejoin hook and the skills, are in [Setup](docs/SETUP.md).
 
@@ -104,12 +73,12 @@ You need Claude Code, stable Rust, and Windows with Git Bash (macOS builds, but 
    EOF
    ```
 
-## Quick start (Codex)
+### Codex
 
 You need the Codex Desktop app or the interactive Codex CLI, a Codex CLI with `codex queue`, and stable Rust. Codex was tested on Windows only. The full steps, and the `cq dispatch` worker for a fresh Codex run per task, are in [Codex setup](docs/CODEX.md).
 
 1. Choose one absolute queue root, or keep the per-user default. If you choose your own, set it as `CQ_ROOT` before the next step, and use the same `CQ_ROOT` for every `cq` command: in the chat, for the watcher and for the sender.
-2. Install `cq` and run `cq init`, as in step 1 above. The tested setup called `cq` and `codex` by their full paths, for example `C:/full/path/to/cq.exe`. If you use the bare names, check that `cq --version` works in a new Codex chat.
+2. Install `cq` and run `cq init`, as in step 1 of the Claude Code steps. The tested setup called `cq` and `codex` by their full paths, for example `C:/full/path/to/cq.exe`. If you use the bare names, check that `cq --version` works in a new Codex chat.
 3. Give the chat its rules: the queue rules block and a section for its queue name in `AGENTS.md`. See [Give the chat its rules](docs/CODEX.md#give-the-chat-its-rules). Let the chat write to the queue root ([Allow `cq` without prompts](docs/CODEX.md#allow-cq-without-prompts)). A setup where Codex never asks for approval is not tested yet.
 4. Start the watcher in the background, outside the chat, with the same `CQ_ROOT`. In the chat, `CODEX_THREAD_ID` holds the thread ID:
 
@@ -117,44 +86,15 @@ You need the Codex Desktop app or the interactive Codex CLI, a Codex CLI with `c
    cq watch --as worker-a --to-codex THREAD_ID
    ```
 
-5. Send `worker-a` a test message, as in step 4 above. Expected result: the watcher prints one `queued a check` line, and the chat starts a turn within seconds.
+5. Send `worker-a` a test message, as in step 4 of the Claude Code steps. Expected result: the watcher prints one `queued a check` line, and the chat starts a turn within seconds.
 
 Every session must use the same absolute queue root (`CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration)). For other agents, see [Other agents](docs/SETUP.md#other-agents).
-
-## Cost of an idle session
-
-Each handled message costs a model turn in every mode. The modes differ in what an idle session costs:
-
-| Mode | While idle |
-| --- | --- |
-| inbox | No turns. The watcher posts only when there is a queue event. |
-| codex | No turns. The watcher runs `codex queue` only when there is a message. In the live test on 28 Oct 2026, an idle chat ran no turns (checked in the session file, not the usage meter, [#12](https://github.com/niklasrichardson/session-queue/issues/12)). The 10-minute polling automation it replaces cost about 1% of the 5-hour limit per run. |
-| monitor | One re-arm about every 30 minutes. Each re-arm is 2 model requests (the Monitor call and a one-word reply). The requests read the context from the prompt cache. One re-arm costs about 20% of the context in input-token terms, so a smaller context makes re-arms cheaper ([#6](https://github.com/niklasrichardson/session-queue/issues/6)). |
-
-Inbox mode became the default on 28 Oct 2026 ([#24](https://github.com/niklasrichardson/session-queue/pull/24)). Runs of many hours have not been tested yet. When sleep pays off is in [Design](docs/DESIGN.md#sleep).
-
-## Safety model
-
-- **Messages are data, not instructions.** A session treats a claimed message as a request from another session, not from the user.
-- **Queue scope.** Each repo lists its allowed senders and allowed tasks. A session rejects work outside that scope. Sender names are a soft check: `cq` does not authenticate senders, and any process that can write to the queue root can send a message.
-- **Storm limits.** `cq send` refuses a body over 20 KB, a message at 5 hops, and more than 20 messages per hour per sender and recipient pair, 40 per recipient or 60 per sender. See [Storm limits](docs/PROTOCOL.md#storm-limits).
-- **PAUSE.** While a file named `PAUSE` exists in the queue root, watchers announce nothing and every send is refused.
-- **Codex wake prompt.** `--to-codex` always sends a fixed prompt. No subject, body or sender name goes on the Codex command line.
-
-## Platform status
-
-| Platform | `cq` | cq-top |
-| --- | --- | --- |
-| Windows 11 | Tested live in the Claude desktop app's Code tab | Tested |
-| macOS | Compiles; not run on a Mac ([#1](https://github.com/niklasrichardson/session-queue/issues/1)) | An earlier two-screen version ran on a Mac; the current screens are not tested there ([#17](https://github.com/niklasrichardson/session-queue/issues/17)) |
-| Linux | Not built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)) | Not tested |
-
-The Claude Code CLI and Remote Control have not been tested. Details are in [Test status](docs/TESTING.md).
 
 ## Documentation
 
 | Document | What it covers |
 | --- | --- |
+| [How cq works](docs/OVERVIEW.md) | Why `cq` exists, one task from start to finish, idle cost, safety model, platform status |
 | [Setup](docs/SETUP.md) | Requirements, install steps, configuration, skills, other agents, upgrading |
 | [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
 | [`CLAUDE-snippets.md`](CLAUDE-snippets.md) | Claude Code blocks and session prompts to paste |
