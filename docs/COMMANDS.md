@@ -197,6 +197,7 @@ CQ_ROOT/
   heartbeat/<name>.pid       the running watcher/dispatcher process ID
   heartbeat/<name>.overdue   overdue task IDs a coordinator's watcher has reported, one per line
   dispatch/<name>/<id>/       Codex logs and completion state (not auto-pruned)
+  members/.lock              held while a command changes members/
   members/<key>              the name owned by a session (a Claude Code session, or `codex-NAME` for a `--to-codex` watcher), the UTC time it was recorded, the watcher's working folder, its mode (monitor, inbox or codex), and for a Claude Code CLI key the `claude` process ID and start time
   sleep/<name>               while it exists, the name is asleep (by, time, reason)
   coordinators               names that may sleep other names, one per line (edited by the owner)

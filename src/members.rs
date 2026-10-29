@@ -14,13 +14,17 @@
 //! CLI), is the owner process: the ID and start time of the nearest `claude`
 //! process above the watcher. The CLI starts a new session ID on `/clear` but
 //! keeps its process, so `cq session-start` can find the record by the
-//! process and move it to the new key (see `rejoin`).
+//! process and move it to the new key (see `rejoin`). Any other start in that
+//! process, such as `/resume`, drops line 5 from the records of other keys
+//! (see `disarm`). Every change to `members/` holds `members/.lock`.
 //! Readers of the name use line 1 only, so a record from an older
 //! `cq` still works; a missing or unknown mode reads as `monitor`.
 //! `members/` is created on demand, so an older root without it still works.
 
 use std::fs;
 use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::error::{CqError, Result};
 use crate::fsutil;
@@ -158,7 +162,40 @@ pub fn record(root: &Root, key: &str, name: &str, mode: Mode, owner: Option<Owne
     if let Some(o) = owner {
         text.push_str(&format!("{} {}\n", o.pid, o.start));
     }
+    let _lock = lock(root, None)?;
     write_record(root, key, name, &text)
+}
+
+/// The lock file that serialises every change to `members/`: `record`,
+/// `rejoin`, `disarm` and `leave`. A key never starts with `.`, and an
+/// empty file is no record. Never removed: another process may hold it.
+const LOCK_FILE: &str = ".lock";
+
+/// How long `rejoin` and `disarm` wait for the lock before they give up:
+/// the SessionStart hook must not hang.
+const HOOK_LOCK_WAIT: Duration = Duration::from_secs(2);
+
+/// Hold the `members/` lock until the file is dropped. `None` waits as long
+/// as it takes; `Some(limit)` gives up after `limit`. `members/` must exist.
+fn lock(root: &Root, limit: Option<Duration>) -> Result<fs::File> {
+    let path = root.members().join(LOCK_FILE);
+    let file = fsutil::open_lock_file(&path)
+        .map_err(|e| CqError::io(format!("open {}", path.display()), e))?;
+    let Some(limit) = limit else {
+        file.lock()
+            .map_err(|e| CqError::io(format!("lock {}", path.display()), e))?;
+        return Ok(file);
+    };
+    let until = Instant::now() + limit;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < until => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return Err(CqError::error(format!("{} is busy", path.display()))),
+        }
+    }
 }
 
 /// Write `text` as the record of `key`, then remove any other key's record
@@ -181,8 +218,19 @@ fn write_record(root: &Root, key: &str, name: &str, text: &str) -> Result<()> {
 /// the key is a CLI key with no record of its own. `None`, with nothing
 /// changed, unless exactly one record names this process ID and start
 /// time: two would mean the records cannot tell the sessions apart.
+///
+/// It reads and writes under the `members/` lock, so a watcher that takes
+/// the name meanwhile wins: its record either replaces the moved one, or
+/// is there first and holds another owner.
 pub fn rejoin(root: &Root, key: &str, owner: Owner) -> Option<String> {
     let dir = root.members();
+    if !dir.is_dir() {
+        return None;
+    }
+    let _lock = lock(root, Some(HOOK_LOCK_WAIT)).ok()?;
+    if name_for(root, key).is_some() {
+        return None;
+    }
     let mut held = members(root).into_iter().filter_map(|(k, name)| {
         let text = fs::read_to_string(dir.join(&k)).ok()?;
         (k != key && Owner::parse(text.lines().nth(4)) == Some(owner)).then_some((name, text))
@@ -193,6 +241,32 @@ pub fn rejoin(root: &Root, key: &str, owner: Owner) -> Option<String> {
     }
     write_record(root, key, &name, &text).ok()?;
     Some(name)
+}
+
+/// The process `owner` now runs the conversation `key`: drop the owner line
+/// from every record of another key held by `owner`, so a later `/clear`
+/// cannot move that record to a conversation that is not its own. Used
+/// after `/resume` or any other start that is not a `/clear`. The record
+/// gets an owner again when its conversation starts its own watcher.
+pub fn disarm(root: &Root, key: &str, owner: Owner) {
+    let dir = root.members();
+    if !dir.is_dir() {
+        return;
+    }
+    let Ok(_lock) = lock(root, Some(HOOK_LOCK_WAIT)) else {
+        return;
+    };
+    for (k, _) in members(root) {
+        let path = dir.join(&k);
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if k == key || Owner::parse(text.lines().nth(4)) != Some(owner) {
+            continue;
+        }
+        let kept: String = text.lines().take(4).map(|l| format!("{l}\n")).collect();
+        let _ = fsutil::write_atomic(&root.tmp(), &path, kept.as_bytes());
+    }
 }
 
 /// The name `key` owns, if any.
@@ -211,6 +285,10 @@ pub fn mode_for(root: &Root, key: &str) -> Mode {
 pub fn leave(root: &Root, name: &str) -> Result<Vec<String>> {
     let dir = root.members();
     let mut removed = Vec::new();
+    if !dir.is_dir() {
+        return Ok(removed);
+    }
+    let _lock = lock(root, None)?;
     for (key, n) in members(root) {
         if n != name {
             continue;

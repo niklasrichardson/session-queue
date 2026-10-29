@@ -701,6 +701,16 @@ fn session_start(debug: bool) {
         name = members::rejoin(root, &k, owner);
         rejoined = Some(owner);
     }
+    // Any other start in a CLI process, such as `/resume`, means the
+    // process may now run a conversation other than the one a record
+    // names, so a later `/clear` must not move that record here.
+    if !is_clear(hook.as_ref())
+        && let Some(root) = &root
+        && let Some(k) = members::cli_session_key()
+        && let Some(owner) = members::Owner::find()
+    {
+        members::disarm(root, &k, owner);
+    }
     let mode = match (&key, &root, &name) {
         (Some(k), Some(root), Some(_)) => Some(members::mode_for(root, k)),
         _ => None,
@@ -770,15 +780,19 @@ fn rules_ref<'a>(runtime: Option<&'a str>, build: Option<&'a str>) -> &'a str {
 /// `claude` process cannot match, `/resume` may open an unrelated
 /// conversation in the same process, and a compaction keeps the ID.
 fn cli_rejoin_key(hook: Option<&serde_json::Value>) -> Option<String> {
-    let hook = hook?;
-    if hook.get("source").and_then(|s| s.as_str()) != Some("clear") {
+    if !is_clear(hook) {
         return None;
     }
     let key = members::cli_session_key()?;
-    match hook.get("session_id").and_then(|s| s.as_str()) {
+    match hook?.get("session_id").and_then(|s| s.as_str()) {
         Some(id) if members::sanitise_key(id).as_deref() != Some(key.as_str()) => None,
         _ => Some(key),
     }
+}
+
+/// True when the hook's JSON says `"source": "clear"`.
+fn is_clear(hook: Option<&serde_json::Value>) -> bool {
+    hook.and_then(|h| h.get("source")).and_then(|s| s.as_str()) == Some("clear")
 }
 
 /// Read the hook's JSON, if any, so the writer never sees a broken pipe.

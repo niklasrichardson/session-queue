@@ -284,9 +284,19 @@ impl FakeClaude {
     /// Run `cq ARGS` with `CLAUDE_CODE_SESSION_ID=session` and `hook` on
     /// stdin (see the fake for the format).
     fn run(&mut self, session: &str, hook: &str, args: &str) -> Step {
+        self.send(session, hook, args);
+        self.read_step()
+    }
+
+    /// Start `cq ARGS` as `run` does, without waiting for it.
+    fn send(&mut self, session: &str, hook: &str, args: &str) {
         let pipe = self.child.stdin.as_mut().unwrap();
         writeln!(pipe, "{session}\t{hook}\t{args}").unwrap();
         pipe.flush().unwrap();
+    }
+
+    /// Wait for the `cq` command started last, and return its output.
+    fn read_step(&mut self) -> Step {
         let (mut stdout, mut stderr, mut in_err) = (String::new(), String::new(), false);
         loop {
             let mut line = String::new();
@@ -378,12 +388,12 @@ fn cli_clear_rejoins_through_the_claude_process() {
 }
 
 /// Only a `/clear` moves a record, and only for the session the hook JSON
-/// names: a resume may open another conversation in the same process.
+/// names. Any other start in the process also drops the record's owner
+/// line, so the watcher must record it again before a `/clear` can move it.
 #[test]
 fn cli_rejoin_needs_a_clear_for_this_session() {
     let env = Env::new();
     let mut cli = FakeClaude::start(&env, &[]);
-    cli.watch("s-old", "cli-worker");
 
     for hook in [
         "-",
@@ -391,18 +401,120 @@ fn cli_rejoin_needs_a_clear_for_this_session() {
         "resume",
         "compact",
         "{not json",
-        r#"{"session_id":"s-other","source":"clear"}"#,
         r#"{"source":"resume"}"#,
     ] {
+        cli.watch("s-old", "cli-worker");
         let step = cli.session_start("s-new", hook);
         assert_eq!(step.stdout, "", "{hook:?}");
         assert!(!env.path("members/s-new").exists(), "{hook:?}");
         assert_eq!(member_name(&env, "s-old").as_deref(), Some("cli-worker"));
+        assert_eq!(record_line(&env, "s-old", 4), None, "{hook:?}");
     }
+
+    // A /clear for another session ID neither moves nor drops the owner.
+    cli.watch("s-old", "cli-worker");
+    let other = r#"{"session_id":"s-other","source":"clear"}"#;
+    assert_eq!(cli.session_start("s-new", other).stdout, "");
+    assert!(record_line(&env, "s-old", 4).is_some());
 
     // Hook JSON without a session ID is enough with source "clear".
     let step = cli.session_start("s-new", r#"{"source":"clear"}"#);
     assert_eq!(step.stdout, reminder("cli-worker"));
+}
+
+/// `/resume` opens an unrelated conversation in the same CLI process. A
+/// `/clear` there must not hand it the name of the conversation before.
+#[test]
+fn cli_resume_then_clear_does_not_rejoin() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-a", "worker-a");
+
+    assert_eq!(cli.session_start("s-b", "resume").stdout, "");
+    assert_eq!(cli.session_start("s-b2", "clear").stdout, "");
+    assert!(!env.path("members/s-b2").exists());
+    assert_eq!(stdout(&env.run(&["members"], None)), "s-a -> worker-a\n");
+
+    // Back in conversation A, its own watcher records the owner again, and
+    // a /clear there rejoins.
+    assert_eq!(
+        cli.session_start("s-a", "resume").stdout,
+        reminder("worker-a")
+    );
+    cli.watch("s-a", "worker-a");
+    assert_eq!(
+        cli.session_start("s-a2", "clear").stdout,
+        reminder("worker-a")
+    );
+    assert_eq!(member_name(&env, "s-a2").as_deref(), Some("worker-a"));
+}
+
+/// A watcher that takes the name while `/clear` waits to move the record
+/// wins: the hook checks the records again under the `members/` lock.
+#[test]
+fn cli_rejoin_loses_to_a_takeover_under_the_lock() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-old", "cli-worker");
+
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(env.path("members/.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    cli.send("s-new", "clear", "session-start");
+    // Time for a hook that read the records before the lock to do so.
+    std::thread::sleep(Duration::from_millis(500));
+    // What `cq watch --as cli-worker --takeover` in another session records.
+    fs::write(
+        env.path("members/s-other"),
+        fs::read_to_string(env.path("members/s-old"))
+            .unwrap()
+            .lines()
+            .take(4)
+            .map(|l| format!("{l}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    fs::remove_file(env.path("members/s-old")).unwrap();
+    lock.unlock().unwrap();
+
+    let step = cli.read_step();
+    assert_eq!(step.code, 0);
+    assert_eq!(step.stdout, "");
+    assert_eq!(step.stderr, "");
+    assert_eq!(
+        stdout(&env.run(&["members"], None)),
+        "s-other -> cli-worker\n"
+    );
+}
+
+/// A lock held for longer than the hook may wait: no output, no change.
+#[test]
+fn cli_rejoin_gives_up_on_a_held_lock() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-old", "cli-worker");
+
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(env.path("members/.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let started = Instant::now();
+    let step = cli.session_start("s-new", "clear");
+    let took = started.elapsed();
+    lock.unlock().unwrap();
+    assert_eq!(step.stdout, "");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert_eq!(member_name(&env, "s-old").as_deref(), Some("cli-worker"));
+    assert!(!env.path("members/s-new").exists());
 }
 
 /// A record is moved only to the same process, started at the same time,
