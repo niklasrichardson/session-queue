@@ -276,7 +276,7 @@ fn session_start_for_a_codex_watcher() {
     assert_eq!(
         session_start(&env, "thread-1"),
         format!(
-            "You are in the cq session queue as b. Before anything else this turn: re-read {RULES} and follow it as b (skip choosing a name). A Codex watcher (cq watch --as b --to-codex) still runs and wakes the Codex chat for b with codex queue: do not start a watcher for b here and do not use --takeover. Run cq list --as b and handle any UNCLAIMED messages.\n"
+            "You are in the cq session queue as b. Before anything else this turn: re-read {RULES} and follow it as b (skip choosing a name). A Codex watcher (cq watch --as b --to-codex) still runs and wakes the Codex chat for b with codex queue: do not start a watcher for b here and do not use --takeover. Run cq list --as b and handle any UNCLAIMED messages. This reminder is for the main conversation only: a subagent ignores it and does not act as this queue name.\n"
         )
     );
     drop(_w);

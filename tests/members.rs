@@ -15,7 +15,7 @@ const SESSION: &str = "CLAUDE_CODE_SESSION_ID";
 
 fn reminder(name: &str) -> String {
     format!(
-        "You are in the cq session queue as {name}. Before anything else this turn: re-read {RULES} and follow it as {name} (skip choosing a name). Start your watcher Monitor (timeout_ms 1800000) on: cq watch --as {name} 2>&1. If it exits 5, your previous watcher belonged to the conversation before the clear: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages.\n"
+        "You are in the cq session queue as {name}. Before anything else this turn: re-read {RULES} and follow it as {name} (skip choosing a name). Start your watcher Monitor (timeout_ms 1800000) on: cq watch --as {name} 2>&1. If it exits 5, your previous watcher belonged to the conversation before the clear: start it with --takeover. Then run cq list --as {name} and handle any UNCLAIMED messages. This reminder is for the main conversation only: a subagent ignores it and does not act as this queue name.\n"
     )
 }
 
