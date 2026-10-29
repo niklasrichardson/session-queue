@@ -12,26 +12,29 @@
 ## How it works
 
 ```mermaid
-flowchart LR
-    subgraph claude["Claude Code"]
-        CC["Claude Code session"]
-        WI["cq watch --to-inbox<br/>in the session"]
-    end
+flowchart TB
     R[("Queue root<br/>inbox/ done/ rejected/ dlq/<br/>heartbeat/ members/ sleep/")]
-    subgraph codex["Codex"]
-        CX["Codex chat"]
-        WC["cq watch --to-codex<br/>outside the chat"]
+
+    subgraph claude["Claude Code"]
+        WI["cq watch --to-inbox<br/>in the session"]
+        CC["Claude Code session"]
+        WI -->|"posts into the session's inbox"| CC
     end
+
+    subgraph codex["Codex"]
+        WC["cq watch --to-codex<br/>outside the chat"]
+        CX["Codex chat"]
+        WC -->|"runs codex queue, fixed prompt"| CX
+    end
+
     OA["Other agent<br/>polls with cq list"]
     TOP["cq-top<br/>read-only view"]
 
-    CC -->|"cq send, claim, done"| R
-    CX -->|"cq send, claim, done"| R
-    OA -->|"cq list, send, claim, done"| R
     R -->|"new file in its inbox"| WI
     R -->|"new file in its inbox"| WC
-    WI -->|"posts into the session's inbox"| CC
-    WC -->|"runs codex queue, fixed prompt"| CX
+    CC -->|"cq send, claim, done"| R
+    CX -->|"cq send, claim, done"| R
+    R <-->|"cq list, send, claim, done"| OA
     R -.->|"reads"| TOP
 ```
 
