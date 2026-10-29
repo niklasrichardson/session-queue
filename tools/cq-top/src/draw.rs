@@ -26,6 +26,8 @@ pub struct Theme {
     alt: Style,
     /// Codex's share in the CPU and Memory graphs (Claude's is `alt`).
     codex: Style,
+    /// The context cell above `sessions::CONTEXT_WARN` tokens: orange in every theme.
+    hot: Style,
     /// Header badge and the active tab.
     head: Style,
     bars: symbols::bar::Set<'static>,
@@ -54,6 +56,7 @@ pub static THEMES: [Theme; 3] = [
         info: Style::new().fg(Color::Cyan),
         alt: Style::new().fg(Color::Magenta),
         codex: Style::new().fg(Color::LightBlue),
+        hot: Style::new().fg(Color::Indexed(208)),
         head: Style::new().add_modifier(Modifier::REVERSED),
         bars: symbols::bar::NINE_LEVELS,
         gauge_filled: "─",
@@ -77,6 +80,9 @@ pub static THEMES: [Theme; 3] = [
         info: Style::new().fg(AMBER).add_modifier(Modifier::UNDERLINED),
         alt: Style::new().fg(AMBER_DIM).add_modifier(Modifier::ITALIC),
         codex: Style::new().fg(AMBER_PALE),
+        hot: Style::new()
+            .fg(Color::Rgb(255, 128, 0))
+            .add_modifier(Modifier::BOLD),
         head: Style::new()
             .fg(AMBER_BG)
             .bg(AMBER)
@@ -103,6 +109,7 @@ pub static THEMES: [Theme; 3] = [
         info: Style::new().fg(Color::Rgb(0, 224, 255)),
         alt: Style::new().fg(Color::Rgb(184, 124, 255)),
         codex: Style::new().fg(Color::Rgb(255, 150, 60)),
+        hot: Style::new().fg(Color::Rgb(255, 128, 0)),
         head: Style::new()
             .fg(NEON_BG)
             .bg(Color::Rgb(255, 64, 200))
@@ -983,7 +990,7 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 match row.context {
                     Some(n) => Cell::from(count(n)).style(match sessions::context(n) {
                         Context::Normal => t.text,
-                        Context::Warn => t.warn,
+                        Context::Warn => t.hot,
                         Context::Bad => t.bad,
                     }),
                     None => dash(),

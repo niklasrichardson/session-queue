@@ -1805,7 +1805,10 @@ mod tests {
             assert_eq!(large_tokens, small_tokens, "{}", theme.name);
             assert_eq!(full_tokens, small_tokens, "{}", theme.name);
             if theme.name == "classic" {
-                assert_eq!((large.fg, full.fg), (Some(Color::Yellow), Some(Color::Red)));
+                assert_eq!(
+                    (large.fg, full.fg),
+                    (Some(Color::Indexed(208)), Some(Color::Red))
+                );
             }
         }
     }

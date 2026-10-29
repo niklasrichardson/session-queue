@@ -77,7 +77,7 @@ One row per Claude Code session on this computer, with what it costs today and w
 | session | The name of the cq watcher running in the session's folder. Else the session's custom title, without a leading `RC: `. Else the folder's last part, or `<repo>/<worktree>` for a worktree under `.claude/worktrees`. |
 | state | `● working`, `◐ recent` or `○ idle`. `▲ idle` (warning colour) is an idle session with cq messages queued or claimed. |
 | model | The model of the newest reply, without `claude-` and the date, for example `opus-5-5`. |
-| context | Tokens in the newest reply's prompt: input plus cache writes plus cache reads. Over 150,000 the cell is in the warning colour, and over 250,000 in the error colour. The rest of the row keeps its colours. |
+| context | Tokens in the newest reply's prompt: input plus cache writes plus cache reads. Over 150,000 the cell is orange, and over 250,000 it is in the error colour (red). The rest of the row keeps its colours. |
 | tokens | Tokens since local midnight: input, cache writes, cache reads and output, for the main transcript and its subagents. |
 | est.cost | An estimate of those tokens at API list prices. It is not your plan's bill. `?` means a model has no price in the table. |
 | cpu% | CPU of the session's process and its child processes. 100 is one core. |
@@ -101,10 +101,10 @@ The rule is `sessions::state`, and the warning is `sessions::warn`.
 ### Context colour
 
 - **Normal:** 150,000 tokens or fewer.
-- **Warning colour:** more than 150,000 (`CONTEXT_WARN`).
-- **Error colour:** more than 250,000 (`CONTEXT_BAD`).
+- **Orange:** more than 150,000 (`CONTEXT_WARN`). Each theme has its own orange for this, apart from its warning colour.
+- **Error colour (red):** more than 250,000 (`CONTEXT_BAD`).
 
-The rule is `sessions::context`. Only the context cell changes colour. The `--html` dashboard uses the same rule: orange for the warning and red for the error.
+The rule is `sessions::context`. Only the context cell changes colour. The `--html` dashboard uses the same rule and colours.
 
 ### How sessions are found and matched
 
