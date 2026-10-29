@@ -1,18 +1,18 @@
 # Claude Code setup
 
-This page holds only what differs for Claude Code. Do the shared steps in [Setup](SETUP.md) first: install, `cq init`, queue names, the queue rules and a test message. The Codex steps are in [Codex setup](CODEX.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
+This page holds only what differs for Claude Code. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). The Codex steps are in [Codex setup](CODEX.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
 
-Live tests used the Claude desktop app's Code tab on Windows 11. The Claude Code CLI and Remote Control have not been tested ([Test status](TESTING.md)). Back to the [README](../README.md).
+Most live tests used the Claude desktop app's Code tab on Windows 11. On 29 Oct 2026, one Claude Code CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (live test L3 in [Spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked the receiving session's screen for a cap notice in that test. Remote Control has not been tested ([Test status](TESTING.md)). Back to the [README](../README.md).
 
 ## Quick path for a Claude Code session
 
-1. Do the shared steps in [Setup](SETUP.md#install).
+1. Finish the shared install steps in [Setup](SETUP.md#install).
 2. Restart the Claude app, so new sessions find `cq` on `PATH`. Check that `cq --version` works in a new session's Bash tool.
 3. Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json` ([Allow `cq` without prompts](#allow-cq-without-prompts)).
 4. Add the queue rules and the Claude Code block to `~/.claude/CLAUDE.md` ([Give the session its rules](#give-the-session-its-rules)).
 5. Add the SessionStart hook, and copy the `/cq-start` and `/cq-stop` skills ([After `/clear` or a restart](#after-clear-or-a-restart), [Sleep and wake](#sleep-and-wake)).
 6. Give the session its queue name with the start prompt. It starts `cq watch --as NAME --to-inbox 2>&1` ([Wake a session with `cq watch --to-inbox`](#wake-a-session-with-cq-watch---to-inbox)).
-7. Send NAME a test message, as in [Setup](SETUP.md#install), and check that the session starts a turn.
+7. Send NAME a test message, as in [Setup](SETUP.md#send-a-test-message), and check that the session starts a turn.
 
 ## Set up a Claude Code session
 
@@ -73,6 +73,8 @@ A Claude Code session forgets its queue name after `/clear` or a compaction. The
   "SessionStart": [{"matcher": "clear|compact|resume", "hooks": [{"type": "command", "command": "cq session-start", "timeout": 10}]}]
 }
 ```
+
+On macOS, a hook command may not find a bare `cq`: the Rust installer adds `~/.cargo/bin` to `PATH` only through the shell profile, and a hook command may not run through it. If the hook fails there, put the full path in the hook command, for example `/Users/<you>/.cargo/bin/cq session-start`. This was reported in [#1](https://github.com/niklasrichardson/session-queue/issues/1) and is not yet confirmed in a real hook. Keep the bare name `cq` in Bash tool commands, so they match `Bash(cq *)`.
 
 Expected result: after `/clear` in a session whose watcher ran, the new context starts with "You are in the cq session queue as NAME". The reminder also says whether the watcher still runs. See [Rejoin after /clear](PROTOCOL.md#rejoin-after-clear). The hook was tested live after `/clear` only, not after a compaction or a resume.
 

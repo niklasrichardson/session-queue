@@ -1,17 +1,17 @@
 # Other agents
 
-This page holds only what differs for an agent other than Claude Code and Codex, or for a script. Do the shared steps in [Setup](SETUP.md) first: install, `cq init`, queue names, the queue rules and a test message. Back to the [README](../README.md).
+This page holds only what differs for an agent other than Claude Code and Codex, or for a script. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). Back to the [README](../README.md).
 
 `cq` has been tested with Claude Code and Codex only. Nothing on this page has been tested with another agent. The tested setups are in [Claude Code setup](CLAUDE-CODE.md) and [Codex setup](CODEX.md).
 
 ## Quick path for another agent
 
-1. Do the shared steps in [Setup](SETUP.md#install).
+1. Finish the shared install steps in [Setup](SETUP.md#install).
 2. Check that the agent can run `cq --version` in its shell.
 3. Add the queue rules to the agent's own instruction file ([Give the agent its rules](#give-the-agent-its-rules)).
 4. Let the agent write to the queue root without an approval prompt ([Allow `cq` without prompts](#allow-cq-without-prompts)).
 5. Choose a wake route ([Wake the agent](#wake-the-agent)).
-6. Send NAME a test message, as in [Setup](SETUP.md#install), and check that the agent handles it.
+6. Send NAME a test message, as in [Setup](SETUP.md#send-a-test-message), and check that the agent handles it.
 
 ## Set up another agent
 
@@ -42,6 +42,12 @@ With a wake feature or polling, start the watcher or the scheduled task again af
 ### Sleep and wake
 
 `cq` ships no sleep and wake skills for other agents. Outside the agent, `cq sleep --as NAME NAME` puts the name to sleep, and `cq wake --as NAME NAME` must run before you start its watcher again. What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
+
+With polling, `cq sleep` does not stop the scheduled task. Each run still starts and still costs a model turn, and `cq list` still lists the `UNCLAIMED` messages, after a first line `ASLEEP by=... reason="..."`. So:
+
+1. Pause the agent's own scheduler when you run `cq sleep`.
+2. Write the polling rules so that a run ends with no other work when `cq list` prints an `ASLEEP` line.
+3. Run `cq wake`, then resume the scheduler.
 
 ## Tell us about your setup
 

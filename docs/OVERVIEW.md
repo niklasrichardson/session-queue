@@ -14,7 +14,7 @@ Measured on Windows: in an overnight test with the earlier Monitor mode, a sessi
 
 | | Claude Code | Codex |
 | --- | --- | --- |
-| Tested in | The Claude desktop app's Code tab, on Windows 11. The Claude Code CLI and Remote Control are not tested. | The Codex Desktop app, on Windows 11. `codex queue` alone also woke an interactive Codex CLI chat; the native watcher was not tested with one. |
+| Tested in | The Claude desktop app's Code tab, on Windows 11. One Claude Code CLI session on Windows answered 25 of 25 tasks in inbox mode with nobody typing (live test L3); its screen was not checked for a cap notice. Remote Control is not tested. | The Codex Desktop app, on Windows 11. `codex queue` alone also woke an interactive Codex CLI chat; the native watcher was not tested with one. |
 | Rules file | `~/.claude/CLAUDE.md`, with the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md) | `AGENTS.md`, with one section per queue name |
 | Queue name | Given in the start prompt | Named in the `AGENTS.md` section and in every wake prompt |
 | Default wake | `cq watch --to-inbox`, in the session. It posts into the session's Claude Code inbox. | `cq watch --to-codex`, outside the chat. It runs `codex queue` with a fixed prompt. |
@@ -89,4 +89,4 @@ Inbox mode became the default for Claude Code on 28 Oct 2026 ([#24](https://gith
 | macOS | Compiles; not run on a Mac ([#1](https://github.com/niklasrichardson/session-queue/issues/1)) | An earlier two-screen version ran on a Mac; the current screens are not tested there ([#17](https://github.com/niklasrichardson/session-queue/issues/17)) |
 | Linux | Not built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)) | Not tested |
 
-The Claude Code CLI and Remote Control have not been tested. The native `--to-codex` watcher has not been tested with an interactive Codex CLI chat. Details are in [Test status](TESTING.md).
+On 29 Oct 2026, one Claude Code CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (live test L3 in [Spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked the receiving session's screen for a cap notice in that test. Remote Control has not been tested. The native `--to-codex` watcher has not been tested with an interactive Codex CLI chat. Details are in [Test status](TESTING.md).

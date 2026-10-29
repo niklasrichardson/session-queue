@@ -2,11 +2,15 @@
 
 How to install `cq`, connect an agent, configure it and upgrade it. Back to the [README](../README.md).
 
-This page holds the steps that are the same for every agent. Where a step differs per agent, it names the agent and links to that agent's page:
+Set up `cq` in three parts, in this order:
+
+1. [Install](#install), on this page. The same for every agent.
+2. [Connect each session](#connect-each-session), on your agent's page: its rules file, approvals, watcher and recovery.
+3. [Send a test message](#send-a-test-message), on this page. The same for every agent.
 
 | Agent | Page | Tested |
 | --- | --- | --- |
-| Claude Code | [Claude Code setup](CLAUDE-CODE.md) | Live, in the Claude desktop app's Code tab on Windows 11 |
+| Claude Code | [Claude Code setup](CLAUDE-CODE.md) | Live on Windows 11: in the Claude desktop app's Code tab, and one Claude Code CLI session (live test L3) |
 | Codex | [Codex setup](CODEX.md) | Live, in the Codex Desktop app on Windows 11 |
 | Any other agent, or a script | [Other agents](OTHER-AGENTS.md) | Not tested |
 
@@ -45,55 +49,51 @@ This page holds the steps that are the same for every agent. Where a step differ
 
    The queue lives in a per-user folder by default (see [Configuration](#configuration)). Every session must use the same absolute queue root. If you set `CQ_ROOT`, use the same value for every `cq` command: in each session, for each watcher and for each sender.
 
-4. Allow `cq` without prompts, so unattended sessions never stop to ask. `cq claim`, `cq done` and `cq send` write files in the queue root.
+## Connect each session
 
-   | Agent | What to do |
-   | --- | --- |
-   | Claude Code | Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json`. See [Allow `cq` without prompts](CLAUDE-CODE.md#allow-cq-without-prompts). |
-   | Codex | Make the queue root writable from the chat's sandbox. A setup where Codex never asks for approval is not tested yet. See [Allow `cq` without prompts](CODEX.md#allow-cq-without-prompts). |
-   | Other agents | See [Allow `cq` without prompts](OTHER-AGENTS.md#allow-cq-without-prompts). |
+These facts are the same for every agent:
 
-5. Add the rules. The [queue rules block](QUEUE-RULES.md#1-queue-rules-block) is the same for every agent. Add a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block) to each repo that takes queue work. Where they go:
+- Each session gets its own queue name, such as `lead` or `worker-a`. Never put a fixed name in a shared instruction file: several sessions can share one folder.
+- The [queue rules block](QUEUE-RULES.md#1-queue-rules-block) is the same for every agent. Each repo that takes queue work also gets a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block).
+- `cq claim`, `cq done` and `cq send` write files in the queue root, so an unattended session must be able to run them without an approval prompt.
+- Each agent page also says how to recover after `/clear`, a new chat or a restart.
 
-   | Agent | Instruction file |
-   | --- | --- |
-   | Claude Code | `~/.claude/CLAUDE.md`, with the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md#1-user-level-block). See [Give the session its rules](CLAUDE-CODE.md#give-the-session-its-rules). |
-   | Codex | `~/.codex/AGENTS.md` or the repo's `AGENTS.md`, with one section per queue name. See [Give the chat its rules](CODEX.md#give-the-chat-its-rules). |
-   | Other agents | The agent's own instruction file. See [Give the agent its rules](OTHER-AGENTS.md#give-the-agent-its-rules). |
+The rest differs per agent. Follow the page for your agent, then come back to [Send a test message](#send-a-test-message):
 
-   Choose one queue name per session, such as `lead` or `worker-a`. Never put a fixed name in a shared instruction file: several sessions can share one folder. Give a Claude Code session its name in its start prompt. Give a Codex chat a section named after its queue name in `AGENTS.md`.
+| Agent | Rules file | No prompts | Wake route | Page |
+| --- | --- | --- | --- | --- |
+| Claude Code | `~/.claude/CLAUDE.md`, with the Claude Code block. The queue name goes in the start prompt. | `Bash(cq *)` in `permissions.allow` | `cq watch --to-inbox`, in the session | [Claude Code setup](CLAUDE-CODE.md) |
+| Codex | `~/.codex/AGENTS.md` or the repo's `AGENTS.md`, with one section per queue name | The queue root writable from the chat's sandbox. A setup where Codex never asks for approval is not tested yet. | `cq watch --to-codex`, outside the chat | [Codex setup](CODEX.md) |
+| Other agents | The agent's own instruction file | Depends on the agent | A wake feature, a fresh run per task, or polling | [Other agents](OTHER-AGENTS.md) |
 
-6. Start the watcher that wakes the session. Each agent has its own wake route:
+## Send a test message
 
-   | Agent | Watcher | Where it runs |
-   | --- | --- | --- |
-   | Claude Code | `cq watch --as NAME --to-inbox 2>&1` posts into the session's own inbox. See [Wake a session](CLAUDE-CODE.md#wake-a-session-with-cq-watch---to-inbox). | In the session, as a background Bash command. |
-   | Codex | `cq watch --as NAME --to-codex THREAD_ID` runs `codex queue` with a fixed prompt. See [Wake a Codex chat](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex). | Outside the chat, in the background. |
-   | Other agents | A wake feature, a fresh run per task, or polling. See [Wake the agent](OTHER-AGENTS.md#wake-the-agent). | Depends on the route. |
+Do this after your agent's page. From another session:
 
-7. Send a test message from another session:
+```bash
+cq send --from lead --to worker-a --type task <<'EOF'
+{"subject": "Run the tests", "body": "Run cargo test and report failures."}
+EOF
+```
 
-   ```bash
-   cq send --from lead --to worker-a --type task <<'EOF'
-   {"subject": "Run the tests", "body": "Run cargo test and report failures."}
-   EOF
-   ```
-
-   Expected result: the receiving session starts a turn within seconds, claims the task and replies. A Claude Code session gets a message from `cq` with a `CQ-NEW` line. A Codex watcher prints one `queued a check` line, and the chat starts a turn.
-
-8. Plan for recovery after `/clear`, a new chat or a restart. This differs per agent: see [Claude Code](CLAUDE-CODE.md#after-clear-or-a-restart), [Codex](CODEX.md#after-a-new-chat-or-a-restart) or [Other agents](OTHER-AGENTS.md#after-a-restart).
+Expected result: the receiving session starts a turn within seconds, claims the task and replies. A Claude Code session gets a message from `cq` with a `CQ-NEW` line. A Codex watcher prints one `queued a check` line, and the chat starts a turn. An agent that polls handles the task at its next run.
 
 ## Sleep and wake
 
-A name that will be idle for a long time can sleep, so that it takes no turns. `cq sleep --as A B` puts `B` to sleep, and its watcher stops with exit 7. Messages to a sleeping name still arrive, and `cq send` warns the sender. `cq wake --as A B` wakes it. See [Sleep and wake](PROTOCOL.md#sleep-and-wake) and [Commands](COMMANDS.md#sleep-and-wake).
+A name that will be idle for a long time can sleep. `cq sleep --as A B` writes a sleep record for `B`, and `cq wake --as A B` removes it. Messages to a sleeping name still arrive, and `cq send` warns the sender. See [Sleep and wake](PROTOCOL.md#sleep-and-wake) and [Commands](COMMANDS.md#sleep-and-wake).
+
+What sleep stops depends on the wake route:
+
+- **A watcher** (`--to-inbox`, `--to-codex`, Monitor mode) sees the record, prints `CQ-SLEEP by=... reason="..."` and exits 7. After that, no watcher wakes the session until someone runs `cq wake` and starts its watcher again.
+- **Polling** is not stopped by `cq sleep`. A scheduled run still starts and still costs a model turn. `cq list` still lists the `UNCLAIMED` messages, after a first line `ASLEEP by=... reason="..."`. So pause the agent's own scheduler as well, and resume it after `cq wake`. The polling rules must end the run with no other work when `cq list` prints an `ASLEEP` line.
 
 To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.
 
 | Agent | How to sleep and wake |
 | --- | --- |
 | Claude Code | The `/cq-stop` and `/cq-start` skills. See [Sleep and wake](CLAUDE-CODE.md#sleep-and-wake). |
-| Codex | No skills. Outside the chat, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. See [Sleep and wake](CODEX.md#sleep-and-wake). |
-| Other agents | No skills. Run `cq sleep` and `cq wake` as for Codex. See [Sleep and wake](OTHER-AGENTS.md#sleep-and-wake). |
+| Codex | No skills. Outside the chat, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. With the scheduled automation fallback, also pause the automation. See [Sleep and wake](CODEX.md#sleep-and-wake). |
+| Other agents | No skills. Run `cq sleep` and `cq wake` as for Codex, and pause a polling scheduler yourself. See [Sleep and wake](OTHER-AGENTS.md#sleep-and-wake). |
 
 ## Configuration
 

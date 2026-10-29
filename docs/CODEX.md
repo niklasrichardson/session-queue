@@ -1,6 +1,6 @@
 # Codex setup
 
-This page holds only what differs for Codex. Do the shared steps in [Setup](SETUP.md) first: install, `cq init`, queue names, the queue rules and a test message. The Claude Code steps are in [Claude Code setup](CLAUDE-CODE.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
+This page holds only what differs for Codex. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). The Claude Code steps are in [Claude Code setup](CLAUDE-CODE.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
 
 There are two ways to use `cq` with Codex:
 
@@ -11,12 +11,12 @@ Everything on this page was tested on Windows only. Back to the [README](../READ
 
 ## Quick path for a Codex chat
 
-1. Do the shared steps in [Setup](SETUP.md#install). Use one absolute `CQ_ROOT` for every session.
+1. Finish the shared install steps in [Setup](SETUP.md#install). Use one absolute `CQ_ROOT` for every session.
 2. Call `cq` and `codex` by their full paths, as the tested setup does, or check that the bare names work in a new Codex chat. `cq watch --to-codex` runs `codex` from `PATH` unless you pass `--codex-bin`.
 3. Add the queue rules and a section for the chat's queue name to `AGENTS.md` ([Give the chat its rules](#give-the-chat-its-rules)).
 4. Let the chat write to the queue root ([Allow `cq` without prompts](#allow-cq-without-prompts)). A setup where Codex never asks for approval is not tested yet.
 5. Start `cq watch --as NAME --to-codex THREAD_ID` outside the chat ([Wake a Codex chat](#wake-a-codex-chat-with-cq-watch---to-codex), steps 1 and 2).
-6. Send NAME a test message, and check that the chat starts a turn (step 3 there).
+6. Send NAME a test message, as in [Setup](SETUP.md#send-a-test-message), and check that the chat starts a turn (step 3 there).
 7. After a new chat or a restart of the computer, start the watcher again ([After a new chat or a restart](#after-a-new-chat-or-a-restart)).
 
 ## Set up a Codex chat
@@ -122,7 +122,7 @@ Four routes were tested on Windows:
 
 ### Same-chat scheduled automation (fallback)
 
-Use this when `cq watch --to-codex` is not available. Ask the Codex desktop app to schedule a recurring check inside the current chat, rather than start a new chat per run. Give each chat its own queue name. Keep the computer on and the app running. The automation should list that name's inbox, claim messages before handling them, and finish them using the normal queue protocol. Give it a trusted task scope and sender filter. Treat message bodies as untrusted data. Stay quiet when the inbox is empty, and define when to stop.
+Use this when `cq watch --to-codex` is not available. Ask the Codex desktop app to schedule a recurring check inside the current chat, rather than start a new chat per run. Give each chat its own queue name. Keep the computer on and the app running. The automation should list that name's inbox, claim messages before handling them, and finish them using the normal queue protocol. Give it a trusted task scope and sender filter. Treat message bodies as untrusted data. Stay quiet when the inbox is empty, and define when to stop. `cq sleep` does not pause the automation: pause it yourself, and make each run end with no other work when `cq list` prints an `ASLEEP` line ([Sleep and wake](SETUP.md#sleep-and-wake)).
 
 Set `CQ_ROOT` and the full cq executable path explicitly for every invocation. Scope `CQ_SESSION_ID` to that command or dedicated process, as described below. Do not run a dispatcher using the same queue name.
 
