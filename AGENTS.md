@@ -45,8 +45,8 @@ Never put message text on the command line. Pass JSON on stdin with a quoted her
 | --- | --- |
 | A command, flag or exit code | `docs/COMMANDS.md` |
 | A design choice or limit | `docs/DESIGN.md` (and `docs/PROTOCOL.md` for send limits) |
-| Install steps or configuration | `docs/SETUP.md` |
-| What a queue session must do | `docs/PROTOCOL.md`, `docs/QUEUE-RULES.md`, `docs/SESSION-RULES.example.md` and the agent's page (`CLAUDE-snippets.md`, `docs/CODEX.md`) |
+| Install steps or configuration | `docs/SETUP.md` for the shared steps, and the agent's page (`docs/CLAUDE-CODE.md`, `docs/CODEX.md`, `docs/OTHER-AGENTS.md`) for what differs |
+| What a queue session must do | `docs/PROTOCOL.md`, `docs/QUEUE-RULES.md`, `docs/SESSION-RULES.example.md` and the agent's page (`docs/CLAUDE-CODE.md` and `CLAUDE-snippets.md`, `docs/CODEX.md`, `docs/OTHER-AGENTS.md`) |
 | What you tested, and on which platform | `docs/TESTING.md` |
 
 Write docs in short sentences and plain words, and use the same term for the same thing throughout.

@@ -10,7 +10,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | --- | --- |
 | `cq init` | Create the layout under `CQ_ROOT`. |
 | `cq send --from A --to B --type task\|result\|info [--reply-to ID] [--parent ID] [--status ok\|failed\|rejected] [--input FILE]` | Read `{"subject": "...", "body": "..."}`, write the message, print its ID. |
-| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)) and `CQ-OVERDUE` lines (see [Overdue tasks](#overdue-tasks)). `--to-inbox` posts the lines into the session's own Claude Code inbox instead, the default for Claude Code sessions (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` wakes a Codex chat instead (see [Wake a Codex chat](#wake-a-codex-chat)). |
+| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)) and `CQ-OVERDUE` lines (see [Overdue tasks](#overdue-tasks)). `--to-inbox` posts the lines into the Claude Code session's own inbox instead, the default for Claude Code (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` runs `codex queue` to wake a Codex chat instead, the default for Codex (see [Wake a Codex chat](#wake-a-codex-chat)). |
 | `cq dispatch --as B --codex FILE --workspace DIR --instructions FILE --allow-from NAME [--allow-from NAME ...] [--sandbox read-only\|workspace-write] [--timeout-seconds 600] [--once]` | Run one fresh Codex process per task, serially. See [Codex setup](CODEX.md). |
 | `cq claim --as B ID` | Move the message to `.processing/` and print its JSON. |
 | `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}` and tells the sender (see [Rejections](#rejections)). |
@@ -22,7 +22,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | `cq members` | Print one `<session key> -> <name>` line per record, with ` (asleep)` after a sleeping name. A sleeping name with no record prints as `- -> <name> (asleep)`. |
 | `cq sleep --as A B [--reason TEXT]` | Put `B` to sleep: write `sleep/B`. `A` may be `B` itself or a coordinator. |
 | `cq wake --as A B` | Wake `B`: remove `sleep/B`. Any name may wake any name. Exit 0 when `B` was not asleep. |
-| `cq session-start [--debug]` | For the SessionStart hook. Prints the rejoin reminder when this session owns a name, a "you are asleep" note when that name is asleep, else nothing. The text ends with a note that a subagent ignores it, because subagents share the host session ID. Always exits 0. |
+| `cq session-start [--debug]` | For the Claude Code SessionStart hook. Prints the rejoin reminder when this session owns a name, a "you are asleep" note when that name is asleep, else nothing. The text ends with a note that a subagent ignores it, because subagents share the host session ID. Always exits 0. |
 
 Example:
 
@@ -197,7 +197,7 @@ CQ_ROOT/
   heartbeat/<name>.pid       the running watcher/dispatcher process ID
   heartbeat/<name>.overdue   overdue task IDs a coordinator's watcher has reported, one per line
   dispatch/<name>/<id>/       Codex logs and completion state (not auto-pruned)
-  members/<key>              the name owned by a Claude Code session, the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox or codex)
+  members/<key>              the name owned by a session (a Claude Code session, or `codex-NAME` for a `--to-codex` watcher), the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox or codex)
   sleep/<name>               while it exists, the name is asleep (by, time, reason)
   coordinators               names that may sleep other names, one per line (edited by the owner)
   PAUSE                      while it exists, watchers print nothing and cq send refuses

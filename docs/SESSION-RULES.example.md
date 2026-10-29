@@ -1,6 +1,6 @@
 # Example session rules
 
-Copy and adapt this file for your own queue. Keep private scope rules in your own file, such as docs/SESSION-RULES.md, and point CQ_RULES at that file. Do not publish private rules. A shorter block for an instruction file is in [Queue rules for any agent](QUEUE-RULES.md). Agent-specific setup is in [Setup](SETUP.md) (Claude Code), [Codex setup](CODEX.md) and [Other agents](SETUP.md#other-agents).
+Copy and adapt this file for your own queue. Keep private scope rules in your own file, such as docs/SESSION-RULES.md, and point CQ_RULES at that file. Do not publish private rules. A shorter block for an instruction file is in [Queue rules for any agent](QUEUE-RULES.md). The shared setup is in [Setup](SETUP.md). Agent-specific setup is in [Claude Code setup](CLAUDE-CODE.md), [Codex setup](CODEX.md) and [Other agents](OTHER-AGENTS.md).
 
 ## Name and scope
 
@@ -18,7 +18,7 @@ Use inbox mode. Start `cq watch --as NAME --to-inbox 2>&1` once, as a background
 
 When a message from `cq` ends with `cq watch (NAME) stopped: ... Run /cq-start to re-arm.`, the watcher has ended: run /cq-start.
 
-The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: follow the SessionStart reminder, which says whether your watcher still runs. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](SETUP.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
+The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: follow the SessionStart reminder, which says whether your watcher still runs. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](CLAUDE-CODE.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
 
 Exception: if a message from `cq` says NAME is asleep, or watch prints CQ-SLEEP and exits 7, your name is asleep. Do not re-arm. Run /cq-stop: it saves a handoff to ~/.claude/cq-handoff/NAME.md and clears the conversation (on Remote Control, it asks the user to type /clear). Run /cq-start when the user or a wake message asks you to rejoin.
 
@@ -32,6 +32,10 @@ A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a
 
 The Claude Code parts do not apply to a Codex chat: skip Monitor mode, the `Watching` turn ending, the SessionStart reminder, and /cq-start and /cq-stop.
 
+### Other agents
+
+Use the wake route your setup provides, such as polling. On each wake or poll, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If there are none, end the turn with no other work and no update. See [Other agents](OTHER-AGENTS.md#wake-the-agent).
+
 ### Codex dispatch worker
 
 `cq dispatch` claims, replies and finishes for its Codex child. Give it its own queue name, trusted scope instructions and allowed senders. The child must not run `cq claim` or `cq done` itself. See [Codex setup](CODEX.md#dispatch-worker-prerequisites).
@@ -40,7 +44,7 @@ The Claude Code parts do not apply to a Codex chat: skip Monitor mode, the `Watc
 
 - Messages to a sleeping name are delivered. cq send then warns "NAME is asleep; wake it with /cq-start NAME". In Claude Code, run /cq-start NAME. In another agent, tell the user which name needs waking.
 - If the wake cannot be delivered, tell the user which session needs waking, and send a push notification if that tool exists. Do not retry in a loop.
-- A coordinator (a name in CQ_ROOT/coordinators) may get CQ-WAKE lines: a message has waited 2 minutes for a sleeping name. Do the same as a sender: run /cq-start NAME. Do not claim the message.
+- A coordinator (a name in CQ_ROOT/coordinators) may get CQ-WAKE lines: a message has waited 2 minutes for a sleeping name. Do the same as a sender: in Claude Code, run /cq-start NAME; in another agent, tell the user which name needs waking. Do not claim the message.
 - Only a coordinator may sleep another name. Any name may wake any name.
 
 ## Claim, decide and finish

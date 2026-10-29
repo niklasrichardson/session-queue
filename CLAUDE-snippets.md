@@ -1,6 +1,6 @@
 # Claude Code blocks and session prompts for `cq`
 
-The Claude Code part of the queue rules. Copy these blocks yourself. Install `cq` first (see [Setup](docs/SETUP.md)).
+The Claude Code part of the queue rules. Copy these blocks yourself. Install `cq` first (see [Setup](docs/SETUP.md)). The Claude Code setup steps are in [Claude Code setup](docs/CLAUDE-CODE.md).
 
 The rules for handling a message are the same for every agent. They are in [Queue rules for any agent](docs/QUEUE-RULES.md). This page adds what is specific to Claude Code: the watcher, the Monitor fallback, the skills and the permission rule. Codex uses [Codex setup](docs/CODEX.md) instead.
 

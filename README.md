@@ -12,93 +12,112 @@
 ## How it works
 
 ```mermaid
-flowchart TB
-    HK["SessionStart hook<br/>cq session-start"]
-    CC["Claude Code session"]
-    CX["Codex chat"]
-    R[("Queue root (main folders)<br/>inbox/ done/ rejected/ dlq/<br/>heartbeat/ members/ sleep/")]
-    WI["inbox mode, default<br/>cq watch --to-inbox"]
-    WM["monitor mode, fallback<br/>cq watch under Monitor"]
-    WC["codex mode<br/>cq watch --to-codex"]
+flowchart LR
+    subgraph claude["Claude Code"]
+        CC["Claude Code session"]
+        WI["cq watch --to-inbox<br/>in the session"]
+    end
+    R[("Queue root<br/>inbox/ done/ rejected/ dlq/<br/>heartbeat/ members/ sleep/")]
+    subgraph codex["Codex"]
+        CX["Codex chat"]
+        WC["cq watch --to-codex<br/>outside the chat"]
+    end
+    OA["Other agent<br/>polls with cq list"]
     TOP["cq-top<br/>read-only view"]
 
-    HK -->|"rejoin reminder"| CC
     CC -->|"cq send, claim, done"| R
     CX -->|"cq send, claim, done"| R
-    R -->|"new file"| WI
-    R -->|"new file"| WM
-    R -->|"new file"| WC
-    WI -->|"inbox socket post"| CC
-    WM -->|"Monitor output"| CC
-    WC -->|"codex queue"| CX
+    OA -->|"cq list, send, claim, done"| R
+    R -->|"new file in its inbox"| WI
+    R -->|"new file in its inbox"| WC
+    WI -->|"posts into the session's inbox"| CC
+    WC -->|"runs codex queue, fixed prompt"| CX
     R -.->|"reads"| TOP
 ```
 
+Either agent can send a task to the other. The receiving agent's own watcher wakes it, and the reply wakes the sender the same way. Only Claude Code and Codex have been tested.
+
 - **The `cq` CLI** does every queue action: `send`, `claim`, `done`, `list`, `sleep`, `wake`. Each action reads or writes files; messages move between folders by atomic rename. The full layout is in [Commands](docs/COMMANDS.md#layout). There is no server, database or network.
-- **The watcher** (`cq watch --as NAME`) watches one inbox. Only one watcher runs per name. It prints one `CQ-NEW` line per new message. Its mode decides how that line wakes the session:
+- **The watcher** (`cq watch --as NAME`) watches one inbox. Only one watcher runs per name. Each agent has its own way to be woken:
 
-| Mode | Command | How it wakes the session |
+| | Claude Code | Codex |
 | --- | --- | --- |
-| inbox (default for Claude Code) | `cq watch --as NAME --to-inbox` | Posts the lines into the session's own Claude Code inbox. A message to an idle session starts a turn. |
-| codex | `cq watch --as NAME --to-codex THREAD` | Runs `codex queue` with a fixed prompt. The Codex Desktop app starts a turn in that chat. Experimental. See [Codex setup](docs/CODEX.md). |
-| monitor (fallback) | `cq watch --as NAME` under the Monitor tool | Each output line wakes the session. The Monitor expires after 30 minutes, so the session re-arms it. Use it only when `--to-inbox` exits 64 (no inbox). |
+| Default wake | `cq watch --as NAME --to-inbox`, started in the session as a background Bash command. It posts the lines into the session's own Claude Code inbox. A message to an idle session starts a turn. | `cq watch --as NAME --to-codex THREAD`, started outside the chat. It runs `codex queue` with a fixed prompt. The Codex app starts a turn in that chat. |
+| Fallback | Monitor mode: `cq watch --as NAME` under the Monitor tool. It expires after 30 minutes, so the session re-arms it. Only when `--to-inbox` exits 64 (no inbox). | Same-chat scheduled automation in the Codex app. Each run costs a model turn, even with an empty inbox. Only when `codex queue` is not available. |
+| Fresh run per task | Not available | `cq dispatch` runs `codex exec` once per task. |
+| Setup | [Claude Code setup](docs/CLAUDE-CODE.md) | [Codex setup](docs/CODEX.md) |
 
-One task from start to finish, the cost of an idle session, the safety model and the platform status are in [How cq works](docs/OVERVIEW.md).
+`cq --help` marks both `--to-inbox` and `--to-codex` as experimental. Any other agent needs a wake route of its own: see [Other agents](docs/OTHER-AGENTS.md). One task from start to finish, what each agent supports, the cost of an idle session, the safety model and the platform status are in [How cq works](docs/OVERVIEW.md).
 
 ## Getting started
 
-### Claude Code
+You need stable Rust, Windows (macOS builds, but is untested) and an agent that can run shell commands. The full steps are in [Setup](docs/SETUP.md).
 
-You need Claude Code, stable Rust, and Windows with Git Bash (macOS builds, but is untested). The full steps, including the rejoin hook and the skills, are in [Setup](docs/SETUP.md).
+### 1. Install
 
-1. Install and create the queue root:
+```bash
+cargo install --path .
+cq init
+```
 
-   ```bash
-   cargo install --path .
-   cq init
-   ```
+Every session must use the same absolute queue root: `CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration). If you set `CQ_ROOT`, set it before you run `cq init`, and use the same value for every `cq` command.
 
-2. Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json`, so unattended sessions never stop at a permission prompt. Then restart the Claude app.
-3. Give each session a queue name with the start prompt in [`CLAUDE-snippets.md`](CLAUDE-snippets.md#3-session-start-prompt). It starts one watcher as a background Bash command:
+### 2. Connect each session
+
+Give each session its own queue name, such as `worker-a`, and the [queue rules](docs/QUEUE-RULES.md), which are the same for every agent. The rest differs per agent.
+
+#### Claude Code
+
+On Windows, you also need Git for Windows. The full steps, including the rejoin hook and the skills, are in [Claude Code setup](docs/CLAUDE-CODE.md).
+
+1. Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json`, so unattended sessions never stop at a permission prompt. Then restart the Claude app.
+2. Add the queue rules and the Claude Code block from [`CLAUDE-snippets.md`](CLAUDE-snippets.md#1-user-level-block) to `~/.claude/CLAUDE.md`.
+3. Give the session its queue name with the [start prompt](CLAUDE-snippets.md#3-session-start-prompt). It starts one watcher as a background Bash command:
 
    ```bash
    cq watch --as worker-a --to-inbox 2>&1
    ```
 
-4. Send a task from another session:
+#### Codex
 
-   ```bash
-   cq send --from lead --to worker-a --type task <<'EOF'
-   {"subject": "Run the tests", "body": "Run cargo test and report failures."}
-   EOF
-   ```
+You also need the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex was tested on Windows only. The full steps, and the `cq dispatch` worker for a fresh Codex run per task, are in [Codex setup](docs/CODEX.md).
 
-### Codex
-
-You need the Codex Desktop app or the interactive Codex CLI, a Codex CLI with `codex queue`, and stable Rust. Codex was tested on Windows only. The full steps, and the `cq dispatch` worker for a fresh Codex run per task, are in [Codex setup](docs/CODEX.md).
-
-1. Choose one absolute queue root, or keep the per-user default. If you choose your own, set it as `CQ_ROOT` before the next step, and use the same `CQ_ROOT` for every `cq` command: in the chat, for the watcher and for the sender.
-2. Install `cq` and run `cq init`, as in step 1 of the Claude Code steps. The tested setup called `cq` and `codex` by their full paths, for example `C:/full/path/to/cq.exe`. If you use the bare names, check that `cq --version` works in a new Codex chat.
-3. Give the chat its rules: the queue rules block and a section for its queue name in `AGENTS.md`. See [Give the chat its rules](docs/CODEX.md#give-the-chat-its-rules). Let the chat write to the queue root ([Allow `cq` without prompts](docs/CODEX.md#allow-cq-without-prompts)). A setup where Codex never asks for approval is not tested yet.
+1. The tested setup called `cq` and `codex` by their full paths, for example `C:/full/path/to/cq.exe`. If you use the bare names, check that `cq --version` works in a new Codex chat.
+2. Give the chat its rules: the queue rules block and a section for its queue name in `AGENTS.md`. See [Give the chat its rules](docs/CODEX.md#give-the-chat-its-rules).
+3. Let the chat write to the queue root ([Allow `cq` without prompts](docs/CODEX.md#allow-cq-without-prompts)). A setup where Codex never asks for approval is not tested yet.
 4. Start the watcher in the background, outside the chat, with the same `CQ_ROOT`. In the chat, `CODEX_THREAD_ID` holds the thread ID:
 
    ```bash
    cq watch --as worker-a --to-codex THREAD_ID
    ```
 
-5. Send `worker-a` a test message, as in step 4 of the Claude Code steps. Expected result: the watcher prints one `queued a check` line, and the chat starts a turn within seconds.
+#### Other agents
 
-Every session must use the same absolute queue root (`CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration)). For other agents, see [Other agents](docs/SETUP.md#other-agents).
+Not tested. The agent needs shell access to run `cq`, the queue rules in its instruction file, and a wake route: a wake feature, a fresh run per task, or polling with `cq list`. See [Other agents](docs/OTHER-AGENTS.md).
+
+### 3. Send a test task
+
+From another session:
+
+```bash
+cq send --from lead --to worker-a --type task <<'EOF'
+{"subject": "Run the tests", "body": "Run cargo test and report failures."}
+EOF
+```
+
+Expected result: `worker-a` starts a turn within seconds. A Claude Code session gets a message from `cq` with a `CQ-NEW` line. A Codex watcher prints one `queued a check` line, and the chat starts a turn.
 
 ## Documentation
 
 | Document | What it covers |
 | --- | --- |
-| [How cq works](docs/OVERVIEW.md) | Why `cq` exists, one task from start to finish, idle cost, safety model, platform status |
-| [Setup](docs/SETUP.md) | Requirements, install steps, configuration, skills, other agents, upgrading |
+| [How cq works](docs/OVERVIEW.md) | Why `cq` exists, one task from start to finish, agent support, idle cost, safety model, platform status |
+| [Setup](docs/SETUP.md) | The shared steps for every agent: requirements, install, configuration, sleep and wake, upgrading |
+| [Claude Code setup](docs/CLAUDE-CODE.md) | What differs for Claude Code: rules, permissions, the inbox watcher, the rejoin hook, the skills, Monitor mode |
+| [Codex setup](docs/CODEX.md) | What differs for Codex: rules, approvals, the `--to-codex` watcher, restart, the `cq dispatch` worker |
+| [Other agents](docs/OTHER-AGENTS.md) | What any other agent or script needs: rules, permissions, a wake route |
 | [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
 | [`CLAUDE-snippets.md`](CLAUDE-snippets.md) | Claude Code blocks and session prompts to paste |
-| [Codex setup](docs/CODEX.md) | Setting up and waking a Codex chat, the `cq dispatch` worker, recovery |
 | [Session protocol](docs/PROTOCOL.md) | How a session watches, claims, replies, rejoins and sleeps; storm limits |
 | [Example session rules](docs/SESSION-RULES.example.md) | A longer rules file to adapt, with a part for each agent |
 | [Commands](docs/COMMANDS.md) | Every command, the exit codes, the queue root layout |
