@@ -17,6 +17,20 @@ pub fn requeue(root: &Root, name: &str, id: &str) -> Result<Option<String>> {
     check_name("--as", name)?;
     check_id("ID", id)?;
     root.ensure_session_dirs(name)?;
+
+    // Hold the recipient's claim lock, as `cq claim` does, until the reason
+    // file is gone. Otherwise a fast claim and reject of the requeued
+    // message could write a new reason file that this one then removes.
+    let claim_lock_path = root
+        .path()
+        .join("heartbeat")
+        .join(format!("{name}.claim.lock"));
+    let claim_lock =
+        fsutil::open_lock_file(&claim_lock_path).map_err(|e| CqError::io("open claim lock", e))?;
+    claim_lock
+        .lock()
+        .map_err(|e| CqError::io("lock claim transaction", e))?;
+
     let dir = root.rejected(name);
     let src = message_file(&dir, id);
     if !src.is_file() {
@@ -48,8 +62,9 @@ pub fn requeue(root: &Root, name: &str, id: &str) -> Result<Option<String>> {
             ));
         }
     }
-    // A new modified time, so a coordinator's CQ-WAKE counts the wait from
-    // now.
+    // A new modified time: the watcher announces the message again even if
+    // it never saw the inbox without it, and a coordinator's CQ-WAKE counts
+    // the wait from now.
     let _ = fsutil::touch(&dst);
     match fs::remove_file(reason_file(&dir, id)) {
         Ok(()) => Ok(None),

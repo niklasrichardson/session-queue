@@ -339,3 +339,69 @@ fn a_watcher_announces_a_requeued_message() {
     assert!(line.starts_with("CQ-NEW "), "{line}");
     assert_eq!(event_id(&line), info);
 }
+
+/// A message that is claimed, rejected and requeued between two scans is
+/// still announced again: the watcher never sees the inbox without it, but
+/// the requeue gives the file a new modified time.
+#[test]
+fn a_requeue_between_two_scans_is_announced() {
+    let env = Env::new();
+    let info = env.send("alice", "bob", "info", "hello", "x");
+    let w = env.watch("bob", &["--no-fs-events", "--rescan-seconds", "4"]);
+    let line = w
+        .line(std::time::Duration::from_secs(5))
+        .expect("a CQ-NEW line from the start scan");
+    assert_eq!(event_id(&line), info);
+
+    assert_eq!(code(&env.claim("bob", &info)), 0);
+    assert_eq!(code(&reject(&env, "bob", &info, "no")), 0);
+    let out = env.run(&["requeue", "--as", "bob", &info], None);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let line = w
+        .line(std::time::Duration::from_secs(8))
+        .expect("a second CQ-NEW line after the next scan");
+    assert!(line.starts_with("CQ-NEW "), "{line}");
+    assert_eq!(event_id(&line), info);
+    // Only once: later scans see the same modified time.
+    assert!(w.lines_for(std::time::Duration::from_secs(5)).is_empty());
+}
+
+/// `cq requeue` waits for the recipient's claim lock, so no claim of the
+/// requeued message can start before its old reason file is removed.
+#[test]
+fn requeue_holds_the_claim_lock() {
+    let env = Env::new();
+    let info = env.send("alice", "bob", "info", "hello", "x");
+    assert_eq!(code(&env.claim("bob", &info)), 0);
+    assert_eq!(code(&reject(&env, "bob", &info, "no")), 0);
+
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(env.path("heartbeat/bob.claim.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let mut c = env.cmd(&["requeue", "--as", "bob", &info]);
+    c.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = c.spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    assert!(
+        env.ids("inbox/bob").is_empty(),
+        "requeue waits for the lock"
+    );
+    assert_eq!(env.ids("rejected/bob"), vec![info.clone()]);
+
+    lock.unlock().unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(env.ids("inbox/bob"), vec![info.clone()]);
+    assert!(
+        !env.path(&format!("rejected/bob/{info}.reason.json"))
+            .exists()
+    );
+}
