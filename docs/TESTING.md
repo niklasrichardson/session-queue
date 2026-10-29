@@ -83,12 +83,12 @@ Not verified: a real Claude Code inbox (the owner's earlier live test used a sep
 
 ## Idle alerts on Windows, 29 October 2026
 
-[Issue #50](https://github.com/niklasrichardson/session-queue/issues/50): `cq idle-alert`. Checked on Windows 11 with `cargo test --workspace` (212 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
+[Issue #50](https://github.com/niklasrichardson/session-queue/issues/50): `cq idle-alert`. Checked on Windows 11 with `cargo test --workspace` (214 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
 
-- `tests/idle.rs` (8 tests) runs the command with hook JSON on stdin and temporary queue roots. It covers: a listed worker sends one `info` message to its lead with the fixed subject and body and nothing from the hook input, and records the time; an unlisted name and a missing `idle-alerts`; no member record and no session key; once per hour, and `--every`; a sleeping name; `PAUSE` refuses the send and nothing is recorded; malformed config lines; `--debug`, and exit 64 for a bad `--every`.
+- `tests/idle.rs` (10 tests) runs the command with hook JSON on stdin and temporary queue roots. It covers: a listed worker sends one `info` message to its lead with the fixed subject and body and nothing from the hook input, and records the time; an unlisted name and a missing `idle-alerts`; no member record and no session key; once per hour, and `--every`; a sleeping name; `PAUSE` refuses the send and nothing is recorded; malformed config lines; `--debug`, and exit 64 for a bad `--every`; a held lock sends nothing; 8 hooks started at once send one alert. That last test makes each hook wait 500 ms between its check and its send (hidden `--hold-ms`); with the lock removed, it failed (4 alerts).
 - The interval is tested by writing an older time to `idle/<name>`, not by waiting.
 
-Not verified: the `Notification` hook with matcher `idle_prompt` in a live Claude Code session, and how soon `idle_prompt` fires after a turn ends; macOS and Linux.
+Not verified: the `Notification` hook with matcher `idle_prompt` in a live Claude Code session, and the documented 60-second timing of `idle_prompt`; macOS and Linux.
 
 ## Sleep and wake on Windows, 28 October 2026
 

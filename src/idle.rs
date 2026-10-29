@@ -7,8 +7,12 @@
 //! a fixed subject and body, at most once per interval, and records the
 //! time in `idle/<worker>`. The message holds no text from the session's
 //! work. Every limit of `cq send` applies; a refused send records nothing.
+//!
+//! Claude Code runs matching hooks in parallel, so the check, the send and
+//! the record run under an exclusive lock on `idle/<worker>.lock`. A hook
+//! that finds the lock taken sends nothing.
 
-use std::fs;
+use std::fs::{self, File, TryLockError};
 use std::time::Duration;
 
 use jiff::Timestamp;
@@ -31,6 +35,8 @@ pub enum Outcome {
     /// The name is not listed in `idle-alerts`.
     NotListed,
     Asleep,
+    /// Another `cq idle-alert` for the name holds the lock.
+    Busy,
     /// The last alert was less than the interval ago (UTC, RFC 3339).
     Recent(String),
     /// Sent to the lead: the message ID.
@@ -38,7 +44,8 @@ pub enum Outcome {
         lead: String,
         id: String,
     },
-    /// `cq send` refused or failed; nothing was recorded.
+    /// The lock or `cq send` failed, or the send was refused; nothing was
+    /// recorded.
     NotSent(CqError),
     /// Sent, but the time could not be recorded.
     NotRecorded {
@@ -94,18 +101,27 @@ fn is_recent(last: Timestamp, now: Timestamp, every: Duration) -> bool {
 }
 
 /// Send the idle alert for `name` if it is listed, awake and not alerted
-/// within `every`.
-pub fn alert(root: &Root, name: &str, every: Duration) -> Outcome {
+/// within `every`. `hold` waits that long after the check, under the
+/// lock, so tests can run hooks that overlap; it is zero otherwise.
+pub fn alert(root: &Root, name: &str, every: Duration, hold: Duration) -> Outcome {
     let Some(lead) = lead_for(root, name) else {
         return Outcome::NotListed;
     };
     if sleep::is_asleep(root, name) {
         return Outcome::Asleep;
     }
+    // Held until this function returns, so no other hook for the name can
+    // pass the check below before this one records its alert.
+    let _lock = match try_lock(root, name) {
+        Ok(Some(file)) => file,
+        Ok(None) => return Outcome::Busy,
+        Err(e) => return Outcome::NotSent(e),
+    };
     let now = timefmt::now();
     if let Some(last) = last_alert(root, name).filter(|t| is_recent(*t, now, every)) {
         return Outcome::Recent(rfc3339(last));
     }
+    std::thread::sleep(hold);
     let (subject, body) = text(name, now);
     let out = Outgoing {
         from: name.to_owned(),
@@ -124,6 +140,22 @@ pub fn alert(root: &Root, name: &str, every: Duration) -> Outcome {
     match record(root, name, now) {
         Ok(()) => Outcome::Sent { lead, id },
         Err(error) => Outcome::NotRecorded { id, error },
+    }
+}
+
+/// Take the exclusive lock on `idle/<name>.lock` without waiting. `None`
+/// when another process holds it. The OS releases it when the process
+/// exits, however it exits.
+fn try_lock(root: &Root, name: &str) -> Result<Option<File>> {
+    let dir = root.idle_dir();
+    fs::create_dir_all(&dir).map_err(|e| CqError::io(format!("create {}", dir.display()), e))?;
+    let path = root.idle_lock(name);
+    let file = fsutil::open_lock_file(&path)
+        .map_err(|e| CqError::io(format!("open {}", path.display()), e))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(e)) => Err(CqError::io(format!("lock {}", path.display()), e)),
     }
 }
 

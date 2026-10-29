@@ -4,9 +4,11 @@
 
 mod common;
 
-use std::fs;
+use std::fs::{self, File};
 use std::io::Write;
 use std::process::{Output, Stdio};
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 use common::*;
 
@@ -206,4 +208,51 @@ fn debug_reports_the_result() {
 
     let out = idle_alert(&env, &["--every", "0s"]);
     assert_eq!(code(&out), 64, "a bad --every is a usage error");
+}
+
+#[test]
+fn a_held_lock_sends_nothing() {
+    let env = setup(
+        "worker-a",
+        "worker-a lead
+",
+    );
+    fs::create_dir_all(env.path("idle")).unwrap();
+    let lock = File::create(env.path("idle/worker-a.lock")).unwrap();
+    lock.lock().unwrap();
+    quiet(&env);
+    assert!(env.ids("inbox/lead").is_empty());
+    assert!(record(&env, "worker-a").is_none());
+
+    drop(lock);
+    quiet(&env);
+    assert_eq!(env.ids("inbox/lead").len(), 1);
+}
+
+#[test]
+fn parallel_hooks_send_one_alert() {
+    // Claude Code runs matching hooks in parallel. Each hook waits 500 ms
+    // between its check and its send, so without the lock all of them pass
+    // the check and send.
+    let env = Arc::new(setup(
+        "worker-a",
+        "worker-a lead
+",
+    ));
+    let start = Arc::new(Barrier::new(8));
+    let runs: Vec<_> = (0..8)
+        .map(|_| {
+            let (env, start) = (Arc::clone(&env), Arc::clone(&start));
+            thread::spawn(move || {
+                start.wait();
+                idle_alert(&env, &["--hold-ms", "500"])
+            })
+        })
+        .collect();
+    for run in runs {
+        let out = run.join().unwrap();
+        assert_eq!(code(&out), 0);
+        assert_eq!(stderr(&out), "");
+    }
+    assert_eq!(env.ids("inbox/lead").len(), 1);
 }

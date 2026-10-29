@@ -16,6 +16,7 @@
 //! coordinators              names that may sleep and wake others (owner-edited)
 //! idle-alerts               `worker lead` pairs for `cq idle-alert` (owner-edited)
 //! idle/<name>               the time of the last idle alert for the name
+//! idle/<name>.lock          held by `cq idle-alert` while it sends
 //! PAUSE                     while it exists, watchers emit nothing
 //! ```
 
@@ -191,6 +192,11 @@ impl Root {
 
     pub fn idle_file(&self, name: &str) -> PathBuf {
         self.idle_dir().join(name)
+    }
+
+    /// Held by `cq idle-alert` while it checks, sends and records.
+    pub fn idle_lock(&self, name: &str) -> PathBuf {
+        self.idle_dir().join(format!("{name}.lock"))
     }
 
     pub fn pause(&self) -> PathBuf {

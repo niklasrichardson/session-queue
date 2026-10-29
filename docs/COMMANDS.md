@@ -23,7 +23,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | `cq sleep --as A B [--reason TEXT]` | Put `B` to sleep: write `sleep/B`. `A` may be `B` itself or a coordinator. |
 | `cq wake --as A B` | Wake `B`: remove `sleep/B`. Any name may wake any name. Exit 0 when `B` was not asleep. |
 | `cq session-start [--debug]` | For the Claude Code SessionStart hook. Prints the rejoin reminder when this session owns a name, a "you are asleep" note when that name is asleep, else nothing. The text ends with a note that a subagent ignores it, because subagents share the host session ID. Always exits 0. |
-| `cq idle-alert [--every 1h] [--debug]` | For the Claude Code Notification hook (matcher `idle_prompt`). When this session owns a name listed in `CQ_ROOT/idle-alerts`, send its lead one fixed `info` message, at most once per `--every`. Prints nothing and exits 0, except exit 64 for bad arguments. See [Idle alerts](#idle-alerts). |
+| `cq idle-alert [--every 1h] [--debug]` | For the Claude Code Notification hook (matcher `idle_prompt`). When this session owns a name listed in `CQ_ROOT/idle-alerts`, send its lead one fixed `info` message, at most once per `--every`. Prints nothing and exits 0. A bad `--every` value is a configuration error and exits 64. See [Idle alerts](#idle-alerts). |
 
 Example:
 
@@ -120,6 +120,7 @@ worker-a lead
 - `cq idle-alert` finds this session's name from its `members/` record, as `cq session-start` does. With no record, no listed name, or a sleeping name, it does nothing.
 - Otherwise it sends the lead the message that `cq send --from worker-a --to lead --type info` would send, with the subject `worker-a is idle` and the body `Idle since 14:05 UK.` (the local time, as in `CQ-NEW` lines). The text is fixed: nothing from the session's work or the hook's input goes into it.
 - After a send it writes the UTC time to `idle/worker-a`. It skips the alert while that time is less than `--every` ago (default `1h`; for example `--every 30m`). A time in the future does not count.
+- Claude Code runs matching hooks in parallel. The check, the send and the record run under an exclusive lock on `idle/worker-a.lock`. A second `cq idle-alert` that finds the lock taken sends nothing and exits 0.
 - Every `cq send` limit applies, and the alert counts towards them. When the send is refused (a limit, `PAUSE`) or fails, nothing is recorded, so the next idle tries again.
 - It writes nothing to stderr without `--debug`. With `--debug` it prints the session key, the name and the result on one stderr line.
 
@@ -221,6 +222,7 @@ CQ_ROOT/
   coordinators               names that may sleep other names, one per line (edited by the owner)
   idle-alerts                `worker lead` pairs for cq idle-alert, one per line (edited by the owner)
   idle/<name>                the UTC time of the last idle alert for the name
+  idle/<name>.lock           locked by cq idle-alert while it checks, sends and records
   PAUSE                      while it exists, watchers print nothing and cq send refuses
 ```
 

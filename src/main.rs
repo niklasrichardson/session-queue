@@ -353,7 +353,8 @@ enum Cmd {
     /// For a Claude Code Notification hook (idle_prompt). If this session
     /// owns a name listed in CQ_ROOT/idle-alerts as "worker lead", send the
     /// lead one info message "<name> is idle", at most once per --every.
-    /// Skipped while the name is asleep. Always exits 0.
+    /// Skipped while the name is asleep. Exits 0, except 64 for a bad
+    /// --every.
     IdleAlert {
         /// The least time between two alerts for one name, for example 30m
         /// or 2h.
@@ -363,6 +364,9 @@ enum Cmd {
         /// Print the session key, the name and the result to stderr.
         #[arg(long)]
         debug: bool,
+        /// Wait this long after the check, before the send (for tests).
+        #[arg(long, hide = true, default_value_t = 0)]
+        hold_ms: u64,
     },
 }
 
@@ -686,7 +690,11 @@ fn run(cmd: Cmd) -> Result<i32> {
             }
         }
         Cmd::SessionStart { debug } => session_start(debug),
-        Cmd::IdleAlert { every, debug } => idle_alert(every, debug),
+        Cmd::IdleAlert {
+            every,
+            debug,
+            hold_ms,
+        } => idle_alert(every, debug, Duration::from_millis(hold_ms)),
     }
     Ok(exit::OK)
 }
@@ -746,7 +754,7 @@ fn session_start(debug: bool) {
 /// The idle_prompt Notification hook. Like `session-start`, it never
 /// fails, never blocks for long and, without `--debug`, never writes to
 /// stderr. It finds the name the same way.
-fn idle_alert(every: Duration, debug: bool) {
+fn idle_alert(every: Duration, debug: bool, hold: Duration) {
     drain_hook_input();
     let key = members::session_key();
     let root = Root::open().ok();
@@ -755,7 +763,7 @@ fn idle_alert(every: Duration, debug: bool) {
         _ => None,
     };
     let outcome = match (&root, &name) {
-        (Some(root), Some(name)) => Some(idle::alert(root, name, every)),
+        (Some(root), Some(name)) => Some(idle::alert(root, name, every, hold)),
         _ => None,
     };
     if debug {
