@@ -13,7 +13,7 @@ Thanks for helping. Bug reports, test results from other platforms, documentatio
 Open an issue with:
 
 - your platform and version (Windows, macOS or Linux), and your Rust version (`rustc --version`);
-- how Claude Code runs (desktop app, CLI or Remote Control);
+- which agent you use and how it runs (for example the Claude Code desktop app, CLI or Remote Control, or the Codex Desktop app or CLI);
 - the command you ran, its exit code and any `cq:` line it printed (see [Commands](docs/COMMANDS.md#exit-codes));
 - for a watcher problem, the stderr line from `cq watch ... 2>&1`.
 

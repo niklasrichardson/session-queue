@@ -1,6 +1,6 @@
 # Instructions for AI coding agents
 
-These rules are for agents that change the `cq` code or docs. Agents that only *use* the queue follow [`docs/SESSION-RULES.example.md`](docs/SESSION-RULES.example.md) and the setup page for their agent instead. People: see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+These rules are for agents that change the `cq` code or docs. Agents that only *use* the queue follow [`docs/QUEUE-RULES.md`](docs/QUEUE-RULES.md) and the setup page for their agent instead. People: see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## What this is
 
@@ -46,7 +46,7 @@ Never put message text on the command line. Pass JSON on stdin with a quoted her
 | A command, flag or exit code | `docs/COMMANDS.md` |
 | A design choice or limit | `docs/DESIGN.md` (and `docs/PROTOCOL.md` for send limits) |
 | Install steps or configuration | `docs/SETUP.md` |
-| What a queue session must do | `docs/PROTOCOL.md` and `CLAUDE-snippets.md` |
+| What a queue session must do | `docs/PROTOCOL.md`, `docs/QUEUE-RULES.md`, `docs/SESSION-RULES.example.md` and the agent's page (`CLAUDE-snippets.md`, `docs/CODEX.md`) |
 | What you tested, and on which platform | `docs/TESTING.md` |
 
 Write docs in short sentences and plain words, and use the same term for the same thing throughout.
