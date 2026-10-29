@@ -11,7 +11,7 @@ use crate::timefmt::parse_rfc3339_z;
 
 pub const SCHEMA_VERSION: u64 = 1;
 
-// The queue limits. `cq send --help` and README.md list the same values.
+// The queue limits. `cq send --help` and docs/OVERVIEW.md list the same values.
 
 /// Bodies over 20 KB (20 x 1024 bytes of UTF-8) are refused.
 pub const MAX_BODY_BYTES: usize = 20 * 1024;
