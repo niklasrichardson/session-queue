@@ -23,7 +23,7 @@ use cq::send::{self, Hops, Outgoing};
 use cq::watch::{
     self, DEFAULT_MAX_SECONDS, DEFAULT_RESCAN_SECONDS, Ended, Lines, Sink, WatchOptions,
 };
-use cq::{Root, claim, list, members, overdue, platform, sleep, timefmt};
+use cq::{Root, claim, idle, list, members, overdue, platform, sleep, timefmt};
 
 const EXIT_CODES: &str = "\
 Exit codes:
@@ -363,6 +363,25 @@ enum Cmd {
         #[arg(long)]
         debug: bool,
     },
+
+    /// For a Claude Code Notification hook (idle_prompt). If this session
+    /// owns a name listed in CQ_ROOT/idle-alerts as "worker lead", send the
+    /// lead one info message "<name> is idle", at most once per --every.
+    /// Skipped while the name is asleep. Exits 0, except 64 for a bad
+    /// --every.
+    IdleAlert {
+        /// The least time between two alerts for one name, for example 30m
+        /// or 2h.
+        #[arg(long, value_name = "DURATION", default_value = "1h",
+              value_parser = parse_every)]
+        every: Duration,
+        /// Print the session key, the name and the result to stderr.
+        #[arg(long)]
+        debug: bool,
+        /// Wait this long after the check, before the send (for tests).
+        #[arg(long, hide = true, default_value_t = 0)]
+        hold_ms: u64,
+    },
 }
 
 /// How long `session-start` waits for the hook's JSON once bytes are
@@ -700,6 +719,11 @@ fn run(cmd: Cmd) -> Result<i32> {
             }
         }
         Cmd::SessionStart { debug } => session_start(debug),
+        Cmd::IdleAlert {
+            every,
+            debug,
+            hold_ms,
+        } => idle_alert(every, debug, Duration::from_millis(hold_ms)),
     }
     Ok(exit::OK)
 }
@@ -754,6 +778,37 @@ fn session_start(debug: bool) {
     };
     // Ignore a failed write, as stdout may already be closed.
     let _ = writeln!(io::stdout(), "{text} {SUBAGENT_NOTE}");
+}
+
+/// The idle_prompt Notification hook. Like `session-start`, it never
+/// fails, never blocks for long and, without `--debug`, never writes to
+/// stderr. It finds the name the same way.
+fn idle_alert(every: Duration, debug: bool, hold: Duration) {
+    drain_hook_input();
+    let key = members::session_key();
+    let root = Root::open().ok();
+    let name = match (&key, &root) {
+        (Some(k), Some(root)) => members::name_for(root, k),
+        _ => None,
+    };
+    let outcome = match (&root, &name) {
+        (Some(root), Some(name)) => Some(idle::alert(root, name, every, hold)),
+        _ => None,
+    };
+    if debug {
+        eprintln!("cq idle-alert: key={key:?} name={name:?} outcome={outcome:?}");
+    }
+}
+
+/// A positive duration such as `90s`, `30m` or `1h` (jiff's friendly or
+/// ISO 8601 format).
+fn parse_every(s: &str) -> std::result::Result<Duration, String> {
+    let d: jiff::SignedDuration = s.parse().map_err(|e| format!("{e}"))?;
+    if d.is_positive() {
+        Ok(d.unsigned_abs())
+    } else {
+        Err("must be more than 0".to_owned())
+    }
 }
 
 /// Ends every `session-start` reminder. Subagents share the host session ID,
@@ -833,5 +888,15 @@ mod tests {
         assert_eq!(rules_ref(None, Some("/r/build.md")), "/r/build.md");
         assert_eq!(rules_ref(Some(" "), Some("")), GENERIC_RULES);
         assert_eq!(rules_ref(None, None), GENERIC_RULES);
+    }
+
+    #[test]
+    fn parse_every_takes_positive_durations() {
+        assert_eq!(parse_every("1h"), Ok(idle::DEFAULT_EVERY));
+        assert_eq!(parse_every("30m"), Ok(Duration::from_secs(1800)));
+        assert_eq!(parse_every("90s"), Ok(Duration::from_secs(90)));
+        assert!(parse_every("0s").is_err());
+        assert!(parse_every("-5m").is_err());
+        assert!(parse_every("soon").is_err());
     }
 }
