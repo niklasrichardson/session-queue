@@ -17,7 +17,7 @@ flowchart TB
     HK["SessionStart hook<br/>cq session-start"]
     CC["Claude Code session"]
     CX["Codex chat"]
-    R[("Queue root<br/>inbox/ done/ rejected/ dlq/<br/>heartbeat/ members/ sleep/")]
+    R[("Queue root (main folders)<br/>inbox/ done/ rejected/ dlq/<br/>heartbeat/ members/ sleep/")]
     WI["inbox mode, default<br/>cq watch --to-inbox"]
     WM["monitor mode, fallback<br/>cq watch under Monitor"]
     WC["codex mode<br/>cq watch --to-codex"]
@@ -35,7 +35,7 @@ flowchart TB
     R -.->|"reads"| TOP
 ```
 
-- **The `cq` CLI** does every queue action: `send`, `claim`, `done`, `list`, `sleep`, `wake`. Each action is a file write or an atomic rename. There is no server, database or network.
+- **The `cq` CLI** does every queue action: `send`, `claim`, `done`, `list`, `sleep`, `wake`. Each action reads or writes files; messages move between folders by atomic rename. The full layout is in [Commands](docs/COMMANDS.md#layout). There is no server, database or network.
 - **The watcher** (`cq watch --as NAME`) watches one inbox. Only one watcher runs per name. It prints one `CQ-NEW` line per new message. Its mode decides how that line wakes the session:
 
 | Mode | Command | How it wakes the session |
