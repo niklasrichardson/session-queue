@@ -11,6 +11,7 @@ These were not tested by `cargo test`, or not yet tested live:
 - That an orphaned watcher (one whose Monitor was killed) never delays work. It keeps the lock until `--max-seconds`; the new Monitor's `cq watch` exits 5 and the session re-arms with `--takeover`. In a test on 24 Oct 2026, stopping a Monitor with TaskStop killed the whole process tree, `cq.exe` included.
 - Remote Control. The Claude Code CLI was tested in one bounded run only: on 29 Oct 2026, one CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (test L3 in the [spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked that session's screen for a cap notice. Other live tests used the desktop app's Code tab.
 - The rejoin hook after a compaction or a resume. It was tested live after `/clear` only.
+- The CLI rejoin after `/clear` ([#5](https://github.com/niklasrichardson/session-queue/issues/5)) in a live CLI session. See [CLI rejoin, 29 October 2026](#cli-rejoin-29-october-2026).
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
@@ -33,6 +34,13 @@ Failed or intermittent:
 - `tests/dispatch.rs`: 2 to 5 tests fail on each run, a different set each time, all with `Codex timed out after 1s`. With `--test-threads=1`, one run had 4 failures and the next passed 13 of 13. The likely cause, not yet confirmed, is the macOS first-run check of the freshly built fake Codex binary.
 
 Not checked on macOS: two Claude Code sessions handing tasks back and forth live; the Monitor fallback under the real Monitor tool; the `cq done` stdin check beyond the tests; the SessionStart hook with a bare `cq` (see [After `/clear` or a restart](CLAUDE-CODE.md#after-clear-or-a-restart)); Codex chats and `cq dispatch` with a real Codex; the cq-top screens in a real terminal ([#17](https://github.com/niklasrichardson/session-queue/issues/17)).
+
+## CLI rejoin, 29 October 2026
+
+For [#5](https://github.com/niklasrichardson/session-queue/issues/5). Tested on Windows with `cargo test` only.
+
+- `tests/members.rs` (18 tests) runs the real `cq` under a fake `claude` process (`tests/support/fake_claude.rs`), which runs `cq` commands for several session IDs in one process, like the CLI across `/clear`. The tests check: a CLI watcher records the fake's process ID and a start time; after `/clear` with a new session ID, `cq session-start` prints the reminder and moves the record, and a second `/clear` works too; no record moves for no hook JSON, `startup`, `resume`, `compact`, bad JSON, or another `session_id`; another `claude` process, a changed start time, a record with no owner line, or two records of one process move nothing; a host ID or `CQ_SESSION_ID` records no owner, still matches after `/clear`, and a host key with no record never falls back; after `/resume` to another conversation in the same process, a `/clear` does not rejoin until the earlier conversation starts its own watcher again; a takeover made while the hook waits for `members/.lock` wins; a lock held too long gives no output and no change; a `/resume` that waits out a held lock, or whose owner-line write fails, still stops a later `/clear`; with no process mark, nothing moves; and a compaction keeps the name, with a `/clear` after it still rejoining.
+- The macOS and Linux process lookups were checked with `cargo clippy` for `aarch64-apple-darwin` and `x86_64-linux-android`, but not linked or run.
 
 ## Rejection notices, list and requeue, 29 October 2026
 

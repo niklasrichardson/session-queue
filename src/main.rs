@@ -481,6 +481,13 @@ fn run(cmd: Cmd) -> Result<i32> {
                 } else {
                     members::session_key()
                 },
+                // Only a CLI key changes on `/clear`; a `--to-codex` record
+                // never uses a Claude Code ID.
+                member_owner: if to_codex.is_none() && members::cli_session_key().is_some() {
+                    members::Owner::find()
+                } else {
+                    None
+                },
                 name,
                 takeover,
                 max_seconds: max_seconds
@@ -678,19 +685,38 @@ fn run(cmd: Cmd) -> Result<i32> {
 /// The SessionStart hook. Never fails, never blocks and, without
 /// `--debug`, never writes to stderr: a hook must not break session start.
 fn session_start(debug: bool) {
-    drain_hook_input();
+    let hook = read_hook_input();
     let key = members::session_key();
     let root = Root::from_env().ok();
-    let name = match (&key, &root) {
+    let mut name = match (&key, &root) {
         (Some(k), Some(root)) => members::name_for(root, k),
         _ => None,
     };
+    let mut rejoined = None;
+    if name.is_none()
+        && let Some(root) = &root
+        && let Some(k) = cli_rejoin_key(hook.as_ref())
+        && let Some(owner) = members::Owner::find()
+    {
+        name = members::rejoin(root, &k, owner);
+        rejoined = Some(owner);
+    }
+    // Any other start in a CLI process, such as `/resume`, means the
+    // process may now run a conversation other than the one a record
+    // names, so a later `/clear` must not move that record here.
+    if !is_clear(hook.as_ref())
+        && let Some(root) = &root
+        && let Some(k) = members::cli_session_key()
+        && let Some(owner) = members::Owner::find()
+    {
+        members::disarm(root, &k, owner);
+    }
     let mode = match (&key, &root, &name) {
         (Some(k), Some(root), Some(_)) => Some(members::mode_for(root, k)),
         _ => None,
     };
     if debug {
-        eprintln!("cq session-start: key={key:?} name={name:?} mode={mode:?}");
+        eprintln!("cq session-start: key={key:?} name={name:?} mode={mode:?} owner={rejoined:?}");
     }
     let (Some(root), Some(name), Some(mode)) = (root, name, mode) else {
         return;
@@ -747,18 +773,42 @@ fn rules_ref<'a>(runtime: Option<&'a str>, build: Option<&'a str>) -> &'a str {
         .unwrap_or(GENERIC_RULES)
 }
 
-/// Read and drop the hook's JSON, if any, so the writer never sees a broken
-/// pipe. The read runs on its own thread with a time limit, so a pipe that
-/// never closes cannot hold up the hook; the thread ends with the process.
-fn drain_hook_input() {
+/// The new key to look up by owner process after a CLI `/clear`, or `None`.
+/// Only when the hook's JSON says `"source": "clear"`, the key comes from
+/// `CLAUDE_CODE_SESSION_ID` alone, and the JSON's `session_id`, if any, is
+/// that key. A start, resume or compaction never moves a record: a new
+/// `claude` process cannot match, `/resume` may open an unrelated
+/// conversation in the same process, and a compaction keeps the ID.
+fn cli_rejoin_key(hook: Option<&serde_json::Value>) -> Option<String> {
+    if !is_clear(hook) {
+        return None;
+    }
+    let key = members::cli_session_key()?;
+    match hook?.get("session_id").and_then(|s| s.as_str()) {
+        Some(id) if members::sanitise_key(id).as_deref() != Some(key.as_str()) => None,
+        _ => Some(key),
+    }
+}
+
+/// True when the hook's JSON says `"source": "clear"`.
+fn is_clear(hook: Option<&serde_json::Value>) -> bool {
+    hook.and_then(|h| h.get("source")).and_then(|s| s.as_str()) == Some("clear")
+}
+
+/// Read the hook's JSON, if any, so the writer never sees a broken pipe.
+/// The read runs on its own thread with a time limit, so a pipe that never
+/// closes cannot hold up the hook; the thread ends with the process. `None`
+/// when there is no input, it is late, or it is not JSON.
+fn read_hook_input() -> Option<serde_json::Value> {
     if !platform::stdin_has_input() {
-        return;
+        return None;
     }
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(read_stdin().is_ok());
+        let _ = tx.send(read_stdin().ok());
     });
-    let _ = rx.recv_timeout(HOOK_INPUT_WAIT);
+    let bytes = rx.recv_timeout(HOOK_INPUT_WAIT).ok()??;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// The JSON input text: from `--input FILE` (or `-`), else from stdin when

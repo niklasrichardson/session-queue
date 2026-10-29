@@ -22,7 +22,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | `cq members` | Print one `<session key> -> <name>` line per record, with ` (asleep)` after a sleeping name. A sleeping name with no record prints as `- -> <name> (asleep)`. |
 | `cq sleep --as A B [--reason TEXT]` | Put `B` to sleep: write `sleep/B`. `A` may be `B` itself or a coordinator. |
 | `cq wake --as A B` | Wake `B`: remove `sleep/B`. Any name may wake any name. Exit 0 when `B` was not asleep. |
-| `cq session-start [--debug]` | For the Claude Code SessionStart hook. Prints the rejoin reminder when this session owns a name, a "you are asleep" note when that name is asleep, else nothing. The text ends with a note that a subagent ignores it, because subagents share the host session ID. Always exits 0. |
+| `cq session-start [--debug]` | For the Claude Code SessionStart hook. Prints the rejoin reminder when this session owns a name, a "you are asleep" note when that name is asleep, else nothing. After `/clear` in the Claude Code CLI, which changes the session ID, it finds the name through the `claude` process and moves the record to the new ID (see [Rejoin after /clear](PROTOCOL.md#rejoin-after-clear)). The text ends with a note that a subagent ignores it, because subagents share the host session ID. Always exits 0. |
 
 Example:
 
@@ -197,7 +197,9 @@ CQ_ROOT/
   heartbeat/<name>.pid       the running watcher/dispatcher process ID
   heartbeat/<name>.overdue   overdue task IDs a coordinator's watcher has reported, one per line
   dispatch/<name>/<id>/       Codex logs and completion state (not auto-pruned)
-  members/<key>              the name owned by a session (a Claude Code session, or `codex-NAME` for a `--to-codex` watcher), the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox or codex)
+  members/.lock              held while a command changes members/
+  members/.procs/<pid>-<start>  the key a claude CLI process last ran (see PROTOCOL.md)
+  members/<key>              the name owned by a session (a Claude Code session, or `codex-NAME` for a `--to-codex` watcher), the UTC time it was recorded, the watcher's working folder, its mode (monitor, inbox or codex), and for a Claude Code CLI key the `claude` process ID and start time
   sleep/<name>               while it exists, the name is asleep (by, time, reason)
   coordinators               names that may sleep other names, one per line (edited by the owner)
   PAUSE                      while it exists, watchers print nothing and cq send refuses

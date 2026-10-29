@@ -97,6 +97,9 @@ pub struct WatchOptions {
     /// The Claude Code session to record as the owner of the name. `None`
     /// records nothing.
     pub member_key: Option<String>,
+    /// The `claude` process that holds a Claude Code CLI session, recorded
+    /// so `cq session-start` can find the record after `/clear`.
+    pub member_owner: Option<members::Owner>,
     /// Where the lines go, recorded in the session's `members/` record, so
     /// that `cq session-start` does not ask for a Monitor after `/clear`.
     pub mode: members::Mode,
@@ -111,6 +114,7 @@ impl WatchOptions {
             rescan: Duration::from_secs(DEFAULT_RESCAN_SECONDS),
             fs_events: true,
             member_key: None,
+            member_owner: None,
             mode: members::Mode::Monitor,
         }
     }
@@ -190,7 +194,7 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     if let Some(key) = &opts.member_key {
         // The queue still works without the record; only a rejoin after
         // `/clear` needs it.
-        if let Err(e) = members::record(root, key, name, opts.mode) {
+        if let Err(e) = members::record(root, key, name, opts.mode, opts.member_owner) {
             eprintln!("cq watch: could not record the session for {name}: {e}");
         }
     }

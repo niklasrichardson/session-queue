@@ -97,6 +97,20 @@ Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7
 - **When sleep pays off.** Waking a session writes its whole context to the prompt cache again, which costs about 2 times the context in input tokens. Staying awake costs about 0.4 times the context per hour in re-arms and cache reads. So sleep pays off only for an idle period of about 5 hours or more, unless the context is small. These figures are for Monitor mode. In inbox mode, an idle session takes no re-arm turns, so staying awake costs less, and sleep pays off only after a longer idle period.
 - **Not in stage 1:** automatic sleep after an idle time. `cq dispatch` (Codex) does not check the flag.
 
+## Rejoin in the Claude Code CLI
+
+[Issue #5](https://github.com/niklasrichardson/session-queue/issues/5). The protocol is in [Session protocol](PROTOCOL.md#rejoin-after-clear).
+
+- **Why a process match.** The CLI sets no host session ID, and its `CLAUDE_CODE_SESSION_ID` changes on `/clear`. The `claude` process stays, and the SessionStart hook and the watcher both run under it. So a CLI record holds that process, and `cq session-start` uses it to find the record after a key miss.
+- **Why the start time.** A process ID can be reused after its process exits. The record holds the start time too, and both must match. While walking up the parents, a parent that started after its child also stops the walk: its ID was reused after the real parent exited.
+- **Why only the CLI key.** In the desktop app, the host ID already outlives `/clear`. A desktop or `CQ_SESSION_ID` record holds no process, and a host or `CQ_SESSION_ID` key never falls back to one. So the desktop app and Codex behave as before.
+- **Why a resume drops the owner.** After `/resume`, the process runs another conversation, but the earlier conversation's record still names the process. A later `/clear` would then hand that name to the wrong conversation. So any start that is not a `/clear` drops the owner line from the records of other keys in that process. Only a watcher started by the conversation itself writes it again.
+- **Why a mark as well.** Dropping the owner line needs the lock and a write, and either can fail. The start therefore first writes the process's mark, its own file renamed into place without the lock, and a move needs the mark to name the record's key. A move happens only when a step proves it safe; every failure leaves no move.
+- **Why a lock.** A move reads a record and writes another. Without a lock, a watcher that takes the name in between would lose its record, and two sessions would think they own the name. `members/.lock` serialises every change, and the move checks the records again while it holds the lock.
+- **Why only `/clear`.** A compaction keeps the session ID. `/resume` can open an unrelated conversation in the same process, and a fresh `claude` process cannot match. Moving a record only for `"source": "clear"`, and only when the hook's `session_id` is the session's key, keeps a name from going to the wrong conversation.
+- **Why exactly one record.** One process normally holds one session. If two records name the same process, `cq` cannot tell which one this session owned, so it moves neither. It never matches on the working folder: several sessions can share one folder.
+- **Limits.** `claude --resume` starts a new process, so it needs a fixed `CQ_SESSION_ID` or `/cq-start`. The match looks for a process, `argv[0]` or executable named `claude` (`claude.exe` on Windows), as the native installer starts it. A CLI that runs as `node` may not match, and the session then gets no reminder, as before. On Unix systems other than macOS and Linux, no process is recorded.
+
 ## Dependencies
 
 - clap, serde, serde_json, jiff (time zones; the bundled database on Windows), notify, windows-sys (Windows), libc (macOS and Linux). Tests: jsonschema (without default features, to avoid a network client build) and tempfile.

@@ -78,6 +78,8 @@ On macOS, a hook command may not find a bare `cq`: the Rust installer adds `~/.c
 
 Expected result: after `/clear` in a session whose watcher ran, the new context starts with "You are in the cq session queue as NAME". The reminder also says whether the watcher still runs. See [Rejoin after /clear](PROTOCOL.md#rejoin-after-clear). The hook was tested live after `/clear` only, not after a compaction or a resume.
 
+**Claude Code CLI.** The CLI starts a new session ID on `/clear` ([#5](https://github.com/niklasrichardson/session-queue/issues/5)). `cq` finds the session's record through the `claude` process instead, which stays the same across `/clear`, and moves the record to the new ID. This needs no setup. It does not cover `claude --resume` or `/resume`, which can open another conversation. For those, start the CLI with a fixed key, for example `CQ_SESSION_ID=worker-a claude`, and use a different key for each session. Both ways were tested only with a fake `claude` process in `cargo test`, not yet in a live CLI session.
+
 - The inbox watcher survives `/clear` and compaction, and keeps posting into the same session. After a clear, do not start a second watcher.
 - After a session restarts, or its watcher was down, give the session the [recovery prompt](../CLAUDE-snippets.md#5-recovery-prompt). If the name is asleep, run `/cq-start NAME` instead.
 
@@ -123,4 +125,4 @@ An inbox-mode watcher never re-arms, so it keeps running the old binary. Ask eac
 
 ## Session identity
 
-`cq` records which session owns a queue name in `members/`. In Claude Code, the key is `CLAUDE_CODE_HOST_SESSION_ID` (the desktop app's `local_...` ID), else `CLAUDE_CODE_SESSION_ID`. `CQ_SESSION_ID` takes precedence over both. Never set one global `CQ_SESSION_ID` shared by Claude Code sessions: every session would get the same key and replace the others' records. See [Rejoin after /clear](PROTOCOL.md#rejoin-after-clear).
+`cq` records which session owns a queue name in `members/`. In Claude Code, the key is `CLAUDE_CODE_HOST_SESSION_ID` (the desktop app's `local_...` ID), else `CLAUDE_CODE_SESSION_ID`. `CQ_SESSION_ID` takes precedence over both. Never set one global `CQ_SESSION_ID` shared by Claude Code sessions: every session would get the same key and replace the others' records. Setting it for one CLI process (`CQ_SESSION_ID=worker-a claude`) is fine. The desktop app's host ID outlives `/clear`. The CLI sets no host ID, and its `CLAUDE_CODE_SESSION_ID` changes on `/clear`, so a CLI record also holds the `claude` process ID and start time. See [Rejoin after /clear](PROTOCOL.md#rejoin-after-clear).

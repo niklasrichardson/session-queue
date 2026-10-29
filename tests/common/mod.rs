@@ -47,7 +47,13 @@ impl Env {
     /// default overdue limits, and fixed local time and rules settings, so
     /// the output does not depend on the build's `.cargo/config.toml`.
     pub fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(CQ);
+        self.cmd_for(Path::new(CQ), args)
+    }
+
+    /// Another program with the same environment as `cmd`, for a fake
+    /// parent process that runs `cq` itself.
+    pub fn cmd_for(&self, program: &Path, args: &[&str]) -> Command {
+        let mut c = Command::new(program);
         c.args(args)
             .env("CQ_ROOT", self.root())
             .env("CQ_TZ", "Europe/London")
