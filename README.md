@@ -2,12 +2,12 @@
 
 ![rust](https://img.shields.io/badge/rust-stable-orange)
 ![licence](https://img.shields.io/badge/licence-MIT-blue)
-![platform](https://img.shields.io/badge/platform-Windows%2011-lightgrey)
+![platform](https://img.shields.io/badge/platform-Windows%2011%20%7C%20macOS%20(partial)-lightgrey)
 ![works with](https://img.shields.io/badge/works%20with-Claude%20Code%20%7C%20Codex-green)
 
 `cq` lets AI coding sessions on one computer hand work to each other and wake each other, with nobody typing. Each message is one JSON file in a shared folder, the queue root, and a small watcher process per session wakes its session when a message arrives. A hand-off between sessions usually needs a person to pass it on; with `cq`, hand-offs continue when nobody is at the keyboard. It is for people who run several coding sessions on one project, for example a lead and two workers.
 
-**Status:** tested on Windows 11 only. macOS compiles but has not run on a Mac ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Linux has not been built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)). The cq-top Sessions screen is not yet tested on macOS ([#17](https://github.com/niklasrichardson/session-queue/issues/17)). See [Platform status](docs/OVERVIEW.md#platform-status).
+**Status:** tested live on Windows 11. macOS is partly tested: the build, most automated tests and inbox mode in one Claude Code session passed on a Mac, the dispatcher tests fail intermittently, and Codex and live hand-offs between sessions are not checked there ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Linux has not been built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)). The cq-top Sessions screen is not yet tested on macOS ([#17](https://github.com/niklasrichardson/session-queue/issues/17)). See [Platform status](docs/OVERVIEW.md#platform-status).
 
 ## How it works
 
@@ -54,7 +54,7 @@ Either agent can send a task to the other. The receiving agent's own watcher wak
 
 ## Getting started
 
-You need stable Rust, Windows (macOS builds, but is untested) and an agent that can run shell commands. The full steps are in [Setup](docs/SETUP.md).
+You need stable Rust, Windows, or macOS (partly tested) and an agent that can run shell commands. The full steps are in [Setup](docs/SETUP.md).
 
 ### 1. Install
 

@@ -30,7 +30,7 @@ The person you work for may have Claude Code sessions running `cq watch` from th
 
 ## Code
 
-- Platform-specific code lives in `src/platform.rs` (stopping an old watcher, the non-blocking stdin check) and `src/root.rs` (the default queue root). Windows is tested live. macOS compiles but has not run on a Mac. Linux has not been built.
+- Platform-specific code lives in `src/platform.rs` (stopping an old watcher, the non-blocking stdin check) and `src/root.rs` (the default queue root). Windows is tested live. macOS is partly tested ([#1](https://github.com/niklasrichardson/session-queue/issues/1)): most tests pass there, `tests/dispatch.rs` fails intermittently, and only inbox mode in one session was checked live. Linux has not been built.
 - Keep exit codes stable. Sessions act on them (for example, `claim` exit 1 means "already handled"). A new failure needs a code from the table in `docs/COMMANDS.md`, never exit 1 for a general error.
 - Keep the `CQ-NEW` event line format stable. Sessions parse it.
 - Add or update tests for every behaviour change.
