@@ -4,9 +4,11 @@ Blocks to paste into an agent's instruction file, such as `AGENTS.md` or `CLAUDE
 
 These rules say how to handle a message. How a session gets woken depends on the agent:
 
-- Claude Code: add the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md) as well, and follow [Setup](SETUP.md).
+- Claude Code: add the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md) as well, and follow [Claude Code setup](CLAUDE-CODE.md).
 - Codex: follow [Codex setup](CODEX.md).
-- Other agents: see [Other agents](SETUP.md#other-agents).
+- Other agents: see [Other agents](OTHER-AGENTS.md).
+
+The steps that are the same for every agent are in [Setup](SETUP.md).
 
 For a longer rules file that a session can re-read (the file that `CQ_RULES` names), adapt [`SESSION-RULES.example.md`](SESSION-RULES.example.md).
 

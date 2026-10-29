@@ -1,18 +1,27 @@
 # Setting up cq
 
-How to install `cq`, configure it and upgrade it. Back to the [README](../README.md).
+How to install `cq`, connect an agent, configure it and upgrade it. Back to the [README](../README.md).
 
-`cq` supports two agents: Claude Code and Codex. The install steps below are for Claude Code. A Codex chat needs only steps 1 and 3, then [Codex setup](CODEX.md). [Configuration](#configuration) applies to every agent. For any other agent, see [Other agents](#other-agents).
+Set up `cq` in three parts, in this order:
+
+1. [Install](#install), on this page. The same for every agent.
+2. [Connect each session](#connect-each-session), on your agent's page: its rules file, approvals, watcher and recovery.
+3. [Send a test message](#send-a-test-message), on this page. The same for every agent.
+
+| Agent | Page | Tested |
+| --- | --- | --- |
+| Claude Code | [Claude Code setup](CLAUDE-CODE.md) | Live on Windows 11: in the Claude desktop app's Code tab, and one Claude Code CLI session (live test L3) |
+| Codex | [Codex setup](CODEX.md) | Live, in the Codex Desktop app on Windows 11 |
+| Any other agent, or a script | [Other agents](OTHER-AGENTS.md) | Not tested |
 
 ## Requirements
 
-- One of the two supported agents:
-  - **Claude Code.** Tested in the Claude desktop app's Code tab. A session receives queue events in its own Claude Code inbox ([inbox mode](PROTOCOL.md#inbox-mode)). A session with no inbox uses the Monitor tool instead ([Monitor mode](PROTOCOL.md#monitor-mode-fallback)).
-  - **Codex.** The Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Tested on Windows only. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
 - Stable Rust (built and tested with 1.98.1).
-- Windows 10 or 11, or macOS. For Claude Code on Windows, install Git for Windows, because Claude Code runs Bash commands in Git Bash. Codex on Windows ran its commands in PowerShell in the tested setup.
-
-macOS support is new. The code builds for macOS, but it has not yet been tested on a Mac. Please open an issue if something does not work.
+- Windows 10 or 11, or macOS. macOS support is new. The code builds for macOS, but it has not yet been tested on a Mac. Please open an issue if something does not work.
+- An agent that can run shell commands. What each agent needs:
+  - **Claude Code:** on Windows, Git for Windows, because Claude Code runs Bash commands in Git Bash. See [Claude Code setup](CLAUDE-CODE.md#wake-a-session-with-cq-watch---to-inbox).
+  - **Codex:** the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex on Windows ran its commands in PowerShell in the tested setup. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
+  - **Other agents:** see [Other agents](OTHER-AGENTS.md).
 
 ## Install
 
@@ -24,11 +33,13 @@ macOS support is new. The code builds for macOS, but it has not yet been tested 
 
    This puts `cq` (`cq.exe` on Windows) in `~/.cargo/bin`, which the Rust installer adds to your `PATH`. If you prefer `cargo build --release`, add `target/release` to your `PATH` instead.
 
-2. Restart the Claude app, because sessions read `PATH` only when they start.
+2. Make sure the agent can find `cq`. An agent reads `PATH` only when it starts.
 
-   Expected result: `cq --version` works in a new session's Bash tool.
-
-   **Codex:** the tested Codex setup did not rely on `PATH`. It called `cq` by its full path, for example `C:/full/path/to/cq.exe`, as in [Codex setup](CODEX.md#give-the-chat-its-rules). If you use the bare name, check that `cq --version` works in a new Codex chat. `cq watch --to-codex` runs `codex` from `PATH` unless you pass `--codex-bin PATH`.
+   | Agent | What to do |
+   | --- | --- |
+   | Claude Code | Restart the Claude app. Expected result: `cq --version` works in a new session's Bash tool. |
+   | Codex | The tested setup did not rely on `PATH`. It called `cq` by its full path, for example `C:/full/path/to/cq.exe`. If you use the bare name, check that `cq --version` works in a new Codex chat. `cq watch --to-codex` runs `codex` from `PATH` unless you pass `--codex-bin PATH`. |
+   | Other agents | Restart the agent, and check that `cq --version` works in its shell. |
 
 3. Create the queue layout. Safe to run more than once:
 
@@ -36,31 +47,57 @@ macOS support is new. The code builds for macOS, but it has not yet been tested 
    cq init
    ```
 
-   The queue lives in a per-user folder by default (see [Configuration](#configuration)). Every session must use the same queue root.
+   The queue lives in a per-user folder by default (see [Configuration](#configuration)). Every session must use the same absolute queue root. If you set `CQ_ROOT`, use the same value for every `cq` command: in each session, for each watcher and for each sender.
 
-4. Allow `cq` without permission prompts, so unattended sessions never stop to ask. Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json`. Call `cq` by its bare name everywhere so the rule matches.
+## Connect each session
 
-5. If your sessions run sandboxed, add the queue root to the sandbox's writable paths.
+These facts are the same for every agent:
 
-6. Add the rules to `~/.claude/CLAUDE.md`: the [queue rules block](QUEUE-RULES.md#1-queue-rules-block), which is the same for every agent, and the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md#1-user-level-block). Add a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block) to each repo that takes queue work.
+- Each session gets its own queue name, such as `lead` or `worker-a`. Never put a fixed name in a shared instruction file: several sessions can share one folder.
+- The [queue rules block](QUEUE-RULES.md#1-queue-rules-block) is the same for every agent. Each repo that takes queue work also gets a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block).
+- `cq claim`, `cq done` and `cq send` write files in the queue root, so an unattended session must be able to run them without an approval prompt.
+- Each agent page also says how to recover after `/clear`, a new chat or a restart.
 
-7. Optional: add deny rules for actions that must never happen unattended, such as force-push or deleting outside the repo.
+The rest differs per agent. Follow the page for your agent, then come back to [Send a test message](#send-a-test-message):
 
-8. Add the SessionStart hook to `~/.claude/settings.json`, so a session that joined the queue rejoins after `/clear`, a compaction or a resume. Merge it into any existing `hooks` object:
+| Agent | Rules file | No prompts | Wake route | Page |
+| --- | --- | --- | --- | --- |
+| Claude Code | `~/.claude/CLAUDE.md`, with the Claude Code block. The queue name goes in the start prompt. | `Bash(cq *)` in `permissions.allow` | `cq watch --to-inbox`, in the session | [Claude Code setup](CLAUDE-CODE.md) |
+| Codex | `~/.codex/AGENTS.md` or the repo's `AGENTS.md`, with one section per queue name | The queue root writable from the chat's sandbox. A setup where Codex never asks for approval is not tested yet. | `cq watch --to-codex`, outside the chat | [Codex setup](CODEX.md) |
+| Other agents | The agent's own instruction file | Depends on the agent | A wake feature, a fresh run per task, or polling | [Other agents](OTHER-AGENTS.md) |
 
-   ```json
-   "hooks": {
-     "SessionStart": [{"matcher": "clear|compact|resume", "hooks": [{"type": "command", "command": "cq session-start", "timeout": 10}]}]
-   }
-   ```
+## Send a test message
 
-   Expected result: after `/clear` in a session whose watcher ran, the new context starts with "You are in the cq session queue as NAME".
+Do this after your agent's page. From another session:
 
-9. Start each session with the [start prompt](../CLAUDE-snippets.md#3-session-start-prompt), giving each one its own queue name.
+```bash
+cq send --from lead --to worker-a --type task <<'EOF'
+{"subject": "Run the tests", "body": "Run cargo test and report failures."}
+EOF
+```
+
+Expected result: the receiving session starts a turn within seconds, claims the task and replies. A Claude Code session gets a message from `cq` with a `CQ-NEW` line. A Codex watcher prints one `queued a check` line, and the chat starts a turn. An agent that polls handles the task at its next run.
+
+## Sleep and wake
+
+A name that will be idle for a long time can sleep. `cq sleep --as A B` writes a sleep record for `B`, and `cq wake --as A B` removes it. Messages to a sleeping name still arrive, and `cq send` warns the sender. See [Sleep and wake](PROTOCOL.md#sleep-and-wake) and [Commands](COMMANDS.md#sleep-and-wake).
+
+What sleep stops depends on the wake route:
+
+- **A watcher** (`--to-inbox`, `--to-codex`, Monitor mode) sees the record, prints `CQ-SLEEP by=... reason="..."` and exits 7. After that, no watcher wakes the session until someone runs `cq wake` and starts its watcher again.
+- **Polling** is not stopped by `cq sleep`. A scheduled run still starts and still costs a model turn. `cq list` still lists the `UNCLAIMED` messages, after a first line `ASLEEP by=... reason="..."`. So pause the agent's own scheduler as well, and resume it after `cq wake`. The polling rules must end the run with no other work when `cq list` prints an `ASLEEP` line.
+
+To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.
+
+| Agent | How to sleep and wake |
+| --- | --- |
+| Claude Code | The `/cq-stop` and `/cq-start` skills. See [Sleep and wake](CLAUDE-CODE.md#sleep-and-wake). |
+| Codex | No skills. Outside the chat, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. With the scheduled automation fallback, also pause the automation. See [Sleep and wake](CODEX.md#sleep-and-wake). |
+| Other agents | No skills. Run `cq sleep` and `cq wake` as for Codex, and pause a polling scheduler yourself. See [Sleep and wake](OTHER-AGENTS.md#sleep-and-wake). |
 
 ## Configuration
 
-All settings are environment variables. Set queue-wide values before you start the Claude app (on Windows: Settings > System > About > Advanced system settings > Environment Variables > User variables).
+All settings are environment variables. Set queue-wide values before you start the agent app, such as the Claude app or the Codex app (on Windows: Settings > System > About > Advanced system settings > Environment Variables > User variables).
 
 | Variable | What it sets | Default |
 | --- | --- | --- |
@@ -71,6 +108,8 @@ All settings are environment variables. Set queue-wide values before you start t
 | `CQ_TZ_LABEL` | The label after that time, such as `UK`. | The zone's abbreviation, such as `GMT` or `CET`. |
 | `CQ_OVERDUE_UNCLAIMED_MINUTES` | Minutes before an unclaimed task counts as overdue (see [Overdue tasks](COMMANDS.md#overdue-tasks)). Whole number, 1 or more. | 30 |
 | `CQ_OVERDUE_CLAIMED_MINUTES` | Minutes before a claimed task with no `cq done` counts as overdue. Whole number, 1 or more. | 120 |
+
+How each agent's session key is chosen is in [Claude Code setup](CLAUDE-CODE.md#session-identity) and [Codex setup](CODEX.md#session-identity).
 
 The macOS default path contains a space, so quote it in shell commands: `ls "$HOME/Library/Application Support/cq"`.
 
@@ -84,31 +123,6 @@ CQ_DEFAULT_TZ = 'Europe/London'
 CQ_DEFAULT_TZ_LABEL = 'UK'
 ```
 
-## Skills
-
-Two Claude Code skills put a session to sleep and wake it (see [Sleep and wake](PROTOCOL.md#sleep-and-wake)). Copy `skills/cq-start` and `skills/cq-stop` to `~/.claude/skills/`:
-
-```bash
-cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
-```
-
-To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.
-
-cq does not ship Codex versions of its Claude Code `/cq-start` and `/cq-stop` skills. Outside the Codex chat, `cq sleep --as NAME NAME` stops its watcher, and `cq wake --as NAME NAME` must run before you start the watcher again. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
-
-## Other agents
-
-`cq` has been tested with Claude Code and Codex only. Another agent can use the queue if it has:
-
-1. **Shell access.** It runs `cq send`, `cq claim`, `cq done` and `cq list`. Each command needs the same absolute `CQ_ROOT` and write access to the queue root, without an approval prompt.
-2. **Its rules.** Put the [queue rules](QUEUE-RULES.md) in the agent's instruction file.
-3. **A wake route.** Something must start a turn when a message arrives. One of:
-   - **A wake feature:** a command or socket that starts a turn in an idle chat, as `codex queue` and the Claude Code inbox do. `cq watch` supports only these two today, so a new agent needs a new watcher mode.
-   - **A non-interactive mode:** a fresh agent run per task. `cq dispatch` runs only Codex today.
-   - **Polling:** a scheduled task in the agent that runs `cq list --as NAME` and handles new messages. With Codex, each run cost a model turn, even when the inbox was empty ([Codex setup](CODEX.md#same-chat-scheduled-automation-fallback)).
-
-If you use `cq` with another agent, please describe your setup in a comment on [issue #11](https://github.com/niklasrichardson/session-queue/issues/11).
-
 ## Upgrading while watchers run
 
 On Windows, a running `cq.exe` is locked, but it can be renamed. To upgrade without stopping the sessions:
@@ -116,19 +130,15 @@ On Windows, a running `cq.exe` is locked, but it can be renamed. To upgrade with
 1. Build into a separate target folder, so the build does not touch the running binary: `CARGO_TARGET_DIR=../cq-build cargo build --release`.
 2. Rename the live binary, for example `cq.exe` to `cq.old.exe` or `cq.exe.old-0156`. Running watchers keep using the old file. Name it `cq.exe.old-*` or `cq.old-*` (`cq.old.exe` also works): `--takeover` stops an old watcher only when its file is `cq.exe` or has one of these names.
 3. Copy the new binary into its place.
-4. Inbox-mode watchers never re-arm, so they keep running the old binary. Ask each inbox-mode session to restart its watcher: stop the background watcher command with TaskStop if it is still listed, then start `cq watch --as NAME --to-inbox --takeover 2>&1` as a background Bash command. Each Monitor-mode watcher picks up the new binary at its next re-arm (within 30 minutes).
+4. Restart each watcher that keeps running the old binary:
+
+   | Agent | What to restart |
+   | --- | --- |
+   | Claude Code | Each inbox-mode watcher, from its own session. A Monitor-mode watcher picks up the new binary at its next re-arm (within 30 minutes). See [After a cq upgrade](CLAUDE-CODE.md#after-a-cq-upgrade). |
+   | Codex | Each `--to-codex` watcher, outside the chat, with `--takeover`. A `cq dispatch` worker also runs the old binary until you restart it. See [After a new chat or a restart](CODEX.md#after-a-new-chat-or-a-restart). |
+
 5. Delete the old file once no process uses it.
 
-On macOS, `cargo install --path .` replaces the binary while watchers run. Inbox-mode watchers need step 4. Each Monitor-mode watcher picks up the new binary at its next re-arm.
-
-### Switch a session from Monitor mode to inbox mode
-
-Inbox mode is the default. A session that you started with an older start prompt runs in Monitor mode. To move it to inbox mode, use a `cq` build that has `--to-inbox`, and install the updated `/cq-start` and `/cq-stop` skills first (see [Skills](#skills)). Then tell the session, in its own conversation:
-
-1. Stop your watcher Monitor with TaskStop. Do not re-arm it.
-2. Start `cq watch --as NAME --to-inbox --takeover 2>&1` as a background Bash command. `--takeover` ends the old watcher process, which TaskStop often leaves running.
-3. From now on, queue events arrive as a message from `cq`. Handle the lines as before. Do not re-arm on a timer, and never start a watcher Monitor as well.
-
-To go back to Monitor mode, stop the background command with TaskStop and arm the Monitor with `--takeover`.
+On macOS, `cargo install --path .` replaces the binary while watchers run. Step 4 still applies.
 
 Never run `cargo clean` on the folder your sessions run `cq` from: it deletes the live binary.

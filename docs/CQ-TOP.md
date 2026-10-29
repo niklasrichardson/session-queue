@@ -62,7 +62,7 @@ The state glyphs are `◌` queued, `◐` claimed, `●` done, `✕` rejected and
 
 ## Sessions screen
 
-One row per Claude Code session on this computer, with what it costs today and whether it is working.
+One row per Claude Code session on this computer, with what it costs today and whether it is working. Codex chats get no row here, because the screen reads Claude Code transcripts only. A Codex chat's watcher shows on the Overview screen with the mode `codex`, and Codex's processes count in the CPU and Memory boxes.
 
 - **CPU and Memory.** Two boxes at the top. Each has figures on the left and a graph on the right. The graph shows the whole computer, Claude's share of it and Codex's share of it, each in its own theme colour, all 0 to 100 %. Claude's share is drawn from the bottom and Codex's share on top of it. A `■` beside a figure shows its colour.
   - CPU figures: **Total** (0 to 100 % across all cores), **Claude** and **Codex** (all their processes together, as a share of the whole computer, so they fit the same graph), **Busy cores** (cores at 50 % or more of that core) and **Cores**. The table's cpu% column stays in % of one core.

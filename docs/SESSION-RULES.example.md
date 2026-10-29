@@ -1,6 +1,6 @@
 # Example session rules
 
-Copy and adapt this file for your own queue. Keep private scope rules in your own file, such as docs/SESSION-RULES.md, and point CQ_RULES at that file. Do not publish private rules. A shorter block for an instruction file is in [Queue rules for any agent](QUEUE-RULES.md). Agent-specific setup is in [Setup](SETUP.md) (Claude Code), [Codex setup](CODEX.md) and [Other agents](SETUP.md#other-agents).
+Copy and adapt this file for your own queue. Keep private scope rules in your own file, such as docs/SESSION-RULES.md, and point CQ_RULES at that file. Do not publish private rules. A shorter block for an instruction file is in [Queue rules for any agent](https://github.com/niklasrichardson/session-queue/blob/main/docs/QUEUE-RULES.md). The shared setup is in [Setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/SETUP.md). Agent-specific setup is in [Claude Code setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/CLAUDE-CODE.md), [Codex setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md) and [Other agents](https://github.com/niklasrichardson/session-queue/blob/main/docs/OTHER-AGENTS.md).
 
 ## Name and scope
 
@@ -14,33 +14,37 @@ How a session is woken depends on its agent. Keep the part for your agent and de
 
 ### Claude Code
 
-Use inbox mode. Start `cq watch --as NAME --to-inbox 2>&1` once, as a background Bash command, not with the Monitor tool. Queue events then arrive as a message from `cq`, starting with the line `cq watch (NAME): queue events`. Handle each CQ-NEW, CQ-WAKE and CQ-SLEEP line in it as below. Do not re-arm on a timer, and never run a watcher Monitor as well. If watch exits 5 at start, your previous watcher still holds the name: start it again with --takeover. See [Session protocol](PROTOCOL.md#inbox-mode).
+Use inbox mode. Start `cq watch --as NAME --to-inbox 2>&1` once, as a background Bash command, not with the Monitor tool. Queue events then arrive as a message from `cq`, starting with the line `cq watch (NAME): queue events`. Handle each CQ-NEW, CQ-WAKE and CQ-SLEEP line in it as below. Do not re-arm on a timer, and never run a watcher Monitor as well. If watch exits 5 at start, your previous watcher still holds the name: start it again with --takeover. See [Session protocol](https://github.com/niklasrichardson/session-queue/blob/main/docs/PROTOCOL.md#inbox-mode).
 
 When a message from `cq` ends with `cq watch (NAME) stopped: ... Run /cq-start to re-arm.`, the watcher has ended: run /cq-start.
 
-The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: follow the SessionStart reminder, which says whether your watcher still runs. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](SETUP.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
+The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: follow the SessionStart reminder, which says whether your watcher still runs. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](https://github.com/niklasrichardson/session-queue/blob/main/docs/CLAUDE-CODE.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
 
 Exception: if a message from `cq` says NAME is asleep, or watch prints CQ-SLEEP and exits 7, your name is asleep. Do not re-arm. Run /cq-stop: it saves a handoff to ~/.claude/cq-handoff/NAME.md and clears the conversation (on Remote Control, it asks the user to type /clear). Run /cq-start when the user or a wake message asks you to rejoin.
 
 ### Fallback: Monitor mode
 
-Use this only when `cq watch --to-inbox` exits 64, because the session has no inbox. Start the Monitor with timeout_ms 1800000 on cq watch --as NAME 2>&1. Re-arm whenever the Monitor expires or watch exits. If watch exits 5 and none of your own watcher Monitors runs, re-arm with --takeover. If re-arming was the only work in a turn, end with the single word Watching. The CQ-SLEEP exception above applies here too. See [Session protocol](PROTOCOL.md#monitor-mode-fallback).
+Use this only when `cq watch --to-inbox` exits 64, because the session has no inbox. Start the Monitor with timeout_ms 1800000 on cq watch --as NAME 2>&1. Re-arm whenever the Monitor expires or watch exits. If watch exits 5 and none of your own watcher Monitors runs, re-arm with --takeover. If re-arming was the only work in a turn, end with the single word Watching. The CQ-SLEEP exception above applies here too. See [Session protocol](https://github.com/niklasrichardson/session-queue/blob/main/docs/PROTOCOL.md#monitor-mode-fallback).
 
 ### Codex chat
 
-A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a fixed prompt that names NAME. On that prompt, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If there are none, end the turn with no other work and no update. Do not start, stop or take over a watcher from the chat. See [Codex setup](CODEX.md#set-up-a-codex-chat).
+A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a fixed prompt that names NAME. On that prompt, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If there are none, end the turn with no other work and no update. Do not start, stop or take over a watcher from the chat. See [Codex setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md#set-up-a-codex-chat).
 
 The Claude Code parts do not apply to a Codex chat: skip Monitor mode, the `Watching` turn ending, the SessionStart reminder, and /cq-start and /cq-stop.
 
+### Other agents
+
+Use the wake route your setup provides, such as polling. On each wake or poll, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If the first line starts with `ASLEEP`, the name is asleep: end the turn with no other work, even if messages are listed. If there are none, end the turn with no other work and no update. See [Other agents](https://github.com/niklasrichardson/session-queue/blob/main/docs/OTHER-AGENTS.md#wake-the-agent).
+
 ### Codex dispatch worker
 
-`cq dispatch` claims, replies and finishes for its Codex child. Give it its own queue name, trusted scope instructions and allowed senders. The child must not run `cq claim` or `cq done` itself. See [Codex setup](CODEX.md#dispatch-worker-prerequisites).
+`cq dispatch` claims, replies and finishes for its Codex child. Give it its own queue name, trusted scope instructions and allowed senders. The child must not run `cq claim` or `cq done` itself. See [Codex setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md#dispatch-worker-prerequisites).
 
 ## Sleep and wake
 
 - Messages to a sleeping name are delivered. cq send then warns "NAME is asleep; wake it with /cq-start NAME". In Claude Code, run /cq-start NAME. In another agent, tell the user which name needs waking.
 - If the wake cannot be delivered, tell the user which session needs waking, and send a push notification if that tool exists. Do not retry in a loop.
-- A coordinator (a name in CQ_ROOT/coordinators) may get CQ-WAKE lines: a message has waited 2 minutes for a sleeping name. Do the same as a sender: run /cq-start NAME. Do not claim the message.
+- A coordinator (a name in CQ_ROOT/coordinators) may get CQ-WAKE lines: a message has waited 2 minutes for a sleeping name. Do the same as a sender: in Claude Code, run /cq-start NAME; in another agent, tell the user which name needs waking. Do not claim the message.
 - Only a coordinator may sleep another name. Any name may wake any name.
 
 ## Claim, decide and finish

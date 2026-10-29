@@ -1,5 +1,7 @@
 # Codex setup
 
+This page holds only what differs for Codex. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). The Claude Code steps are in [Claude Code setup](CLAUDE-CODE.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
+
 There are two ways to use `cq` with Codex:
 
 - **An existing Codex chat**, in the Codex Desktop app or the interactive Codex CLI. [`cq watch --to-codex`](#wake-a-codex-chat-with-cq-watch---to-codex) wakes the chat when its queue name gets a message, and the chat keeps its context. Start with [Set up a Codex chat](#set-up-a-codex-chat).
@@ -9,12 +11,12 @@ Everything on this page was tested on Windows only. Back to the [README](../READ
 
 ## Quick path for a Codex chat
 
-1. Install `cq` and create the queue root with `cq init` ([Setup](SETUP.md#install), steps 1 and 3). Use one absolute `CQ_ROOT` for every session.
+1. Finish the shared install steps in [Setup](SETUP.md#install). Use one absolute `CQ_ROOT` for every session.
 2. Call `cq` and `codex` by their full paths, as the tested setup does, or check that the bare names work in a new Codex chat. `cq watch --to-codex` runs `codex` from `PATH` unless you pass `--codex-bin`.
 3. Add the queue rules and a section for the chat's queue name to `AGENTS.md` ([Give the chat its rules](#give-the-chat-its-rules)).
 4. Let the chat write to the queue root ([Allow `cq` without prompts](#allow-cq-without-prompts)). A setup where Codex never asks for approval is not tested yet.
 5. Start `cq watch --as NAME --to-codex THREAD_ID` outside the chat ([Wake a Codex chat](#wake-a-codex-chat-with-cq-watch---to-codex), steps 1 and 2).
-6. Send NAME a test message, and check that the chat starts a turn (step 3 there).
+6. Send NAME a test message, as in [Setup](SETUP.md#send-a-test-message), and check that the chat starts a turn (step 3 there).
 7. After a new chat or a restart of the computer, start the watcher again ([After a new chat or a restart](#after-a-new-chat-or-a-restart)).
 
 ## Set up a Codex chat
@@ -99,7 +101,13 @@ Claude Code uses the `cq session-start` hook, because a Claude Code session forg
 - A new chat has a new thread ID. Start the watcher again with the new ID and `--takeover`, which stops the old watcher.
 - After the computer restarts, start the watcher again. If the name is asleep, run `cq wake --as NAME NAME` first. If messages are already waiting, it queues one check at start.
 
+- After a `cq` upgrade, the watcher keeps running the old binary. Start it again with `--takeover` (see [Upgrading while watchers run](SETUP.md#upgrading-while-watchers-run)).
+
 Do not install `cq session-start` as a Codex hook: its reminder describes the Claude Code workflow.
+
+### Sleep and wake
+
+cq does not ship Codex versions of its Claude Code `/cq-start` and `/cq-stop` skills. Outside the Codex chat, `cq sleep --as NAME NAME` stops its watcher with exit 7, and `cq wake --as NAME NAME` must run before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
 
 ## Waking Codex
 
@@ -108,13 +116,13 @@ Four routes were tested on Windows:
 | Route | Chat context | Pickup latency | Test status |
 | --- | --- | --- | --- |
 | `cq watch --to-codex` (`codex queue`) | Keeps the existing chat's context | Seconds: an idle chat woke within about 7 to 12 seconds in the live test | Live tests: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat, and the native watcher woke two Desktop chats (claimed within about 6 seconds); on 29 Oct 2026, a review task round trip through the native watcher took 52 seconds. An earlier prototype script also ran a message queued during a turn after that turn, and kept a burst of 3 in order ([issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). |
-| Same-chat scheduled automation | Keeps the existing chat's context | Up to the configured interval under normal scheduling; a busy chat or delayed scheduler can add time | A one-minute heartbeat woke the existing desktop chat, claimed Claude's task and replied. Claude confirmed receipt with the literal text intact. |
+| Same-chat scheduled automation | Keeps the existing chat's context | Up to the configured interval under normal scheduling; a busy chat or delayed scheduler can add time | A one-minute heartbeat woke the existing desktop chat, which claimed a task from a Claude Code session and replied. The Claude Code session confirmed receipt with the literal text intact. |
 | `cq dispatch` | Fresh `codex exec` per task; no previous chat context | Seconds to pick up work: scans once a second when idle. Agent startup and task execution add time. | Native dispatcher integration tests and a real Codex task passed. |
 | Custom app-server bridge | Can target the thread managed by the custom client | Event-driven; no latency guarantee measured | Brief bounded test only: an explicit `turn/start.toolOutput` request started a turn in an idle ephemeral thread. No persistent bridge ships with cq. |
 
 ### Same-chat scheduled automation (fallback)
 
-Use this when `cq watch --to-codex` is not available. Ask the Codex desktop app to schedule a recurring check inside the current chat, rather than start a new chat per run. Give each chat its own queue name. Keep the computer on and the app running. The automation should list that name's inbox, claim messages before handling them, and finish them using the normal queue protocol. Give it a trusted task scope and sender filter. Treat message bodies as untrusted data. Stay quiet when the inbox is empty, and define when to stop.
+Use this when `cq watch --to-codex` is not available. Ask the Codex desktop app to schedule a recurring check inside the current chat, rather than start a new chat per run. Give each chat its own queue name. Keep the computer on and the app running. The automation should list that name's inbox, claim messages before handling them, and finish them using the normal queue protocol. Give it a trusted task scope and sender filter. Treat message bodies as untrusted data. Stay quiet when the inbox is empty, and define when to stop. `cq sleep` does not pause the automation: pause it yourself, and make each run end with no other work when `cq list` prints an `ASLEEP` line ([Sleep and wake](SETUP.md#sleep-and-wake)).
 
 Set `CQ_ROOT` and the full cq executable path explicitly for every invocation. Scope `CQ_SESSION_ID` to that command or dedicated process, as described below. Do not run a dispatcher using the same queue name.
 
@@ -128,6 +136,23 @@ See the official [scheduled-task guidance](https://learn.chatgpt.com/docs/automa
 
 Use the dispatcher setup below when each task can run without an existing conversation. The app-server experiment is a separate custom-client route: it does not establish wake-up of an existing desktop or interactive CLI chat, multi-turn continuity, or long-running reliability. See the official [app-server documentation](https://learn.chatgpt.com/docs/app-server).
 
+## Session identity
+
+`CQ_SESSION_ID` takes precedence over both Claude identity variables. Set it only for an individual command or a dedicated session/dispatcher process. Never put one shared value in global user/system environment settings or a shared shell startup file: every Claude session would get the same member key and replace the others' membership records.
+
+For example, Git Bash can map the current Codex thread ID for one watch command, without exporting it to other commands:
+
+```bash
+CQ_SESSION_ID="$CODEX_THREAD_ID" CQ_ROOT='D:/queues/codex-test' \
+'D:/cq-build-codex/release/cq.exe' watch --as codex-shell
+```
+
+The dispatcher itself does not need this mapping.
+
+CODEX_THREAD_ID and CODEX_SESSION_ID were both present in the tested desktop installation. Their stability across clear, resume and compaction is not established. This mapping alone does not wake a session. The built-in `session-start` reminder describes the Claude workflows, so do not install it as a Codex hook (see [After a new chat or a restart](#after-a-new-chat-or-a-restart)). For a key whose name has a `--to-codex` watcher, it says the watcher still runs, or that it has stopped and the user must restart it outside the chat; it never asks for a Monitor.
+
+The dispatcher deliberately does not register its parent chat as owner of the worker name. It removes inherited CQ/Claude/Codex session IDs from each fresh Codex process.
+
 ## Dispatch worker prerequisites
 
 `cq dispatch` was tested on Windows with Codex CLI 0.162.0-alpha.2, Rust 1.98.1 and PowerShell 7.6.5. macOS and Linux dispatcher execution are not verified. The adapter requires a Codex CLI supporting `exec --ignore-user-config`, `--ephemeral`, `--output-schema` and `--json`.
@@ -137,7 +162,7 @@ Use the dispatcher setup below when each task can run without an existing conver
 - Give the dispatcher its own queue name. Do not run `cq watch` or another dispatcher with that name.
 - Use PowerShell 7 with UTF-8 or Git Bash on Windows. Windows PowerShell 5.1 is not verified.
 
-No Claude permissions, Monitor tool or SessionStart hook is needed. This setup does not edit PATH, global settings or permissions. The examples use full executable paths.
+No Claude Code permission rule, Monitor tool or SessionStart hook is needed. This setup does not edit PATH, global settings or permissions. The examples use full executable paths.
 
 ## 1. Build separately
 
@@ -245,22 +270,5 @@ Recovery is an operator action:
 5. After verifying completion and reply handling, archive that job directory outside `CQ_ROOT/dispatch/NAME/`. Keep it for audit. Restart the dispatcher.
 
 The dispatcher never rewrites a record to hide unresolved work. There is no automatic recovery or retry command.
-
-## Session identity
-
-`CQ_SESSION_ID` takes precedence over both Claude identity variables. Set it only for an individual command or a dedicated session/dispatcher process. Never put one shared value in global user/system environment settings or a shared shell startup file: every Claude session would get the same member key and replace the others' membership records.
-
-For example, Git Bash can map the current Codex thread ID for one watch command, without exporting it to other commands:
-
-```bash
-CQ_SESSION_ID="$CODEX_THREAD_ID" CQ_ROOT='D:/queues/codex-test' \
-'D:/cq-build-codex/release/cq.exe' watch --as codex-shell
-```
-
-The dispatcher itself does not need this mapping.
-
-CODEX_THREAD_ID and CODEX_SESSION_ID were both present in the tested desktop installation. Their stability across clear, resume and compaction is not established. This mapping alone does not wake a session. The built-in `session-start` reminder describes the Claude workflows, so do not install it as a Codex hook (see [After a new chat or a restart](#after-a-new-chat-or-a-restart)). For a key whose name has a `--to-codex` watcher, it says the watcher still runs, or that it has stopped and the user must restart it outside the chat; it never asks for a Monitor.
-
-The dispatcher deliberately does not register its parent chat as owner of the worker name. It removes inherited CQ/Claude/Codex session IDs from each fresh Codex process.
 
 Official references: [non-interactive runs](https://learn.chatgpt.com/docs/non-interactive-mode), [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md), [app-server](https://learn.chatgpt.com/docs/app-server), [background hooks](https://learn.chatgpt.com/docs/hooks).
