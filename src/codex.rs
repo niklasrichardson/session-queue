@@ -165,31 +165,35 @@ fn home_dir() -> Option<PathBuf> {
 
 /// Codex's queue database, found as Codex finds it: `CODEX_HOME` (default
 /// `~/.codex`) is the Codex home, and `sqlite_home_in` finds the SQLite home
-/// in it.
-pub fn queue_db() -> std::result::Result<PathBuf, String> {
+/// in it. Also returns why `sqlite_home` in `config.toml` was ignored.
+pub fn queue_db() -> std::result::Result<(PathBuf, Option<String>), String> {
     let codex_home = env_path("CODEX_HOME")
         .or_else(|| home_dir().map(|h| h.join(".codex")))
         .ok_or("no CODEX_HOME and no home directory")?;
     let sqlite_env = std::env::var_os("CODEX_SQLITE_HOME");
-    Ok(sqlite_home_in(&codex_home, sqlite_env.as_deref())?.join(QUEUE_DB))
+    let (dir, ignored) = sqlite_home_in(&codex_home, sqlite_env.as_deref())?;
+    Ok((dir.join(QUEUE_DB), ignored))
 }
 
 /// Codex's SQLite home, in Codex's order (`codex-rs/core/src/config`):
 /// `sqlite_home` in `config.toml` in the Codex home, then
-/// `CODEX_SQLITE_HOME`, then the Codex home. Only a top-level `sqlite_home`
-/// is read: not one in a profile, a `-c` override or managed settings. A
-/// relative path is taken from the Codex home for the setting, and from the
-/// current folder for the variable.
+/// `CODEX_SQLITE_HOME`, then the Codex home. Only the root `sqlite_home` is
+/// read: not one in a profile, a `-c` override or managed settings. As in
+/// Codex, a relative setting is taken from the Codex home, and a relative
+/// variable from the current folder. A `config.toml` that cannot be read or
+/// parsed is ignored, and the second value says why.
 pub fn sqlite_home_in(
     codex_home: &Path,
     sqlite_env: Option<&OsStr>,
-) -> std::result::Result<PathBuf, String> {
+) -> std::result::Result<(PathBuf, Option<String>), String> {
     let config = codex_home.join("config.toml");
-    let setting = match std::fs::read_to_string(&config) {
-        Ok(text) => sqlite_home_setting(&text)
-            .ok_or_else(|| format!("cannot read sqlite_home in {}", config.display()))?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("{}: {e}", config.display())),
+    let (setting, ignored) = match std::fs::read_to_string(&config) {
+        Ok(text) => match sqlite_home_setting(&text) {
+            Ok(setting) => (setting, None),
+            Err(e) => (None, Some(format!("{}: {e}", config.display()))),
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (None, None),
+        Err(e) => (None, Some(format!("{}: {e}", config.display()))),
     };
     if let Some(dir) = setting {
         let dir = match dir.strip_prefix("~/").or(dir.strip_prefix("~\\")) {
@@ -197,66 +201,28 @@ pub fn sqlite_home_in(
             None if dir == "~" => home_dir().ok_or("no home directory")?,
             None => codex_home.join(dir),
         };
-        return Ok(dir);
+        return Ok((dir, ignored));
     }
-    match sqlite_env.map(|v| v.to_string_lossy()) {
+    let dir = match sqlite_env.map(|v| v.to_string_lossy()) {
         Some(v) if !v.trim().is_empty() => {
-            std::path::absolute(v.trim()).map_err(|e| format!("CODEX_SQLITE_HOME: {e}"))
+            std::path::absolute(v.trim()).map_err(|e| format!("CODEX_SQLITE_HOME: {e}"))?
         }
-        _ => Ok(codex_home.to_owned()),
-    }
-}
-
-/// The top-level `sqlite_home` string in a `config.toml`: `Some(None)` when
-/// it is not set, `None` when its value cannot be read.
-fn sqlite_home_setting(config: &str) -> Option<Option<String>> {
-    for line in config.lines().map(str::trim) {
-        if line.starts_with('[') {
-            break;
-        }
-        let Some(value) = line
-            .strip_prefix("sqlite_home")
-            .and_then(|r| r.trim_start().strip_prefix('='))
-        else {
-            continue;
-        };
-        return toml_string(value.trim()).map(Some);
-    }
-    Some(None)
-}
-
-/// A TOML basic ("...") or literal ('...') string, with an optional comment
-/// after it.
-fn toml_string(value: &str) -> Option<String> {
-    let (text, tail) = if let Some(rest) = value.strip_prefix('\'') {
-        let end = rest.find('\'')?;
-        (rest[..end].to_owned(), &rest[end + 1..])
-    } else {
-        let mut chars = value.strip_prefix('"')?.chars();
-        let mut text = String::new();
-        loop {
-            match chars.next()? {
-                '"' => break,
-                '\\' => match chars.next()? {
-                    '\\' => text.push('\\'),
-                    '"' => text.push('"'),
-                    't' => text.push('\t'),
-                    'n' => text.push('\n'),
-                    'r' => text.push('\r'),
-                    c @ ('u' | 'U') => {
-                        let n = if c == 'u' { 4 } else { 8 };
-                        let hex: String = chars.by_ref().take(n).collect();
-                        text.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
-                    }
-                    _ => return None,
-                },
-                c => text.push(c),
-            }
-        }
-        (text, chars.as_str())
+        _ => codex_home.to_owned(),
     };
-    let tail = tail.trim();
-    (tail.is_empty() || tail.starts_with('#')).then_some(text)
+    Ok((dir, ignored))
+}
+
+/// The root `sqlite_home` string in a `config.toml`. An error for a file
+/// that is not TOML, or a value that is not a string.
+fn sqlite_home_setting(config: &str) -> std::result::Result<Option<String>, String> {
+    let table: toml::Table = config
+        .parse()
+        .map_err(|e: toml::de::Error| e.message().to_owned())?;
+    match table.get("sqlite_home") {
+        None => Ok(None),
+        Some(toml::Value::String(dir)) => Ok(Some(dir.clone())),
+        Some(_) => Err("sqlite_home is not a string".to_owned()),
+    }
 }
 
 /// The item ID in Codex's `Queued message ITEM for thread THREAD.` line.
@@ -269,8 +235,9 @@ fn queued_item(said: &str) -> Option<&str> {
 /// True when item `id` still waits in the `queued_items` table of `db`.
 /// Opens the database read-only: it never creates the database or changes
 /// its contents, but SQLite may create the `-wal` and `-shm` files and
-/// takes shared locks. An error means the look-up could not be done: no
-/// file, no table, another schema, a lock held past `DB_BUSY`.
+/// takes shared locks, so a Codex write can briefly wait for it. An error
+/// means the look-up could not be done: no file, no table, another schema,
+/// a lock held past `DB_BUSY`.
 pub fn still_queued(db: &Path, id: &str) -> std::result::Result<bool, String> {
     use rusqlite::{Connection, OpenFlags, OptionalExtension};
     if !db.is_file() {
@@ -348,8 +315,13 @@ impl CodexQueue<CodexBin, SystemClock> {
             SystemClock,
             Box::new(io::stdout()),
         )
-        .map(|q| match db.map_or_else(queue_db, Ok) {
-            Ok(db) => q.checking(Some(db), check_after, debug),
+        .map(|q| match db.map_or_else(queue_db, |db| Ok((db, None))) {
+            Ok((db, ignored)) => {
+                if let Some(why) = ignored.filter(|_| debug && !check_after.is_zero()) {
+                    eprintln!("cq watch: ignoring sqlite_home in Codex's config ({why})");
+                }
+                q.checking(Some(db), check_after, debug)
+            }
             Err(e) => {
                 let mut q = q.checking(None, check_after, debug);
                 if !check_after.is_zero() {
@@ -888,9 +860,14 @@ mod tests {
         let home = codex.path();
         let env = tempfile::tempdir().unwrap();
         let env_dir = env.path().as_os_str();
-        assert_eq!(sqlite_home_in(home, None).unwrap(), home);
-        assert_eq!(sqlite_home_in(home, Some(OsStr::new(" "))).unwrap(), home);
-        assert_eq!(sqlite_home_in(home, Some(env_dir)).unwrap(), env.path());
+        let dir = |env: Option<&OsStr>| {
+            let (dir, ignored) = sqlite_home_in(home, env).unwrap();
+            assert_eq!(ignored, None);
+            dir
+        };
+        assert_eq!(dir(None), home);
+        assert_eq!(dir(Some(OsStr::new(" "))), home);
+        assert_eq!(dir(Some(env_dir)), env.path());
 
         let set = |text: &str| fs::write(home.join("config.toml"), text).unwrap();
         let other = tempfile::tempdir().unwrap();
@@ -899,39 +876,55 @@ mod tests {
             "model = \"x\"\nsqlite_home = \"{other_toml}\" # here\n[profiles.a]\nsqlite_home = \"/no\"\n"
         ));
         assert_eq!(
-            sqlite_home_in(home, Some(env_dir)).unwrap(),
+            dir(Some(env_dir)),
             other.path(),
             "the setting comes before CODEX_SQLITE_HOME"
         );
         set("sqlite_home = 'db'\n");
-        assert_eq!(sqlite_home_in(home, None).unwrap(), home.join("db"));
+        assert_eq!(dir(None), home.join("db"));
+        set("\"sqlite_home\" = 'quoted'\n");
+        assert_eq!(dir(None), home.join("quoted"), "missed a quoted key");
         set("[profiles.a]\nsqlite_home = \"/no\"\n");
-        assert_eq!(sqlite_home_in(home, None).unwrap(), home, "read a table");
+        assert_eq!(dir(None), home, "read a table");
         set("sqlite_home_x = \"/no\"\n");
-        assert_eq!(sqlite_home_in(home, None).unwrap(), home);
+        assert_eq!(dir(None), home);
+    }
+
+    /// Lines inside a multi-line string are not keys or tables.
+    #[test]
+    fn sqlite_home_ignores_text_inside_strings() {
+        let codex = tempfile::tempdir().unwrap();
+        let home = codex.path();
+        let set = |text: &str| fs::write(home.join("config.toml"), text).unwrap();
+        set(
+            "developer_instructions = \"\"\"\nsqlite_home = \"example-db\"\n\"\"\"\nsqlite_home = \"real-db\"\n",
+        );
+        assert_eq!(sqlite_home_in(home, None).unwrap().0, home.join("real-db"));
+        set("developer_instructions = '''\n[profiles.a]\n'''\nsqlite_home = \"real-db\"\n");
+        assert_eq!(sqlite_home_in(home, None).unwrap().0, home.join("real-db"));
+    }
+
+    /// A `config.toml` that is not TOML, or a `sqlite_home` that is not a
+    /// string, is ignored: the next source is used, and the reason kept.
+    #[test]
+    fn a_bad_config_falls_back_to_the_next_source() {
+        let codex = tempfile::tempdir().unwrap();
+        let home = codex.path();
+        let env = tempfile::tempdir().unwrap();
         for bad in [
             "sqlite_home = /no\n",
             "sqlite_home = \"/no\n",
             "sqlite_home = \"a\\q\"\n",
+            "sqlite_home = 5\n",
         ] {
-            set(bad);
-            assert!(sqlite_home_in(home, None).is_err(), "{bad:?}");
+            fs::write(home.join("config.toml"), bad).unwrap();
+            let (dir, ignored) = sqlite_home_in(home, Some(env.path().as_os_str())).unwrap();
+            assert_eq!(dir, env.path(), "{bad:?}");
+            assert!(
+                ignored.is_some_and(|w| w.contains("config.toml")),
+                "{bad:?}"
+            );
         }
-    }
-
-    #[test]
-    fn toml_strings_are_unescaped() {
-        assert_eq!(
-            toml_string(r#""C:\\Users\\x""#).as_deref(),
-            Some(r"C:\Users\x")
-        );
-        assert_eq!(toml_string(r"'C:\Users\x'").as_deref(), Some(r"C:\Users\x"));
-        assert_eq!(
-            toml_string(r#""a\u00e9\"b" # c"#).as_deref(),
-            Some("a\u{e9}\"b")
-        );
-        assert_eq!(toml_string(r#""a" b"#), None);
-        assert_eq!(toml_string("a"), None);
     }
 
     /// A writer that holds an exclusive lock makes the look-up fail after
@@ -959,10 +952,24 @@ mod tests {
         writer.execute_batch("COMMIT;").unwrap();
     }
 
-    /// Look-ups never stop Codex from writing: a writer that does not wait
-    /// for locks commits every insert while they run.
+    /// Look-ups can briefly delay a Codex write, never stop it: a writer
+    /// that waits for locks as Codex does commits every insert while they
+    /// run. Codex's SQLite pools wait 5 s (`DEFAULT_BUSY_TIMEOUT` in
+    /// upstream `codex-rs/state/src/sqlite.rs`); this writer waits up to 5 s
+    /// in 1 ms steps and counts the inserts that had to wait.
     #[test]
     fn a_writer_commits_while_look_ups_run() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static WAITS: AtomicUsize = AtomicUsize::new(0);
+        static WAITED: AtomicUsize = AtomicUsize::new(0);
+        fn wait(tries: i32) -> bool {
+            if tries == 0 {
+                WAITED.fetch_add(1, Ordering::Relaxed);
+            }
+            WAITS.fetch_add(1, Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(1));
+            tries < 5000
+        }
         let dir = tempfile::tempdir().unwrap();
         let db = fake_db(dir.path(), &["q1"]);
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -977,8 +984,8 @@ mod tests {
                 n
             })
         };
-        let writer = rusqlite::Connection::open(&db).unwrap();
-        writer.busy_timeout(Duration::ZERO).unwrap();
+        let mut writer = rusqlite::Connection::open(&db).unwrap();
+        writer.busy_handler(Some(wait)).unwrap();
         for i in 1..=50 {
             writer
                 .execute(
@@ -991,5 +998,10 @@ mod tests {
         done.store(true, std::sync::atomic::Ordering::Relaxed);
         assert!(reader.join().unwrap() > 0, "no look-up ran");
         assert_eq!(still_queued(&db, "w50"), Ok(true));
+        eprintln!(
+            "{} of 50 inserts waited for a look-up, {} ms in all",
+            WAITED.load(Ordering::Relaxed),
+            WAITS.load(Ordering::Relaxed)
+        );
     }
 }
