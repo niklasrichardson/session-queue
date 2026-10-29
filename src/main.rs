@@ -724,8 +724,12 @@ fn session_start(debug: bool) {
         )
     };
     // Ignore a failed write, as stdout may already be closed.
-    let _ = writeln!(io::stdout(), "{text}");
+    let _ = writeln!(io::stdout(), "{text} {SUBAGENT_NOTE}");
 }
+
+/// Ends every `session-start` reminder. Subagents share the host session ID,
+/// so the hook also fires in a subagent after it compacts (issue #5).
+const SUBAGENT_NOTE: &str = "This reminder is for the main conversation only: a subagent ignores it and does not act as this queue name.";
 
 /// The session rules file named in the `session-start` reminder: `CQ_RULES`
 /// at run time, else the build's `CQ_RULES_PATH`, else a generic pointer.

@@ -280,6 +280,6 @@ fn session_start_tells_a_sleeping_session_not_to_watch() {
     assert_eq!(stderr(&out), "");
     assert_eq!(
         stdout(&out),
-        "You are in the cq session queue as worker-a, and worker-a is asleep (by=worker-a reason=\"idle\"). Do not start a watcher. Messages wait in your inbox. To wake, run /cq-start when the user or a coordinator's message asks you to.\n"
+        "You are in the cq session queue as worker-a, and worker-a is asleep (by=worker-a reason=\"idle\"). Do not start a watcher. Messages wait in your inbox. To wake, run /cq-start when the user or a coordinator's message asks you to. This reminder is for the main conversation only: a subagent ignores it and does not act as this queue name.\n"
     );
 }
