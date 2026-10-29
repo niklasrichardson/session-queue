@@ -43,9 +43,9 @@ impl Env {
     }
 
     /// A `cq` command with this root, no session IDs, no Claude Code inbox
-    /// (so no test can post into the session that runs the tests), and
-    /// fixed local time and rules settings, so the output does not depend
-    /// on the build's `.cargo/config.toml`.
+    /// (so no test can post into the session that runs the tests), the
+    /// default overdue limits, and fixed local time and rules settings, so
+    /// the output does not depend on the build's `.cargo/config.toml`.
     pub fn cmd(&self, args: &[&str]) -> Command {
         let mut c = Command::new(CQ);
         c.args(args)
@@ -57,7 +57,9 @@ impl Env {
             .env_remove("CLAUDE_CODE_SESSION_ID")
             .env_remove("CLAUDE_CODE_HOST_SESSION_ID")
             .env_remove("CLAUDE_CODE_MESSAGING_SOCKET")
-            .env_remove("CLAUDE_CODE_MESSAGING_TOKEN");
+            .env_remove("CLAUDE_CODE_MESSAGING_TOKEN")
+            .env_remove("CQ_OVERDUE_UNCLAIMED_MINUTES")
+            .env_remove("CQ_OVERDUE_CLAIMED_MINUTES");
         c
     }
 

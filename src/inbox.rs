@@ -233,9 +233,13 @@ impl<T: Transport, C: Clock> Sink for Inbox<T, C> {
         Ok(())
     }
 
+    fn holding(&self) -> bool {
+        !self.held.is_empty()
+    }
+
     /// Post the held lines and the stopped line, together when they fit
     /// in one message, so the session gets one turn, not two.
-    fn stopped(&mut self, reason: &str, ended: Ended) {
+    fn stopped(&mut self, reason: &str, ended: Ended) -> bool {
         let last = self.stopped_line(reason, ended);
         let mut result = Ok(());
         while result.is_ok() && self.held.len() > MAX_LINES {
@@ -251,8 +255,14 @@ impl<T: Transport, C: Clock> Sink for Inbox<T, C> {
             lines.push(last);
             result = self.post(&lines.join("\n"));
         }
-        if let Err(e) = result {
-            eprintln!("cq watch: could not post the stopped message to the session's inbox ({e})");
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!(
+                    "cq watch: could not post the stopped message to the session's inbox ({e})"
+                );
+                false
+            }
         }
     }
 
@@ -501,7 +511,7 @@ mod tests {
     fn stopped_posts_held_lines_and_the_reason_together() {
         let (mut ib, t, _c) = inbox();
         ib.line("CQ-NEW a").unwrap();
-        ib.stopped("--max-seconds 60 reached", Ended::Normal);
+        assert!(ib.stopped("--max-seconds 60 reached", Ended::Normal));
         assert_eq!(
             contents(&t),
             [
@@ -571,7 +581,7 @@ mod tests {
         assert_eq!(err.code, exit::INBOX_GONE);
         assert!(!err.message.contains(TOKEN));
         // The stopped message fails too, and does not panic or loop.
-        ib.stopped("x", Ended::Normal);
+        assert!(!ib.stopped("x", Ended::Normal));
         assert!(t.posts.borrow().is_empty());
     }
 }

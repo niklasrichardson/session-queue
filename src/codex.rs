@@ -253,7 +253,7 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
 }
 
 impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
-    /// Hold `CQ-NEW` lines; drop the rest (`CQ-WAKE`, `CQ-SLEEP`).
+    /// Hold `CQ-NEW` lines; drop the rest (`CQ-WAKE`, `CQ-OVERDUE`, `CQ-SLEEP`).
     fn line(&mut self, line: &str) -> io::Result<()> {
         if line.starts_with("CQ-NEW ") {
             if self.held == 0 {
@@ -277,14 +277,25 @@ impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
         Ok(())
     }
 
+    fn holding(&self) -> bool {
+        self.held > 0
+    }
+
     /// Queue what is held, unless the name is asleep: then the messages
     /// wait until it wakes.
-    fn stopped(&mut self, _reason: &str, ended: Ended) {
-        if ended == Ended::Normal
-            && self.held > 0
-            && let Err(e) = self.post()
-        {
-            eprintln!("cq watch: could not queue the last check into the Codex chat ({e})");
+    fn stopped(&mut self, _reason: &str, ended: Ended) -> bool {
+        if self.held == 0 {
+            return true;
+        }
+        if ended != Ended::Normal {
+            return false;
+        }
+        match self.post() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("cq watch: could not queue the last check into the Codex chat ({e})");
+                false
+            }
         }
     }
 

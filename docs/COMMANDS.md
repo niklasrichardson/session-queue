@@ -10,11 +10,12 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | --- | --- |
 | `cq init` | Create the layout under `CQ_ROOT`. |
 | `cq send --from A --to B --type task\|result\|info [--reply-to ID] [--parent ID] [--status ok\|failed\|rejected] [--input FILE]` | Read `{"subject": "...", "body": "..."}`, write the message, print its ID. |
-| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)). `--to-inbox` posts the lines into the session's own Claude Code inbox instead, the default for Claude Code sessions (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` wakes a Codex chat instead (see [Wake a Codex chat](#wake-a-codex-chat)). |
+| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)) and `CQ-OVERDUE` lines (see [Overdue tasks](#overdue-tasks)). `--to-inbox` posts the lines into the session's own Claude Code inbox instead, the default for Claude Code sessions (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` wakes a Codex chat instead (see [Wake a Codex chat](#wake-a-codex-chat)). |
 | `cq dispatch --as B --codex FILE --workspace DIR --instructions FILE --allow-from NAME [--allow-from NAME ...] [--sandbox read-only\|workspace-write] [--timeout-seconds 600] [--once]` | Run one fresh Codex process per task, serially. See [Codex setup](CODEX.md). |
 | `cq claim --as B ID` | Move the message to `.processing/` and print its JSON. |
 | `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}`. |
 | `cq list --as B [--stale-minutes 60]` | List unclaimed, stale claimed and dead-lettered messages, oldest first. No bodies. Starts with an `ASLEEP by=... reason="..."` line while `B` is asleep. |
+| `cq list --overdue [--unclaimed-minutes 30] [--claimed-minutes 120]` | List the overdue tasks in every inbox, oldest first, then a `TOTAL` line. No bodies. Read only, and works under `PAUSE`. See [Overdue tasks](#overdue-tasks). |
 | `cq leave --as B` | Forget which session owns `B` (remove its `members/` record). Exit 0 when there is none. |
 | `cq members` | Print one `<session key> -> <name>` line per record, with ` (asleep)` after a sleeping name. A sleeping name with no record prints as `- -> <name> (asleep)`. |
 | `cq sleep --as A B [--reason TEXT]` | Put `B` to sleep: write `sleep/B`. `A` may be `B` itself or a coordinator. |
@@ -75,13 +76,37 @@ cq wake --as lead worker-a
   CQ-WAKE 2026-10-28T09:12:03Z (09:12 GMT) to=worker-a from=lead type=task id=20261028T091000Z-lead-ab12 subject="Run the tests"
   ```
 
+## Overdue tasks
+
+A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 minutes without `cq done`. Only `task` messages can be overdue; `result` and `info` never are. The time is taken from the message file's modified time: when it arrived in the inbox, or when `cq claim` moved it to `.processing/`.
+
+- **Limits.** Set them with `CQ_OVERDUE_UNCLAIMED_MINUTES` and `CQ_OVERDUE_CLAIMED_MINUTES` (whole minutes, 1 or more). Unset or empty means the default. Any other value is a usage error (exit 64). For `cq list --overdue`, the flags `--unclaimed-minutes N` and `--claimed-minutes M` override the variables. A task is overdue from the minute it reaches the limit: at 30 minutes, not after it.
+- **Claim time.** `cq claim` moves the file into `.processing/` and then sets its modified time, both under the claim lock (`heartbeat/<name>.claim.lock`). Before it reports a claimed task, an overdue check waits for that lock and reads the time again, so a task is never reported in the moment between the two steps. If the lock file exists but cannot be opened or locked, the check skips claimed tasks for that name until a later check succeeds. The check never creates the lock file. If `cq claim` cannot set the time, it moves the message back to the inbox and exits 70.
+- **`cq list --overdue`.** Prints one line per overdue task in every inbox, oldest first, then one `TOTAL` line. It shows the ID, sender, recipient, subject, state and age, never the body. It needs no `--as`, and it cannot be used with `--as` or `--stale-minutes` (exit 64):
+
+  ```text
+  OVERDUE 2026-10-29T09:00:00Z (09:00 GMT) state=unclaimed age=45m from=lead to=worker-a id=20261029T090000Z-lead-ab12 subject="Run the tests"
+  TOTAL overdue=1 unclaimed_after=30m claimed_after=120m
+  ```
+
+  The time after `OVERDUE` is when the message was created.
+- **`CQ-OVERDUE` lines.** A coordinator's watcher (a name in `CQ_ROOT/coordinators`) prints one line per task when it becomes overdue. It checks at start and then every 30 seconds. It reports each task once: an ID is written to `heartbeat/<name>.overdue` after its line has been delivered (written to stdout, or posted with `--to-inbox`, including in the stopped message), so a restarted watcher does not repeat it. A line that was never delivered, for example because the post failed (exit 8) or the watcher stopped first, is reported again by the next watcher. An ID is removed from that file when its task is finished, rejected or dead-lettered. Other watchers print no `CQ-OVERDUE` lines and do not read the limits. A coordinator's watcher with a bad limit stops at start with exit 64.
+
+  ```text
+  CQ-OVERDUE 2026-10-29T09:45:02Z (09:45 GMT) state=unclaimed age=45m from=lead to=worker-a id=20261029T090000Z-lead-ab12 subject="Run the tests"
+  ```
+
+  The time after `CQ-OVERDUE` is when the watcher saw that the task was overdue.
+- **Nothing moves.** `cq` never resends, reclaims or moves an overdue task. The coordinator decides what to do (see [Protocol](PROTOCOL.md#overdue-tasks)).
+- **`PAUSE`.** `cq list --overdue` and `cq-top` still report overdue tasks under `PAUSE`, because they only read. A coordinator's watcher prints no `CQ-OVERDUE` lines under `PAUSE`, like `CQ-NEW`; it reports the tasks once `PAUSE` is removed.
+
 ## Watch into the inbox
 
 `cq watch --as B --to-inbox` posts its lines into the Claude Code session that started it, instead of printing them. A message to an idle session starts a new turn, so the session needs no Monitor and no re-arm every 30 minutes. It is the default way for Claude Code sessions to receive queue events. How a session runs it is in [Session protocol](PROTOCOL.md#inbox-mode). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
 
 - **Inbox address.** Claude Code exports `CLAUDE_CODE_MESSAGING_SOCKET` (a Unix socket, or a named pipe such as `\\.\pipe\LOCAL\cc-msg-<hex>` on Windows) and `CLAUDE_CODE_MESSAGING_TOKEN` to Bash commands and hooks. If either is missing or empty, `cq watch` exits 64. It never prints the token or the address.
 - **One post.** Connect, write `{"type":"auth","token":"..."}`, then `{"type":"user","from":"cq","message":{"role":"user","content":"..."}}`, each followed by a newline, then close. `cq` connects only when the message is ready, because Claude Code closes a connection that sends no complete line within 30 seconds.
-- **Content.** The header line `cq watch (B): queue events`, then the event lines unchanged (`CQ-NEW`, `CQ-WAKE`, `CQ-SLEEP`), one per line.
+- **Content.** The header line `cq watch (B): queue events`, then the event lines unchanged (`CQ-NEW`, `CQ-WAKE`, `CQ-OVERDUE`, `CQ-SLEEP`), one per line.
 - **Batching.** Lines that arrive within 2 seconds of the first held line go in one message. Posts are at least 5 seconds apart. One message holds at most 50 event lines; the rest follow in the next post. Messages already waiting at start go in the first post. The values are `BATCH_WINDOW`, `MIN_GAP` and `MAX_LINES` in `src/inbox.rs`.
 - **No time limit.** With `--to-inbox`, `--max-seconds` has no default. The flag still works when given.
 - **Stopped message.** When the watcher stops, it posts one last message. Lines still held go in the same message, before the stopped line:
@@ -102,7 +127,7 @@ cq wake --as lead worker-a
 - **Fixed prompt.** The message is always the same text, never anything from a queue message. By default it is `Queue check as 'B'. Follow the 'B' section of AGENTS.md. If there are no UNCLAIMED messages, end with no other work and no update.` `--codex-prompt TEXT` replaces it. Do not put text from a queue message in it: subjects, bodies and sender names are written by other sessions.
 - **The executable.** `--codex-bin PATH` names the Codex executable. The default is `codex` on `PATH` (on Windows, `codex.exe`). `cq` runs it directly, without a shell, with each argument passed separately. If it cannot be found at start, the watcher exits 64.
 - **One call per batch.** `CQ-NEW` lines are batched as in [Watch into the inbox](#watch-into-the-inbox): lines within 2 seconds of the first go in one batch, and calls are at least 5 seconds apart. Each batch runs `codex queue` once, however many messages it holds, because one Codex turn handles every `UNCLAIMED` message. Messages already waiting at start give one call.
-- **Other lines.** `CQ-WAKE` lines are dropped. When `B` is asleep, the watcher stops with exit 7 and queues nothing; messages wait until `B` wakes.
+- **Other lines.** `CQ-WAKE` and `CQ-OVERDUE` lines are dropped. When `B` is asleep, the watcher stops with exit 7 and queues nothing; messages wait until `B` wakes.
 - **Output.** After each call, one line on stdout: `cq watch (B): <UTC time> queued a check for N new message(s): <the line codex printed>`.
 - **Success.** A call succeeds when `codex queue` exits 0 and prints a line with `Queued message`. A call that takes over 60 seconds is stopped and counts as failed.
 - **Failure.** A failed call is tried 4 times, 1, 2 and 4 seconds apart, with a `cq watch:` line on stderr for each retry. If every try fails, the watcher exits 9 with a `cq:` line on stderr. A retry after a non-zero exit can queue a second check, if Codex stored the first one; the second turn then finds nothing to do.
@@ -124,7 +149,7 @@ cq wake --as lead worker-a
 | 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. |
 | 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. |
 | 9 | `watch --to-codex`: `codex queue` failed 4 times in a row. Nothing wakes the Codex chat until the watcher is started again. |
-| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found. |
+| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value for `list --overdue`, a coordinator's `watch` or `cq-top`. |
 | 70 | Dispatch timeout/interruption (task stays claimed), or any other error (I/O, `CQ_ROOT` missing or not initialised). |
 
 
@@ -142,6 +167,7 @@ CQ_ROOT/
   heartbeat/<name>.lock      locked by the running watcher or dispatcher
   heartbeat/<name>.claim.lock serialises claims for this recipient
   heartbeat/<name>.pid       the running watcher/dispatcher process ID
+  heartbeat/<name>.overdue   overdue task IDs a coordinator's watcher has reported, one per line
   dispatch/<name>/<id>/       Codex logs and completion state (not auto-pruned)
   members/<key>              the name owned by a Claude Code session, the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox or codex)
   sleep/<name>               while it exists, the name is asleep (by, time, reason)
@@ -151,7 +177,7 @@ CQ_ROOT/
 
 Message format: [`schema/message.v1.json`](../schema/message.v1.json). One file per message, `<id>.json`, UTF-8 without BOM. IDs are `<UTC yyyymmddThhmmssZ>-<from>-<4 hex>`. Readers ignore unknown fields.
 
-To stop all queue traffic at once, create a file named `PAUSE` in the queue root (for example `touch "$CQ_ROOT/PAUSE"`). While it exists, watchers announce nothing and every `cq send` is refused (exit 5). Remove the file to resume; waiting messages are then announced.
+To stop all queue traffic at once, create a file named `PAUSE` in the queue root (for example `touch "$CQ_ROOT/PAUSE"`). While it exists, watchers announce nothing and every `cq send` is refused (exit 5). Remove the file to resume; waiting messages are then announced. `cq list`, `cq list --overdue` and `cq-top` still work under `PAUSE`, because they only read.
 
 ## Codex dispatch
 
