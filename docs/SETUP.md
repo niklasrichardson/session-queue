@@ -108,7 +108,7 @@ If you use `cq` with another agent, please describe your setup in a comment on [
 On Windows, a running `cq.exe` is locked, but it can be renamed. To upgrade without stopping the sessions:
 
 1. Build into a separate target folder, so the build does not touch the running binary: `CARGO_TARGET_DIR=../cq-build cargo build --release`.
-2. Rename the live binary, for example `cq.exe` to `cq.old.exe`. Running watchers keep using the old file.
+2. Rename the live binary, for example `cq.exe` to `cq.old.exe` or `cq.exe.old-0156`. Running watchers keep using the old file. Name it `cq.exe.old-*` or `cq.old-*` (`cq.old.exe` also works): `--takeover` stops an old watcher only when its file is `cq.exe` or has one of these names.
 3. Copy the new binary into its place.
 4. Inbox-mode watchers never re-arm, so they keep running the old binary. Ask each inbox-mode session to restart its watcher: stop the background watcher command with TaskStop if it is still listed, then start `cq watch --as NAME --to-inbox --takeover 2>&1` as a background Bash command. Each Monitor-mode watcher picks up the new binary at its next re-arm (within 30 minutes).
 5. Delete the old file once no process uses it.

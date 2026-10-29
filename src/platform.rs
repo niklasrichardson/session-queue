@@ -3,6 +3,8 @@
 //!
 //! Windows and macOS are the targets; the Unix version also works on Linux.
 
+use std::ffi::OsStr;
+use std::path::Path;
 use std::time::Duration;
 
 use crate::error::{CqError, Result};
@@ -13,6 +15,29 @@ pub use imp::{InboxConn, open_inbox, stdin_has_input, terminate};
 /// pipe. A pipeline writer (`echo ... | cq done`) can start after `cq`;
 /// a heredoc is written before `cq` starts.
 const PIPE_GRACE: Duration = Duration::from_millis(100);
+
+/// True when the lowercase file name `theirs` is our executable `mine`, or
+/// a copy of it renamed by an install. An install on Windows renames the
+/// live `cq.exe`, and an old watcher keeps running from the renamed file.
+/// A renamed copy is `<mine>.old` or `<stem>.old`, then `-`, `.` or the
+/// end: `cq.exe.old-0156`, `cq.old-2026-10-28-2333.exe`, `cq.old.exe`.
+/// Other names are refused, so a reused process ID is never stopped.
+fn is_cq_name(theirs: &OsStr, mine: &OsStr) -> bool {
+    if theirs == mine {
+        return true;
+    }
+    let theirs = theirs.as_encoded_bytes();
+    let stem = Path::new(mine).file_stem().map(OsStr::as_encoded_bytes);
+    [Some(mine.as_encoded_bytes()), stem]
+        .into_iter()
+        .flatten()
+        .any(|base| {
+            theirs
+                .strip_prefix(base)
+                .and_then(|rest| rest.strip_prefix(b".old"))
+                .is_some_and(|rest| matches!(rest.first(), None | Some(b'-' | b'.')))
+        })
+}
 
 #[cfg(windows)]
 mod imp {
@@ -129,7 +154,7 @@ mod imp {
         let mine = std::env::current_exe()
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_ascii_lowercase()));
-        if theirs.is_none() || theirs != mine {
+        if !matches!((&theirs, &mine), (Some(t), Some(m)) if super::is_cq_name(t, m)) {
             return Err(CqError::error(format!(
                 "process {pid} is not a cq watcher ({theirs:?}); not stopping it"
             )));
@@ -281,15 +306,14 @@ mod imp {
         p.file_name().map(|n| n.to_ascii_lowercase())
     }
 
-    /// `Ok` when the process runs an executable with our file name; else
-    /// its file name, if known.
+    /// `Ok` when the process runs an executable with our file name, or a
+    /// renamed copy of it; else its file name, if known.
     fn check_cq(pid: libc::pid_t) -> std::result::Result<(), Option<OsString>> {
         let theirs = exe_path(pid).and_then(|p| exe_name(&p));
         let mine = std::env::current_exe().ok().and_then(|p| exe_name(&p));
-        if theirs.is_some() && theirs == mine {
-            Ok(())
-        } else {
-            Err(theirs)
+        match (&theirs, &mine) {
+            (Some(t), Some(m)) if super::is_cq_name(t, m) => Ok(()),
+            _ => Err(theirs),
         }
     }
 
@@ -554,4 +578,44 @@ pub fn install_interrupt_handler() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_cq_name;
+    use std::ffi::OsStr;
+
+    fn ok(theirs: &str, mine: &str) -> bool {
+        is_cq_name(OsStr::new(theirs), OsStr::new(mine))
+    }
+
+    #[test]
+    fn accepts_our_name_and_renamed_copies() {
+        assert!(ok("cq.exe", "cq.exe"));
+        assert!(ok("cq.exe.old-0156", "cq.exe"));
+        assert!(ok("cq.old-2026-10-28-2333.exe", "cq.exe"));
+        assert!(ok("cq.old.exe", "cq.exe"));
+        assert!(ok("cq.exe.old", "cq.exe"));
+        assert!(ok("cq", "cq"));
+        assert!(ok("cq.old-0156", "cq"));
+    }
+
+    #[test]
+    fn refuses_other_names() {
+        assert!(!ok("notepad.exe", "cq.exe"));
+        assert!(!ok("cqx.exe", "cq.exe"));
+        assert!(!ok("cq-helper.exe", "cq.exe"));
+        assert!(!ok("cq_old.exe", "cq.exe"));
+        assert!(!ok("old.cq.exe", "cq.exe"));
+        assert!(!ok("cq.helper.exe", "cq.exe"));
+        assert!(!ok("cq.exe.bak", "cq.exe"));
+        assert!(!ok("cq.older.exe", "cq.exe"));
+        assert!(!ok("cq.exe.older", "cq.exe"));
+        assert!(!ok("cq.exe.helper", "cq.exe"));
+        assert!(!ok("cq.old_1.exe", "cq.exe"));
+        assert!(!ok("cq.helper", "cq"));
+        assert!(!ok("cqd", "cq"));
+        assert!(!ok("", "cq.exe"));
+        assert!(!ok("cq.exe", ""));
+    }
 }
