@@ -154,6 +154,14 @@ impl Root {
         self.path.join("heartbeat").join(format!("{name}.overdue"))
     }
 
+    /// Held by `cq claim` while it moves a message into `.processing/` and
+    /// sets its modified time.
+    pub fn claim_lock(&self, name: &str) -> PathBuf {
+        self.path
+            .join("heartbeat")
+            .join(format!("{name}.claim.lock"))
+    }
+
     pub fn members(&self) -> PathBuf {
         self.path.join(MEMBERS_DIR)
     }

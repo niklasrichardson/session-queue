@@ -300,3 +300,97 @@ fn a_bad_limit_stops_a_coordinator_watcher() {
     assert!(!env.path("heartbeat/lead.pid").exists());
     assert_eq!(code(&run("worker-a")), 0);
 }
+
+/// A failed post to the session's inbox (exit 8) delivers no `CQ-OVERDUE`
+/// line, so the tasks are not marked reported, and the next watcher
+/// reports them.
+#[test]
+fn a_failed_post_does_not_mark_tasks_reported() {
+    let q = queue();
+    let env = &q.env;
+    fs::write(
+        env.path("coordinators"),
+        "lead
+",
+    )
+    .unwrap();
+    let nowhere = if cfg!(windows) {
+        format!(r"\\.\pipe\cq-test-overdue-nowhere-{}", std::process::id())
+    } else {
+        std::env::temp_dir()
+            .join(format!(
+                "cq-test-overdue-nowhere-{}.sock",
+                std::process::id()
+            ))
+            .display()
+            .to_string()
+    };
+    // 2 s batch window, then 4 tries 1, 2 and 4 s apart.
+    let out = env
+        .cmd(&["watch", "--as", "lead", "--to-inbox"])
+        .env("CLAUDE_CODE_MESSAGING_SOCKET", &nowhere)
+        .env("CLAUDE_CODE_MESSAGING_TOKEN", "test-token")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 8, "{}", stderr(&out));
+    assert!(!env.path("heartbeat/lead.overdue").exists());
+
+    let lead = env.watch("lead", &["--max-seconds", "2"]);
+    let lines = lead.lines_for(Duration::from_secs(4));
+    assert_eq!(overdues(&lines).len(), 2, "{lines:?}");
+    assert_eq!(
+        fs::read_to_string(env.path("heartbeat/lead.overdue"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+}
+
+/// `cq claim` restarts the clock: a task sent 150 minutes ago is not
+/// claimed-overdue right after its claim.
+#[test]
+fn a_claim_restarts_the_clock() {
+    let env = Env::new();
+    let id = env.send("lead", "worker-a", "task", "old", "x");
+    set_age(&inbox_file(&env, "worker-a", &id), 150 * MIN);
+    assert_eq!(list_overdue(&env, &[]).1.len(), 2);
+    assert_eq!(code(&env.claim("worker-a", &id)), 0);
+    assert_eq!(
+        list_overdue(&env, &[]).1,
+        ["TOTAL overdue=0 unclaimed_after=30m claimed_after=120m"]
+    );
+}
+
+/// When `cq claim` cannot set the claim time, it puts the message back and
+/// fails (exit 70), so it never looks claimed since it was sent. Windows
+/// only: another handle that allows rename but not write blocks the time.
+#[cfg(windows)]
+#[test]
+fn a_claim_that_cannot_set_its_time_is_undone() {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_DELETE: u32 = 4;
+
+    let env = Env::new();
+    let id = env.send("lead", "worker-a", "task", "blocked", "x");
+    let _blocker = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(inbox_file(&env, "worker-a", &id))
+        .unwrap();
+    let out = env.claim("worker-a", &id);
+    assert_eq!(code(&out), 70, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("record the claim time"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("it is back in inbox/worker-a/"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(inbox_file(&env, "worker-a", &id).exists());
+    assert!(!claimed_file(&env, "worker-a", &id).exists());
+}

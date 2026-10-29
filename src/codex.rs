@@ -277,6 +277,10 @@ impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
         Ok(())
     }
 
+    fn holding(&self) -> bool {
+        self.held > 0
+    }
+
     /// Queue what is held, unless the name is asleep: then the messages
     /// wait until it wakes.
     fn stopped(&mut self, _reason: &str, ended: Ended) {

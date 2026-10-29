@@ -13,9 +13,10 @@
 //! `WAKE_AFTER` for a sleeping name, and never claims or moves it.
 //!
 //! A coordinator's watcher also prints one `CQ-OVERDUE` line per task that
-//! has become overdue in any inbox (see `overdue`), at most once per task.
-//! The tasks it has reported are kept in `heartbeat/<name>.overdue`, so a
-//! restarted watcher does not report them again. It never moves them.
+//! has become overdue in any inbox (see `overdue`). A task is written to
+//! `heartbeat/<name>.overdue` once its line has been delivered, so a
+//! restarted watcher does not report it again; a line lost in a failed post
+//! is reported again. It never moves the tasks.
 //!
 //! With `--to-inbox` (experimental), the lines go into the session's own
 //! Claude Code inbox instead of stdout (see `inbox`), and the watcher has no
@@ -125,6 +126,11 @@ pub trait Sink {
     fn tick(&mut self) -> io::Result<()> {
         Ok(())
     }
+    /// True while a line given to `line` waits to be delivered. A line the
+    /// sink drops by design is not held.
+    fn holding(&self) -> bool {
+        false
+    }
     /// The watcher is stopping without an error: deliver what is held back
     /// and, where someone can act on it, say why.
     fn stopped(&mut self, _reason: &str, _ended: Ended) {}
@@ -215,6 +221,9 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     } else {
         HashSet::new()
     };
+    // What `heartbeat/<name>.overdue` holds: only tasks whose line the sink
+    // has delivered, so a line lost in a failed post is reported again.
+    let mut saved = reported.clone();
     let mut next_overdue_scan = started;
 
     let end = loop {
@@ -267,12 +276,16 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
             && now >= next_overdue_scan
         {
             next_overdue_scan = now + OVERDUE_SCAN_EVERY;
-            if let Err(e) = overdue_scan(root, name, limits, &mut reported, out) {
+            if let Err(e) = overdue_scan(root, limits, &mut reported, out) {
                 break out.failed(e).map(|r| (r, Ended::Normal));
             }
         }
         if let Err(e) = out.tick() {
             break out.failed(e).map(|r| (r, Ended::Normal));
+        }
+        if reported != saved && !out.holding() {
+            save_reported(root, name, &reported);
+            saved = reported.clone();
         }
 
         let wait = deadline.map_or(TICK, |d| {
@@ -465,32 +478,26 @@ fn wake_scan(
 }
 
 /// For a coordinator: one `CQ-OVERDUE` line per overdue task not reported
-/// before, in any inbox. Tasks that have left every inbox are forgotten, and
-/// the rest are saved, so a restarted watcher does not repeat them. Reads
-/// only; the task stays where it is.
+/// before, in any inbox. Tasks that have left every inbox are forgotten.
+/// The loop saves `reported` once the sink has delivered the lines, so a
+/// restarted watcher does not repeat them. Reads only; the task stays where
+/// it is.
 fn overdue_scan(
     root: &Root,
-    name: &str,
     limits: &overdue::Limits,
     reported: &mut HashSet<String>,
     out: &mut impl Sink,
 ) -> io::Result<()> {
     let now = SystemTime::now();
-    let mut changed = false;
     for task in overdue::scan(root, limits, now) {
         if reported.contains(&task.id) {
             continue;
         }
         out.line(&task.event_line(timefmt::now()))?;
         reported.insert(task.id);
-        changed = true;
     }
     let in_flight = overdue::in_flight_ids(root);
-    let before = reported.len();
     reported.retain(|id| in_flight.contains(id));
-    if changed || reported.len() != before {
-        save_reported(root, name, reported);
-    }
     Ok(())
 }
 

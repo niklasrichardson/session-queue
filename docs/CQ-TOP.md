@@ -221,6 +221,7 @@ A theme is one entry in `THEMES` in `tools/cq-top/src/draw.rs`.
 - `cq-top` never opens a watcher's lock file. Opening it creates the file, and a probe at the wrong moment could stop a starting watcher from starting.
 - `cq watch` rewrites the heartbeat file in place, so `cq-top` can read it half written. It then keeps the last good value instead of showing the watcher as stale.
 - A message that moves between folders while `cq-top` reads them can be counted twice, or missed, for one refresh. The next refresh is correct.
+- `cq-top` does not wait for the claim lock. A task that is being claimed can show as overdue for one refresh, because `cq claim` sets the claim time just after it moves the file.
 - The Flow screen counts a queued or claimed message in "last hour" only if it was sent in that hour. An older message that is stuck still shows on the Overview screen.
 - The Recent list reads only the 40 newest files on each refresh, and the Rejected screen reads only the 40 newest rejected and dead-lettered files.
 - The median reply time includes the time the worker takes to write its reply.

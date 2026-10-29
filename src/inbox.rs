@@ -233,6 +233,10 @@ impl<T: Transport, C: Clock> Sink for Inbox<T, C> {
         Ok(())
     }
 
+    fn holding(&self) -> bool {
+        !self.held.is_empty()
+    }
+
     /// Post the held lines and the stopped line, together when they fit
     /// in one message, so the session gets one turn, not two.
     fn stopped(&mut self, reason: &str, ended: Ended) {

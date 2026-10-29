@@ -201,7 +201,7 @@ pub fn scan(root: &Root, limits: &Limits, now: SystemTime) -> Vec<Overdue> {
             (root.inbox(&to), State::Unclaimed),
             (root.processing(&to), State::Claimed),
         ] {
-            scan_dir(&dir, &to, state, limits, now, &mut out);
+            scan_dir(root, &dir, &to, state, limits, now, &mut out);
         }
     }
     out.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
@@ -209,6 +209,7 @@ pub fn scan(root: &Root, limits: &Limits, now: SystemTime) -> Vec<Overdue> {
 }
 
 fn scan_dir(
+    root: &Root,
     dir: &Path,
     to: &str,
     state: State,
@@ -225,6 +226,14 @@ fn scan_dir(
         if age < limits.limit(state) {
             continue;
         }
+        // A claim in progress has moved the file but not yet set its time.
+        let age = match state {
+            State::Unclaimed => age,
+            State::Claimed => match settled_age(root, to, &path, now) {
+                Some(a) if a >= limits.limit(state) => a,
+                _ => continue,
+            },
+        };
         let Ok(bytes) = fsutil::read_with_retry(&path) else {
             continue;
         };
@@ -242,6 +251,21 @@ fn scan_dir(
             age,
         });
     }
+}
+
+/// A claimed file's age once no claim for `to` is in progress: `cq claim`
+/// renames the file into `.processing/` and then sets its modified time,
+/// both under the claim lock. Waits for that lock, without creating it,
+/// then reads the time again. `None` when the file has gone or was touched
+/// after `now`.
+fn settled_age(root: &Root, to: &str, path: &Path, now: SystemTime) -> Option<Duration> {
+    // No lock file: no claim has ever run for `to`, so none is in progress.
+    let lock = fs::File::open(root.claim_lock(to)).ok();
+    if let Some(f) = &lock {
+        // A lock that fails gives the time as read; at worst one early report.
+        let _ = f.lock_shared();
+    }
+    fsutil::modified(path).and_then(|m| now.duration_since(m).ok())
 }
 
 /// The IDs of every message still in an inbox or `.processing/` folder.
@@ -471,5 +495,26 @@ mod tests {
         fs::remove_file(message_file(&fx.root.processing("worker-a"), &id)).unwrap();
         assert!(fx.ids().is_empty());
         assert!(in_flight_ids(&fx.root).is_empty());
+    }
+
+    /// `cq claim` renames a file into `.processing/`, then sets its modified
+    /// time, both under the claim lock. A scan between the two must wait for
+    /// the lock, not report a task sent long ago as claimed long ago.
+    #[test]
+    fn a_claim_in_progress_is_not_overdue() {
+        let fx = Fixture::new();
+        let processing = fx.root.processing("worker-a");
+        let lock = fsutil::open_lock_file(&fx.root.claim_lock("worker-a")).unwrap();
+        lock.lock().unwrap();
+        // Renamed, not yet touched: it still has the time it was sent.
+        let id = fx.put(&processing, 1, "task", 150 * MIN);
+        std::thread::scope(|s| {
+            let scanning = s.spawn(|| fx.ids());
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(!scanning.is_finished(), "the scan waits for the claim lock");
+            fsutil::touch(&message_file(&processing, &id)).unwrap();
+            lock.unlock().unwrap();
+            assert!(scanning.join().unwrap().is_empty());
+        });
     }
 }
