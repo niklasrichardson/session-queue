@@ -28,7 +28,7 @@ Codex reads `AGENTS.md` files: the user-level `~/.codex/AGENTS.md` and the repos
 1. The [queue rules block](QUEUE-RULES.md#1-queue-rules-block), which is the same for every agent.
 2. One section per Codex queue name. The default wake prompt starts `Queue check as 'NAME'. Follow the 'NAME' section of AGENTS.md.`, so name the section after the queue name.
 
-If you start from [SESSION-RULES.example.md](SESSION-RULES.example.md), keep its "Codex chat" part. Delete the Claude Code parts: they do not apply to Codex. A Codex chat has no inbox mode, no Monitor mode and no `Watching` turn ending, no SessionStart hook, and no `/cq-start` or `/cq-stop` skills.
+If you start from [SESSION-RULES.example.md](SESSION-RULES.example.md), keep its "Codex chat" part. Delete the Claude Code parts: they do not apply to Codex. A Codex chat has no inbox mode, no Monitor mode and no `Watching` turn ending, does not use cq's Claude Code SessionStart hook, and has no `/cq-start` or `/cq-stop` skills.
 
 Example section, for a chat with the queue name `worker-a`:
 

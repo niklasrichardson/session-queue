@@ -94,7 +94,7 @@ cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
 
 To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.
 
-Codex has no skills. Outside the Codex chat, `cq sleep --as NAME NAME` stops its watcher, and `cq wake --as NAME NAME` must run before you start the watcher again. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
+cq does not ship Codex versions of its Claude Code `/cq-start` and `/cq-stop` skills. Outside the Codex chat, `cq sleep --as NAME NAME` stops its watcher, and `cq wake --as NAME NAME` must run before you start the watcher again. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
 
 ## Other agents
 
