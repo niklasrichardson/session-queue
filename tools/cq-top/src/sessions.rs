@@ -1362,9 +1362,9 @@ mod tests {
     fn folders_encode_like_claude_code() {
         assert_eq!(
             encode(Path::new(
-                r"D:\Code\photo-projects\placefix\.claude\worktrees\placefix-bugs-queue-0646a8\"
+                r"D:\Code\projects\webapp\.claude\worktrees\webapp-bugs-queue-0646a8\"
             )),
-            "D--Code-photo-projects-placefix--claude-worktrees-placefix-bugs-queue-0646a8"
+            "D--Code-projects-webapp--claude-worktrees-webapp-bugs-queue-0646a8"
         );
         assert_eq!(
             encode(Path::new("/home/me/my_app.v2/")),
@@ -1379,8 +1379,8 @@ mod tests {
     #[test]
     fn names_follow_watcher_then_title_then_folder() {
         assert_eq!(
-            display_name(Some("placefix-dev"), Some("RC: Placefix"), "x"),
-            "placefix-dev"
+            display_name(Some("webapp-dev"), Some("RC: Webapp"), "x"),
+            "webapp-dev"
         );
         assert_eq!(
             display_name(None, Some("RC: Session Messaging"), "x"),
@@ -1388,12 +1388,9 @@ mod tests {
         );
         assert_eq!(display_name(None, Some("Plain title"), "x"), "Plain title");
         assert_eq!(display_name(Some(""), Some("  "), "repo/wt"), "repo/wt");
-        let wt = Path::new("D:/Code/photo-projects/placefix/.claude/worktrees/bugs-0646a8");
-        assert_eq!(folder_label(wt), "placefix/bugs-0646a8");
-        assert_eq!(
-            folder_label(Path::new("D:/Code/raw-salvage")),
-            "raw-salvage"
-        );
+        let wt = Path::new("D:/Code/projects/webapp/.claude/worktrees/bugs-0646a8");
+        assert_eq!(folder_label(wt), "webapp/bugs-0646a8");
+        assert_eq!(folder_label(Path::new("D:/Code/toolkit")), "toolkit");
         assert_eq!(
             watch_name(&["cq".into(), "watch".into(), "--as".into(), "w1".into()]),
             Some("w1".into())
