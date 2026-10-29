@@ -16,13 +16,15 @@
 //! keeps its process, so `cq session-start` can find the record by the
 //! process and move it to the new key (see `rejoin`). Any other start in that
 //! process, such as `/resume`, drops line 5 from the records of other keys
-//! (see `disarm`). Every change to `members/` holds `members/.lock`.
+//! (see `disarm`). Every change to a record holds `members/.lock`. Each
+//! `claude` process also has a mark, `members/.procs/<pid>-<start>`, with the
+//! key it last ran; a move needs the mark to name the record's key.
 //! Readers of the name use line 1 only, so a record from an older
 //! `cq` still works; a missing or unknown mode reads as `monitor`.
 //! `members/` is created on demand, so an older root without it still works.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -163,7 +165,57 @@ pub fn record(root: &Root, key: &str, name: &str, mode: Mode, owner: Option<Owne
         text.push_str(&format!("{} {}\n", o.pid, o.start));
     }
     let _lock = lock(root, None)?;
-    write_record(root, key, name, &text)
+    write_record(root, key, name, &text)?;
+    if let Some(o) = owner {
+        // A failed mark only stops a later rejoin.
+        mark_current(root, key, o);
+    }
+    Ok(())
+}
+
+/// Where each `claude` process's current conversation is marked:
+/// `members/.procs/<pid>-<start>` holds the key that process was last seen
+/// to run. A directory, so `members` never reads a mark as a record.
+const PROCS_DIR: &str = ".procs";
+
+fn mark_path(root: &Root, owner: Owner) -> PathBuf {
+    root.members()
+        .join(PROCS_DIR)
+        .join(format!("{}-{}", owner.pid, owner.start))
+}
+
+/// Mark `key` as the conversation the process `owner` runs now. Without
+/// the `members/` lock, so a busy lock cannot stop it: one atomic rename of
+/// the process's own file. If that fails, it removes the old mark, since no
+/// mark also stops `rejoin`. Does nothing when `members/` does not exist.
+fn mark_current(root: &Root, key: &str, owner: Owner) {
+    if !root.members().is_dir() {
+        return;
+    }
+    let path = mark_path(root, owner);
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let written = fs::create_dir_all(dir).is_ok()
+        && fsutil::write_atomic(
+            dir,
+            &path,
+            format!(
+                "{key}
+"
+            )
+            .as_bytes(),
+        )
+        .is_ok();
+    if !written {
+        let _ = fs::remove_file(&path);
+    }
+}
+
+/// The key last marked for the process `owner`, if any.
+fn marked_key(root: &Root, owner: Owner) -> Option<String> {
+    let text = fs::read_to_string(mark_path(root, owner)).ok()?;
+    sanitise_key(text.lines().next()?)
 }
 
 /// The lock file that serialises every change to `members/`: `record`,
@@ -217,7 +269,10 @@ fn write_record(root: &Root, key: &str, name: &str, text: &str) -> Result<()> {
 /// `owner` to the new `key`, and return its name. The caller checks that
 /// the key is a CLI key with no record of its own. `None`, with nothing
 /// changed, unless exactly one record names this process ID and start
-/// time: two would mean the records cannot tell the sessions apart.
+/// time: two would mean the records cannot tell the sessions apart. The
+/// process's mark must also name that record's key, which proves that no
+/// other start (such as `/resume`) happened in the process since the
+/// record or the last move: with no mark, or another key, nothing moves.
 ///
 /// It reads and writes under the `members/` lock, so a watcher that takes
 /// the name meanwhile wins: its record either replaces the moved one, or
@@ -231,28 +286,35 @@ pub fn rejoin(root: &Root, key: &str, owner: Owner) -> Option<String> {
     if name_for(root, key).is_some() {
         return None;
     }
+    let current = marked_key(root, owner)?;
     let mut held = members(root).into_iter().filter_map(|(k, name)| {
         let text = fs::read_to_string(dir.join(&k)).ok()?;
-        (k != key && Owner::parse(text.lines().nth(4)) == Some(owner)).then_some((name, text))
+        (k != key && Owner::parse(text.lines().nth(4)) == Some(owner)).then_some((k, name, text))
     });
-    let (name, text) = held.next()?;
-    if held.next().is_some() {
+    let (from, name, text) = held.next()?;
+    if held.next().is_some() || from != current {
         return None;
     }
     write_record(root, key, &name, &text).ok()?;
+    // A failed mark only stops the next rejoin.
+    mark_current(root, key, owner);
     Some(name)
 }
 
-/// The process `owner` now runs the conversation `key`: drop the owner line
-/// from every record of another key held by `owner`, so a later `/clear`
-/// cannot move that record to a conversation that is not its own. Used
-/// after `/resume` or any other start that is not a `/clear`. The record
-/// gets an owner again when its conversation starts its own watcher.
+/// The process `owner` now runs the conversation `key`, so a later `/clear`
+/// must not move a record of another conversation to it. Used after
+/// `/resume` or any other start that is not a `/clear`. First it marks
+/// `key` as current without the lock, which alone stops `rejoin`. Then,
+/// under the lock, it drops the owner line from every record of another
+/// key held by `owner`, so the record cannot move even if the mark is lost.
+/// If either step fails, the other still stops the move. A record gets an
+/// owner again when its conversation starts its own watcher.
 pub fn disarm(root: &Root, key: &str, owner: Owner) {
     let dir = root.members();
     if !dir.is_dir() {
         return;
     }
+    mark_current(root, key, owner);
     let Ok(_lock) = lock(root, Some(HOOK_LOCK_WAIT)) else {
         return;
     };

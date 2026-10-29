@@ -449,14 +449,8 @@ fn cli_resume_then_clear_does_not_rejoin() {
     assert_eq!(member_name(&env, "s-a2").as_deref(), Some("worker-a"));
 }
 
-/// A watcher that takes the name while `/clear` waits to move the record
-/// wins: the hook checks the records again under the `members/` lock.
-#[test]
-fn cli_rejoin_loses_to_a_takeover_under_the_lock() {
-    let env = Env::new();
-    let mut cli = FakeClaude::start(&env, &[]);
-    cli.watch("s-old", "cli-worker");
-
+/// Hold `members/.lock`, as a slow `cq` in another session would.
+fn hold_lock(env: &Env) -> fs::File {
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -465,6 +459,94 @@ fn cli_rejoin_loses_to_a_takeover_under_the_lock() {
         .open(env.path("members/.lock"))
         .unwrap();
     lock.lock().unwrap();
+    lock
+}
+
+/// `/resume` while the lock is busy cannot drop the owner line, but its
+/// mark of the new conversation, written without the lock, still stops a
+/// later `/clear`.
+#[test]
+fn cli_resume_during_a_held_lock_then_clear_does_not_rejoin() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-a", "worker-a");
+
+    let lock = hold_lock(&env);
+    let started = Instant::now();
+    assert_eq!(cli.session_start("s-b", "resume").stdout, "");
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    lock.unlock().unwrap();
+    assert!(record_line(&env, "s-a", 4).is_some(), "the lock stopped it");
+
+    assert_eq!(cli.session_start("s-b2", "clear").stdout, "");
+    assert!(!env.path("members/s-b2").exists());
+    assert_eq!(stdout(&env.run(&["members"], None)), "s-a -> worker-a\n");
+}
+
+/// `/resume` whose owner-line write fails: the mark still stops a later
+/// `/clear`.
+#[test]
+fn cli_resume_with_a_failed_write_then_clear_does_not_rejoin() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-a", "worker-a");
+
+    // A file in place of tmp/ fails every write through it.
+    let tmp = env.path("tmp");
+    fs::remove_dir_all(&tmp).unwrap();
+    fs::write(&tmp, "").unwrap();
+    assert_eq!(cli.session_start("s-b", "resume").stdout, "");
+    fs::remove_file(&tmp).unwrap();
+    fs::create_dir(&tmp).unwrap();
+    assert!(record_line(&env, "s-a", 4).is_some(), "the write failed");
+
+    assert_eq!(cli.session_start("s-b2", "clear").stdout, "");
+    assert!(!env.path("members/s-b2").exists());
+    assert_eq!(stdout(&env.run(&["members"], None)), "s-a -> worker-a\n");
+}
+
+/// With no mark for the process, nothing proves that the record's
+/// conversation is the one before `/clear`: no rejoin.
+#[test]
+fn cli_rejoin_needs_the_process_mark() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-a", "worker-a");
+
+    fs::remove_dir_all(env.path("members/.procs")).unwrap();
+    assert_eq!(cli.session_start("s-a2", "clear").stdout, "");
+    assert_eq!(stdout(&env.run(&["members"], None)), "s-a -> worker-a\n");
+}
+
+/// A compaction keeps the session ID: the name is kept, and a `/clear`
+/// after it still rejoins.
+#[test]
+fn cli_compact_keeps_the_name() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-a", "worker-a");
+
+    assert_eq!(
+        cli.session_start("s-a", "compact").stdout,
+        reminder("worker-a")
+    );
+    assert!(record_line(&env, "s-a", 4).is_some());
+    assert_eq!(
+        cli.session_start("s-a2", "clear").stdout,
+        reminder("worker-a")
+    );
+    assert_eq!(stdout(&env.run(&["members"], None)), "s-a2 -> worker-a\n");
+}
+
+/// A watcher that takes the name while `/clear` waits to move the record
+/// wins: the hook checks the records again under the `members/` lock.
+#[test]
+fn cli_rejoin_loses_to_a_takeover_under_the_lock() {
+    let env = Env::new();
+    let mut cli = FakeClaude::start(&env, &[]);
+    cli.watch("s-old", "cli-worker");
+
+    let lock = hold_lock(&env);
     cli.send("s-new", "clear", "session-start");
     // Time for a hook that read the records before the lock to do so.
     std::thread::sleep(Duration::from_millis(500));
@@ -499,14 +581,7 @@ fn cli_rejoin_gives_up_on_a_held_lock() {
     let mut cli = FakeClaude::start(&env, &[]);
     cli.watch("s-old", "cli-worker");
 
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(env.path("members/.lock"))
-        .unwrap();
-    lock.lock().unwrap();
+    let lock = hold_lock(&env);
     let started = Instant::now();
     let step = cli.session_start("s-new", "clear");
     let took = started.elapsed();
