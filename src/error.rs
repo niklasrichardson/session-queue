@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-/// Process exit codes. `cq --help` and README.md list the same values.
+/// Process exit codes. `cq --help` and docs/COMMANDS.md list the same values.
 pub mod exit {
     /// Success.
     pub const OK: i32 = 0;
