@@ -4,14 +4,11 @@
 use super::*;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
-    widgets::{
-        Bar, BarChart, BarGroup, Block, BorderType, Cell, LineGauge, Paragraph, Row, Sparkline,
-        Table,
-    },
+    widgets::{Block, BorderType, Cell, Paragraph, Row, Table},
 };
 
 pub struct Theme {
@@ -170,143 +167,323 @@ fn header(
     } else {
         ("running", t.ok)
     };
-    let tab = |label: &'static str, on: bool| Span::styled(label, if on { t.head } else { t.dim });
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" cq-top ", t.head),
-            Span::styled(format!(" {}  ", root.display()), t.text),
-            Span::styled(state, style),
-            Span::raw("  "),
-            tab(" 1 Overview ", screen == Screen::Overview),
-            tab(" 2 Flow ", screen == Screen::Flow),
-            tab(" 3 Rejected ", screen == Screen::Rejected),
-            tab(" 4 Sessions ", screen == Screen::Sessions),
-            Span::styled(
-                format!(
-                    "  bodies:{} [b]  theme:{} [t]  [q] quit",
-                    if bodies { "on" } else { "off" },
-                    t.name
-                ),
-                t.dim,
-            ),
-        ])),
-        area,
-    );
+    let mut spans = vec![
+        Span::styled(" cq-top ", t.head),
+        Span::styled(format!(" {}  ", root.display()), t.text),
+        Span::styled(state, style),
+        Span::raw("  "),
+    ];
+    // One tab per screen, in tab order; the number is its key.
+    spans.extend(Screen::ALL.iter().enumerate().map(|(i, &tab)| {
+        Span::styled(
+            format!(" {} {} ", i + 1, tab.title()),
+            if tab == screen { t.head } else { t.dim },
+        )
+    }));
+    spans.push(Span::styled(
+        format!(
+            "  bodies:{} [b]  theme:{} [t]  [q] quit",
+            if bodies { "on" } else { "off" },
+            t.name
+        ),
+        t.dim,
+    ));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// The Flow screen, laid out like the Sessions screen: a box with figures on the left and a
+/// graph on the right, then tables with a header row. Only names, counts and times are shown.
 fn draw_flow(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
-    let [head, spark, mid, busy] = Layout::vertical([
+    let rows = workers(s);
+    let [head, sent, talk, load] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(8),
-        Constraint::Min(8),
-        Constraint::Length(s.watchers.len() as u16 + 2),
+        Constraint::Length(MACHINE_ROWS),
+        Constraint::Min(5),
+        // Borders, caption and header take four rows.
+        Constraint::Length(rows.len().max(1) as u16 + 4),
     ])
     .areas(f.area());
     header(f, head, root, s, bodies, Screen::Flow, t);
+    draw_sent(f, sent, s, t);
+    draw_pairs(f, talk, s, t);
+    draw_workers(f, load, s, &rows, t);
+}
 
-    // Messages sent per time slice over the last hour; one slice per column.
-    let n = spark.width.saturating_sub(2).max(1) as usize;
-    let slices = slices(s, n);
-    let peak = slices.iter().copied().max().unwrap_or(0);
-    f.render_widget(
-        Sparkline::default()
-            .block(t.block(format!(
-                " Messages sent, last hour: {} total, peak {} per {}s slice (oldest left, now right) ",
-                s.window.len(),
-                peak,
-                WINDOW_SECS as usize / n
-            )))
-            .data(&slices)
-            .bar_set(t.bars.clone())
-            .style(t.info),
-        spark,
-    );
+/// Minutes in the "Messages sent" graph: one point per minute of the last hour.
+const SENT_MINUTES: usize = 60;
 
-    let [pairs_area, turn_area] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(mid);
-
-    // Who talks to whom.
-    let bars: Vec<Bar> = pairs(s)
+/// Messages sent in the last hour: figures on the left, messages per minute on the right.
+fn draw_sent(f: &mut Frame, area: Rect, s: &Snapshot, t: &Theme) {
+    use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
+    let per_min = slices(s, SENT_MINUTES);
+    let peak = per_min.iter().copied().max().unwrap_or(0);
+    let total = s.window.len();
+    let last5: u64 = per_min[SENT_MINUTES - 5..].iter().sum();
+    let figures = vec![
+        ("Total", total.to_string(), Some(t.info)),
+        ("Last 5 min", last5.to_string(), None),
+        ("Peak", format!("{peak}/min"), None),
+        ("Average", format!("{:.1}/min", total as f64 / 60.0), None),
+    ];
+    let block = t
+        .block(" Messages sent, last hour ")
+        .title_bottom(Span::styled(
+            " graph: messages per minute, oldest left, now right ",
+            t.dim,
+        ));
+    let Some(graph) = figures_box(f, area, block, figures, t) else {
+        return;
+    };
+    // An empty minute draws nothing, so the graph has no baseline of dots.
+    let points: Vec<(f64, f64)> = per_min
         .iter()
-        .take(12)
-        .map(|((a, b), c)| {
-            Bar::default()
-                .label(format!("{a}>{b}"))
-                .value(*c)
-                .style(t.warn)
-                .value_style(t.text)
+        .enumerate()
+        .filter(|(_, n)| **n > 0)
+        .map(|(i, n)| (i as f64, *n as f64))
+        .collect();
+    let top = peak.max(1);
+    f.render_widget(
+        Chart::new(vec![
+            Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Bar)
+                .style(t.info)
+                .data(&points),
+        ])
+        .x_axis(Axis::default().bounds([0.0, (SENT_MINUTES - 1) as f64]))
+        .y_axis(
+            Axis::default()
+                .bounds([0.0, top as f64])
+                .style(t.dim)
+                .labels([
+                    Span::styled("0", t.dim),
+                    Span::styled(format!("{top}/min"), t.dim),
+                ]),
+        ),
+        graph,
+    );
+}
+
+/// The narrowest and widest a bar column may be.
+const BAR_MIN: u16 = 6;
+const BAR_MAX: u16 = 30;
+
+/// Who talks to whom: one row per sender and receiver, with the count and the newest age.
+fn draw_pairs(f: &mut Frame, area: Rect, s: &Snapshot, t: &Theme) {
+    let pairs = pairs(s);
+    // Border and header take three rows; list the busiest pairs that fit.
+    let shown = &pairs[..pairs.len().min(usize::from(area.height.saturating_sub(3)))];
+    let most = pairs.first().map_or(1, |p| p.count.max(1));
+    let cols: [(&str, u16, u8); 5] = [
+        (
+            "from",
+            name_width("from", shown.iter().map(|p| p.from.as_str())),
+            0,
+        ),
+        (
+            "to",
+            name_width("to", shown.iter().map(|p| p.to.as_str())),
+            0,
+        ),
+        ("messages", 8, 1),
+        ("last", 6, 2),
+        // A bar scaled to the busiest pair; it takes what is left, up to `BAR_MAX`.
+        ("", BAR_MIN, 3),
+    ];
+    let room = area.width.saturating_sub(2);
+    let keep = fit_columns(&cols, room);
+    let bar_w = (room.saturating_sub(used_width(&cols, &keep)) + BAR_MIN).min(BAR_MAX);
+    let rows: Vec<Row> = shown
+        .iter()
+        .map(|p| {
+            Row::new(kept(
+                [
+                    Cell::from(p.from.clone()).style(t.accent),
+                    Cell::from(p.to.clone()).style(t.accent),
+                    Cell::from(p.count.to_string()),
+                    Cell::from(age(s.now - p.last)),
+                    Cell::from(bar(p.count as f64 / most as f64, bar_w, t.info, t)),
+                ],
+                &keep,
+            ))
         })
         .collect();
+    let title = if shown.len() < pairs.len() {
+        format!(
+            " Who talks to whom, last hour: {} of {} pairs ",
+            shown.len(),
+            pairs.len()
+        )
+    } else {
+        format!(" Who talks to whom, last hour: {} pairs ", pairs.len())
+    };
+    let widths = kept(cols.map(|c| c.1), &keep);
+    let widths = widths
+        .iter()
+        .zip(kept(0..cols.len(), &keep))
+        .map(|(w, i)| Constraint::Length(if i == 4 { bar_w } else { *w }));
+    let empty = rows.is_empty();
     f.render_widget(
-        BarChart::default()
-            .block(t.block(" Who talks to whom (messages, last hour) "))
-            .direction(Direction::Horizontal)
-            .bar_set(t.bars.clone())
-            .bar_width(1)
-            .bar_gap(0)
-            .label_style(t.text)
-            .data(BarGroup::default().bars(&bars)),
-        pairs_area,
+        Table::new(rows, widths)
+            .header(Row::new(kept(cols.map(|c| c.0), &keep)).style(t.table_header()))
+            .style(t.text)
+            .block(t.block(title)),
+        area,
     );
-
-    // Task -> reply turnaround per worker.
-    let bars: Vec<Bar> = turnaround(s)
-        .into_iter()
-        .map(|(w, replies, med)| {
-            Bar::default()
-                .label(format!("{w} ({replies})"))
-                .value(med as u64)
-                .text_value(age(med))
-                .style(t.ok)
-                .value_style(t.text.add_modifier(Modifier::REVERSED))
-        })
-        .collect();
-    f.render_widget(
-        BarChart::default()
-            .block(t.block(" Turnaround task to reply, median (replies) "))
-            .bar_set(t.bars.clone())
-            .bar_width(10)
-            .bar_gap(2)
-            .label_style(t.text)
-            .data(BarGroup::default().bars(&bars)),
-        turn_area,
-    );
-
-    // Backlog per worker right now: claimed + queued, full bar at 4 or more.
-    let block = t.block(" Busy now (claimed + queued, full at 4) ");
-    let inner = block.inner(busy);
-    f.render_widget(block, busy);
-    let rows = Layout::vertical(vec![Constraint::Length(1); s.watchers.len()]).split(inner);
-    for (w, area) in s.watchers.iter().zip(rows.iter()) {
-        let backlog = w.claimed + w.queued;
-        let busy = w.busy();
-        let style = match busy {
-            Busy::Asleep => t.dim,
-            Busy::Stale => t.bad,
-            Busy::Idle => t.dim,
-            Busy::Backlog => t.warn,
-            Busy::Working => t.info,
-        };
-        f.render_widget(
-            LineGauge::default()
-                .label(Span::styled(
-                    format!(
-                        "{:<8} {:<8} claimed {} queued {}",
-                        w.name,
-                        busy.label(),
-                        w.claimed,
-                        w.queued
-                    ),
-                    style,
-                ))
-                .ratio((backlog as f64 / 4.0).min(1.0))
-                .filled_symbol(t.gauge_filled)
-                .unfilled_symbol(t.gauge_empty)
-                .filled_style(style)
-                .unfilled_style(t.dim),
-            *area,
-        );
+    if empty {
+        empty_note(f, area, 2, "No messages in the last hour.", t);
     }
+}
+
+/// A dim note on the first row under a table's header, across the whole table: a row of
+/// cells would cut it to the first column's width. `skip` is the rows above it in `area`.
+fn empty_note(f: &mut Frame, area: Rect, skip: u16, note: &'static str, t: &Theme) {
+    if area.height > skip + 1 && area.width > 2 {
+        let line = Rect::new(area.x + 1, area.y + skip, area.width - 2, 1);
+        f.render_widget(Paragraph::new(Line::styled(note, t.dim)), line);
+    }
+}
+
+/// One row per worker: its watcher's state and load now, and its replies in the last hour.
+fn draw_workers(f: &mut Frame, area: Rect, s: &Snapshot, rows: &[Worker], t: &Theme) {
+    let block = t.block(" Workers: load now, replies in the last hour ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [caption, table] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    f.render_widget(
+        Paragraph::new(Line::styled(
+            format!(
+                "load: queued + claimed, full at {LOAD_FULL} · median: task sent to reply sent \
+                 · state: from the heartbeat"
+            ),
+            t.dim,
+        )),
+        caption,
+    );
+
+    let cols: [(&str, u16, u8); 8] = [
+        (
+            "worker",
+            name_width("worker", rows.iter().map(|w| w.name.as_str())),
+            0,
+        ),
+        ("state", 6, 1),
+        ("mode", 5, 6),
+        ("queued", 6, 2),
+        ("claimed", 7, 3),
+        ("load", 8, 4),
+        ("median task→reply", 17, 5),
+        ("replies", 7, 7),
+    ];
+    let keep = fit_columns(&cols, table.width);
+    let dash = || Cell::from("-").style(t.dim);
+    let lines: Vec<Row> = rows
+        .iter()
+        .map(|r| {
+            let w = r.watcher;
+            let (state, state_style) = match w {
+                Some(w) if w.asleep => ("asleep", t.info),
+                Some(w) => match w.beat_age {
+                    Some(a) if a <= STALE_AFTER => ("live", t.ok),
+                    Some(_) => ("STALE", t.bad),
+                    None => ("off", t.dim),
+                },
+                // Replied in the last hour, but has no watcher.
+                None => ("-", t.dim),
+            };
+            let load = w.map(|w| {
+                let style = match w.busy() {
+                    Busy::Asleep | Busy::Idle => t.dim,
+                    Busy::Stale => t.bad,
+                    Busy::Backlog => t.warn,
+                    Busy::Working => t.info,
+                };
+                let ratio = (w.queued + w.claimed) as f64 / LOAD_FULL as f64;
+                bar(ratio, cols[5].1, style, t)
+            });
+            Row::new(kept(
+                [
+                    Cell::from(r.name.clone()).style(t.accent),
+                    Cell::from(state).style(state_style),
+                    match w.and_then(|w| s.mode(w)) {
+                        Some(Mode::Monitor) => Cell::from("mon"),
+                        Some(m) => Cell::from(mode_label(m)).style(t.info),
+                        None => dash(),
+                    },
+                    w.map_or_else(dash, |w| Cell::from(w.queued.to_string())),
+                    w.map_or_else(dash, |w| Cell::from(w.claimed.to_string())),
+                    load.map_or_else(dash, Cell::from),
+                    r.median.map_or_else(dash, |m| Cell::from(age(m))),
+                    Cell::from(r.replies.to_string()).style(if r.replies > 0 {
+                        t.text
+                    } else {
+                        t.dim
+                    }),
+                ],
+                &keep,
+            ))
+        })
+        .collect();
+    f.render_widget(
+        Table::new(lines, kept(cols.map(|c| Constraint::Length(c.1)), &keep))
+            .header(Row::new(kept(cols.map(|c| c.0), &keep)).style(t.table_header()))
+            .style(t.text),
+        table,
+    );
+    if rows.is_empty() {
+        // `table` has no border; the note goes on its second row.
+        let wide = Rect::new(
+            table.x.saturating_sub(1),
+            table.y,
+            table.width + 2,
+            table.height,
+        );
+        empty_note(f, wide, 1, "No watchers.", t);
+    }
+}
+
+/// A bar `width` cells wide, filled to `ratio` (0 to 1) in `style`, the rest dim.
+fn bar(ratio: f64, width: u16, style: Style, t: &Theme) -> Line<'static> {
+    let w = usize::from(width);
+    let filled = ((ratio.clamp(0.0, 1.0) * w as f64).round() as usize).min(w);
+    Line::from(vec![
+        Span::styled(t.gauge_filled.repeat(filled), style),
+        Span::styled(t.gauge_empty.repeat(w - filled), t.dim),
+    ])
+}
+
+/// Which columns fit in `room` cells. Each column is (header, width, priority), one cell
+/// apart; a narrow terminal drops the highest priority numbers first.
+fn fit_columns(cols: &[(&str, u16, u8)], room: u16) -> Vec<bool> {
+    let mut by_prio: Vec<usize> = (0..cols.len()).collect();
+    by_prio.sort_by_key(|&i| cols[i].2);
+    let mut keep = vec![false; cols.len()];
+    let mut used = 0u16;
+    for i in by_prio {
+        let need = cols[i].1 + u16::from(used > 0);
+        if used + need <= room {
+            keep[i] = true;
+            used += need;
+        }
+    }
+    keep
+}
+
+/// The cells the kept columns take, gaps included.
+fn used_width(cols: &[(&str, u16, u8)], keep: &[bool]) -> u16 {
+    let widths = kept(cols.iter().map(|c| c.1), keep);
+    widths.iter().sum::<u16>() + (widths.len() as u16).saturating_sub(1)
+}
+
+/// The items whose column is kept.
+fn kept<T>(items: impl IntoIterator<Item = T>, keep: &[bool]) -> Vec<T> {
+    items
+        .into_iter()
+        .zip(keep)
+        .filter(|(_, k)| **k)
+        .map(|(c, _)| c)
+        .collect()
 }
 
 fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
@@ -581,38 +758,30 @@ fn draw_machine(f: &mut Frame, area: Rect, r: &sessions::Report, t: &Theme) {
     );
 }
 
-/// One box. `now` and `history` are (whole computer, Claude), 0 to 100.
-fn machine_box(
+/// A box with figures on the left: (label, value, graph colour). A figure with a colour gets
+/// a `■` mark in it, as a legend for the graph. Returns the room for the graph on the right,
+/// or `None` when the box is too narrow for one.
+fn figures_box(
     f: &mut Frame,
     area: Rect,
-    title: &str,
-    figures: &[(&str, String)],
-    now: (f32, f32),
-    history: (Vec<f32>, Vec<f32>),
+    block: Block<'static>,
+    figures: Vec<(&str, String, Option<Style>)>,
     t: &Theme,
-) {
-    use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
-    // The whole computer, and Claude's share of it.
-    let (whole, claude) = (t.ok, t.alt);
-    let block = t.block(title);
+) -> Option<Rect> {
     let inner = block.inner(area);
     f.render_widget(block, area);
-
-    // The first figure is the whole computer's, and the one labelled Claude is Claude's.
-    let label_w = figures.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let label_w = figures.iter().map(|(l, ..)| l.len()).max().unwrap_or(0);
     let lines: Vec<Line> = figures
-        .iter()
-        .enumerate()
-        .map(|(i, (label, value))| {
-            let (mark, style) = match (i, *label) {
-                (0, _) => ("■ ", whole),
-                (_, "Claude") => ("■ ", claude),
-                _ => ("  ", t.text),
+        .into_iter()
+        .map(|(label, value, mark)| {
+            let (mark, style) = match mark {
+                Some(style) => ("■ ", style),
+                None => ("  ", t.text),
             };
             Line::from(vec![
                 Span::styled(mark, style),
                 Span::styled(format!("{label:<label_w$}  "), t.dim),
-                Span::styled(value.clone(), style),
+                Span::styled(value, style),
             ])
         })
         .collect();
@@ -632,7 +801,36 @@ fn machine_box(
     let mut padded = vec![Line::default(); top as usize];
     padded.extend(lines);
     f.render_widget(Paragraph::new(padded), figs);
-    let Some(graph) = graph else {
+    graph
+}
+
+/// One box. `now` and `history` are (whole computer, Claude), 0 to 100.
+fn machine_box(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    figures: &[(&str, String)],
+    now: (f32, f32),
+    history: (Vec<f32>, Vec<f32>),
+    t: &Theme,
+) {
+    use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
+    // The whole computer, and Claude's share of it.
+    let (whole, claude) = (t.ok, t.alt);
+    // The first figure is the whole computer's, and the one labelled Claude is Claude's.
+    let figures = figures
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let mark = match (i, *label) {
+                (0, _) => Some(whole),
+                (_, "Claude") => Some(claude),
+                _ => None,
+            };
+            (*label, value.clone(), mark)
+        })
+        .collect();
+    let Some(graph) = figures_box(f, area, t.block(title), figures, t) else {
         return;
     };
 
@@ -722,26 +920,8 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
         ("last change", 13, 10),
         ("age", 7, 2),
     ];
-    let room = table.width.saturating_sub(2);
-    let mut by_prio: Vec<usize> = (0..cols.len()).collect();
-    by_prio.sort_by_key(|&i| cols[i].2);
-    let mut keep = vec![false; cols.len()];
-    let mut used = 0u16;
-    for i in by_prio {
-        let need = cols[i].1 + u16::from(used > 0);
-        if used + need <= room {
-            keep[i] = true;
-            used += need;
-        }
-    }
-    let pick = |cells: Vec<Cell<'static>>| -> Vec<Cell<'static>> {
-        cells
-            .into_iter()
-            .zip(&keep)
-            .filter(|(_, k)| **k)
-            .map(|(c, _)| c)
-            .collect()
-    };
+    let keep = fit_columns(&cols, table.width.saturating_sub(2));
+    let pick = |cells: Vec<Cell<'static>>| kept(cells, &keep);
 
     let dash = || Cell::from("-").style(t.dim);
     let rows: Vec<Row> = r
@@ -799,13 +979,8 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             ]))
         })
         .collect();
-    let widths: Vec<Constraint> = pick_widths(&cols.map(|c| c.1), &keep);
-    let headers: Vec<&str> = cols
-        .iter()
-        .zip(&keep)
-        .filter(|(_, k)| **k)
-        .map(|(c, _)| c.0)
-        .collect();
+    let widths = kept(cols.map(|c| Constraint::Length(c.1)), &keep);
+    let headers = kept(cols.map(|c| c.0), &keep);
     let n = |st: State| r.rows.iter().filter(|row| row.state == st).count();
     let title = if r.ready {
         format!(
@@ -838,15 +1013,6 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             ))),
         table,
     );
-}
-
-fn pick_widths(widths: &[u16], keep: &[bool]) -> Vec<Constraint> {
-    widths
-        .iter()
-        .zip(keep)
-        .filter(|(_, k)| **k)
-        .map(|(w, _)| Constraint::Length(*w))
-        .collect()
 }
 
 /// Word-wraps text to `width` characters and at most `max_lines`

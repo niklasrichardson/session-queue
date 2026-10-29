@@ -26,12 +26,14 @@ The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#
 
 | Key | What it does |
 | --- | --- |
-| `Tab`, `1`, `2`, `3`, `4` | Switch between the Overview, Flow, Rejected and Sessions screens. |
+| `1`, `2`, `3`, `4` | Show the Overview, Sessions, Flow or Rejected screen. |
+| `Tab`, `→` | Show the next screen in that order. |
+| `Shift-Tab`, `←` | Show the previous screen. |
 | `t` | Use the next theme: classic, amber, neon. |
 | `b` | Show or hide message bodies. They are hidden at start. |
 | `q`, `Esc`, `Ctrl-C` | Quit. |
 
-`cq-top` remembers the last screen and theme in a one-line file, such as `overview classic`. The file is `cq-top/state` in `%APPDATA%` on Windows, and in `$XDG_CONFIG_HOME` or `~/.config` on other systems. Without a saved choice, `cq-top` starts on Overview with the classic theme. If no config folder is known, nothing is saved.
+`cq-top` remembers the last screen and theme in a one-line file, such as `overview classic`. The file names the screen, not its number, so a file saved before the screens were reordered still opens the same screen. The file is `cq-top/state` in `%APPDATA%` on Windows, and in `$XDG_CONFIG_HOME` or `~/.config` on other systems. Without a saved choice, `cq-top` starts on Overview with the classic theme. If no config folder is known, nothing is saved.
 
 ## Export
 
@@ -39,10 +41,10 @@ The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#
 
 ```bash
 cq-top --html dashboard.html        # a dashboard page
-cq-top --html-screens shots         # shots/overview.html, flow.html, rejected.html and sessions.html
+cq-top --html-screens shots         # shots/overview.html, sessions.html, flow.html and rejected.html
 ```
 
-- `--html PATH` writes one self-contained page: watchers, sessions, counts, busy bars, turnaround, messages per 5-minute slice over the last hour, who talks to whom, in flight messages, the 20 newest rejected and dead-lettered messages with their reasons, and recent messages. It has no scripts and loads nothing from the network. It follows the system light or dark setting. Times are UK local time.
+- `--html PATH` writes one self-contained page: watchers, sessions, counts, messages per 5-minute slice over the last hour, who talks to whom, the worker table (load and median reply time), in flight messages, the 20 newest rejected and dead-lettered messages with their reasons, and recent messages. It has no scripts and loads nothing from the network. It follows the system light or dark setting. Times are UK local time.
 - `--html-screens DIR` draws the four screens at 140 x 42 cells, in the saved theme, with one 9 x 18 pixel box per cell. A browser can turn each page into a picture, for example `msedge --headless=new --screenshot=overview.png --window-size=1260,756 file:///.../overview.html`.
 - Both options can be given together. They share one snapshot.
 - An export never includes message bodies. Every string from the queue is HTML-escaped.
@@ -57,19 +59,6 @@ cq-top --html-screens shots         # shots/overview.html, flow.html, rejected.h
 - **Recent.** The 40 newest finished, rejected and dead-lettered messages.
 
 The state glyphs are `◌` queued, `◐` claimed, `●` done, `✕` rejected and `!` dead-lettered.
-
-## Flow screen
-
-- **Messages sent, last hour.** A sparkline of messages over time. The oldest is on the left and the newest is on the right.
-- **Who talks to whom.** The number of messages for each sender and receiver.
-- **Turnaround, task to reply.** For each worker, the median time from the task being sent to its reply being sent.
-- **Busy now.** Claimed plus queued messages for each worker. The bar is full at 4. A sleeping worker shows `asleep`.
-
-## Rejected screen
-
-- **Rejected and dead-lettered.** The newest messages in `rejected/` and `dlq/`, newest first, with the reason from each `<id>.reason.json` file. The title shows how many are listed and how many there are in all. Up to 40 are read; the screen lists as many as fit.
-- A message that cannot be read, which is often why it was dead-lettered, still gets a row. Its time and sender come from its file name and its receiver from its folder.
-- Message bodies are never shown on this screen, even with `b`.
 
 ## Sessions screen
 
@@ -144,6 +133,32 @@ If the process list cannot be read, one box says so in place of the CPU and Memo
 
 Process data and the CPU and Memory figures come from the `sysinfo` crate, with the same code on every system. The screen is tested on Windows. It is expected to work on macOS and Linux, but it is not tested there yet: see issue #17.
 
+## Flow screen
+
+The Flow screen is laid out like the [Sessions screen](#sessions-screen): a box with figures on the left and a graph on the right, then tables with a header row. It shows only names, counts and times.
+
+- **Messages sent, last hour.** Figures on the left: **Total**, **Last 5 min**, **Peak** (the busiest minute) and **Average**, per minute. The graph on the right has one bar per minute: the oldest is on the left and now is on the right. Its scale runs from 0 to the peak.
+- **Who talks to whom.** One row per sender and receiver: `from`, `to`, `messages` (in the last hour) and `last` (the age of the newest one), and a bar scaled to the busiest pair. The busiest pair is first; pairs with the same count are newest first. The title shows how many pairs there are, and how many are listed when they do not all fit.
+- **Workers.** One row per watcher, then any other name that sent a reply in the last hour. A dim line under the title explains the columns.
+
+| Column | What it shows |
+| --- | --- |
+| worker | The queue name. |
+| state | From the heartbeat: `live`, `STALE` after 90 seconds, `asleep` when its name is asleep, `off` without a heartbeat. `-` for a name with no watcher. |
+| mode | The watcher's [mode](#watcher-mode): `inbox`, `codex` or `mon`. |
+| queued, claimed | Messages waiting in its inbox, and being worked on. |
+| load | queued + claimed as a bar, full at 4. The colour shows queued messages (warning colour), only claimed ones (info colour), or `STALE` (error colour). |
+| median task→reply | The median time from a task being sent to its reply being sent, over the replies in the last hour. `-` with no replies. |
+| replies | Replies sent in the last hour. |
+
+A narrow terminal drops the least important columns first: replies, mode, the median, load, claimed and queued. In the Who talks to whom table it drops the bar, then last, then messages.
+
+## Rejected screen
+
+- **Rejected and dead-lettered.** The newest messages in `rejected/` and `dlq/`, newest first, with the reason from each `<id>.reason.json` file. The title shows how many are listed and how many there are in all. Up to 40 are read; the screen lists as many as fit.
+- A message that cannot be read, which is often why it was dead-lettered, still gets a row. Its time and sender come from its file name and its receiver from its folder.
+- Message bodies are never shown on this screen, even with `b`.
+
 ## Watcher mode
 
 A watcher runs in one of three modes (see [Commands](COMMANDS.md#watch-into-the-inbox)):
@@ -176,8 +191,8 @@ A theme is one entry in `THEMES` in `tools/cq-top/src/draw.rs`.
 - A message that moves between folders while `cq-top` reads them can be counted twice, or missed, for one refresh. The next refresh is correct.
 - The Flow screen counts a queued or claimed message in "last hour" only if it was sent in that hour. An older message that is stuck still shows on the Overview screen.
 - The Recent list reads only the 40 newest files on each refresh, and the Rejected screen reads only the 40 newest rejected and dead-lettered files.
-- Turnaround includes the time the worker takes to write its reply.
-- An `info` message that nobody claims counts as work in the Busy bar.
+- The median reply time includes the time the worker takes to write its reply.
+- An `info` message that nobody claims counts as load.
 - `cq` keeps only the latest heartbeat, so `cq-top` shows no heartbeat history.
 - The Sessions screen shows only the newest transcript in each project folder. Two sessions in one folder show as one row, and its CPU and memory are those of all Claude processes in that folder.
 - The folder encoding loses information: `a-b` and `a.b` encode the same. Claude Code may shorten a very long folder name, and `cq-top` then cannot match its process.
