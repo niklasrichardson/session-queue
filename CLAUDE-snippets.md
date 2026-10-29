@@ -39,6 +39,20 @@ When a CQ-NEW line arrives, follow the "Session queue" rules in CLAUDE.md.
 Do not message me unless a task needs a decision that only I can make.
 ```
 
+In the Claude Code CLI, start the session with its own `CQ_SESSION_ID`, so it keeps its queue name after `/clear`. Pass the prompt above as the first argument. In Git Bash:
+
+```bash
+CQ_SESSION_ID=worker-a claude "Your queue name is worker-a. ..."
+```
+
+In PowerShell, in a new window for each worker:
+
+```powershell
+$env:CQ_SESSION_ID = 'worker-a'; claude "Your queue name is worker-a. ..."
+```
+
+The desktop app does not need this. See [Claude Code CLI: start with a stable key](docs/CLAUDE-CODE.md#claude-code-cli-start-with-a-stable-key).
+
 ## 4. Hand-off prompt
 
 Use the [hand-off prompt](docs/QUEUE-RULES.md#3-hand-off-prompt) in the session that sends work. In Claude Code, the result arrives as a `CQ-NEW` line.
