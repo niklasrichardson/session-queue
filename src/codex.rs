@@ -15,10 +15,16 @@
 //! wakes other sessions. A sleeping name stops the watcher (exit 7) and
 //! queues nothing. Batching uses the inbox values (`BATCH_WINDOW`,
 //! `MIN_GAP`), so a burst of messages gives one Codex turn.
+//!
+//! Codex Desktop starts a turn from a queued message only while the chat is
+//! loaded in the app. So `CHECK_AFTER` after each queued check, the watcher
+//! looks, read-only, whether the item still waits in Codex's queue database,
+//! and if it does prints one line that says to open the chat. See issue #25.
 
+use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -38,6 +44,13 @@ pub const QUEUED: &str = "Queued message";
 /// A `codex queue` run that takes longer than this is stopped and counts as
 /// a failed try.
 pub const QUEUE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long after a queued check the watcher looks whether Codex has taken
+/// it, when `--codex-check-seconds` is not given.
+pub const CHECK_AFTER: Duration = Duration::from_secs(60);
+/// Codex's queue database, in Codex's SQLite home.
+pub const QUEUE_DB: &str = "queue_1.sqlite";
+/// A look-up in the queue database waits no longer than this for a lock.
+const DB_BUSY: Duration = Duration::from_secs(1);
 
 /// The message queued into the chat when `--codex-prompt` is not given.
 pub fn default_prompt(name: &str) -> String {
@@ -138,6 +151,113 @@ fn found(bin: &OsStr) -> bool {
     })
 }
 
+/// A non-empty environment variable as a path.
+fn env_path(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The home directory.
+fn home_dir() -> Option<PathBuf> {
+    env_path(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+}
+
+/// Codex's queue database, found as Codex finds it: `CODEX_HOME` (default
+/// `~/.codex`) is the Codex home, and `sqlite_home_in` finds the SQLite home
+/// in it. Also returns why `sqlite_home` in `config.toml` was ignored.
+pub fn queue_db() -> std::result::Result<(PathBuf, Option<String>), String> {
+    let codex_home = env_path("CODEX_HOME")
+        .or_else(|| home_dir().map(|h| h.join(".codex")))
+        .ok_or("no CODEX_HOME and no home directory")?;
+    let sqlite_env = std::env::var_os("CODEX_SQLITE_HOME");
+    let (dir, ignored) = sqlite_home_in(&codex_home, sqlite_env.as_deref())?;
+    Ok((dir.join(QUEUE_DB), ignored))
+}
+
+/// Codex's SQLite home, in Codex's order (`codex-rs/core/src/config`):
+/// `sqlite_home` in `config.toml` in the Codex home, then
+/// `CODEX_SQLITE_HOME`, then the Codex home. Only the root `sqlite_home` is
+/// read: not one in a profile, a `-c` override or managed settings. As in
+/// Codex, a relative setting is taken from the Codex home, and a relative
+/// variable from the current folder. A `config.toml` that cannot be read or
+/// parsed is ignored, and the second value says why.
+pub fn sqlite_home_in(
+    codex_home: &Path,
+    sqlite_env: Option<&OsStr>,
+) -> std::result::Result<(PathBuf, Option<String>), String> {
+    let config = codex_home.join("config.toml");
+    let (setting, ignored) = match std::fs::read_to_string(&config) {
+        Ok(text) => match sqlite_home_setting(&text) {
+            Ok(setting) => (setting, None),
+            Err(e) => (None, Some(format!("{}: {e}", config.display()))),
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (None, None),
+        Err(e) => (None, Some(format!("{}: {e}", config.display()))),
+    };
+    if let Some(dir) = setting {
+        let dir = match dir.strip_prefix("~/").or(dir.strip_prefix("~\\")) {
+            Some(rest) => home_dir().ok_or("no home directory")?.join(rest),
+            None if dir == "~" => home_dir().ok_or("no home directory")?,
+            None => codex_home.join(dir),
+        };
+        return Ok((dir, ignored));
+    }
+    let dir = match sqlite_env.map(|v| v.to_string_lossy()) {
+        Some(v) if !v.trim().is_empty() => {
+            std::path::absolute(v.trim()).map_err(|e| format!("CODEX_SQLITE_HOME: {e}"))?
+        }
+        _ => codex_home.to_owned(),
+    };
+    Ok((dir, ignored))
+}
+
+/// The root `sqlite_home` string in a `config.toml`. An error for a file
+/// that is not TOML, or a value that is not a string.
+fn sqlite_home_setting(config: &str) -> std::result::Result<Option<String>, String> {
+    let table: toml::Table = config
+        .parse()
+        .map_err(|e: toml::de::Error| e.message().to_owned())?;
+    match table.get("sqlite_home") {
+        None => Ok(None),
+        Some(toml::Value::String(dir)) => Ok(Some(dir.clone())),
+        Some(_) => Err("sqlite_home is not a string".to_owned()),
+    }
+}
+
+/// The item ID in Codex's `Queued message ITEM for thread THREAD.` line.
+fn queued_item(said: &str) -> Option<&str> {
+    let rest = &said[said.find(QUEUED)? + QUEUED.len()..];
+    let item = rest.split_whitespace().next()?;
+    rest.contains(" for thread ").then_some(item)
+}
+
+/// True when item `id` still waits in the `queued_items` table of `db`.
+/// Opens the database read-only: it never creates the database or changes
+/// its contents, but SQLite may create the `-wal` and `-shm` files and
+/// takes shared locks, so a Codex write can briefly wait for it. An error
+/// means the look-up could not be done: no file, no table, another schema,
+/// a lock held past `DB_BUSY`.
+pub fn still_queued(db: &Path, id: &str) -> std::result::Result<bool, String> {
+    use rusqlite::{Connection, OpenFlags, OptionalExtension};
+    if !db.is_file() {
+        return Err("no such file".to_owned());
+    }
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(db, flags).map_err(|e| e.to_string())?;
+    conn.busy_timeout(DB_BUSY).map_err(|e| e.to_string())?;
+    conn.query_row("SELECT 1 FROM queued_items WHERE id = ?1", [id], |_| Ok(()))
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(|e| e.to_string())
+}
+
+/// A queued item to look up once `at` has passed.
+struct Check {
+    at: Instant,
+    item: String,
+}
+
 /// A `Sink` that wakes a Codex chat once per batch of new messages.
 pub struct CodexQueue<R: Runner, C: Clock> {
     name: String,
@@ -152,16 +272,33 @@ pub struct CodexQueue<R: Runner, C: Clock> {
     /// When the batch in `held` started.
     batch_start: Option<Instant>,
     last_post: Option<Instant>,
+    /// Codex's queue database; `None` turns the look-ups off.
+    db: Option<PathBuf>,
+    /// How long after a queued check to look it up.
+    check_after: Duration,
+    /// Queued items to look up, oldest first.
+    checks: VecDeque<Check>,
+    /// Print to stderr, once, why a look-up was skipped.
+    debug: bool,
+    /// The skip has been printed.
+    said_skip: bool,
+    /// Items already reported as still queued.
+    warned: HashSet<String>,
 }
 
 impl CodexQueue<CodexBin, SystemClock> {
     /// The real watcher. Exit 64 for an empty or multi-line thread, an empty
-    /// prompt, or a Codex executable that cannot be found.
+    /// prompt, or a Codex executable that cannot be found. A zero
+    /// `check_after` turns the queue database look-ups off; `db` replaces
+    /// the database found with `queue_db`.
     pub fn start(
         name: &str,
         thread: &str,
         bin: Option<OsString>,
         prompt: Option<String>,
+        check_after: Duration,
+        db: Option<PathBuf>,
+        debug: bool,
     ) -> Result<Self> {
         let bin = bin.unwrap_or_else(|| DEFAULT_BIN.into());
         if !found(&bin) {
@@ -178,6 +315,21 @@ impl CodexQueue<CodexBin, SystemClock> {
             SystemClock,
             Box::new(io::stdout()),
         )
+        .map(|q| match db.map_or_else(queue_db, |db| Ok((db, None))) {
+            Ok((db, ignored)) => {
+                if let Some(why) = ignored.filter(|_| debug && !check_after.is_zero()) {
+                    eprintln!("cq watch: ignoring sqlite_home in Codex's config ({why})");
+                }
+                q.checking(Some(db), check_after, debug)
+            }
+            Err(e) => {
+                let mut q = q.checking(None, check_after, debug);
+                if !check_after.is_zero() {
+                    q.skip(&e);
+                }
+                q
+            }
+        })
     }
 }
 
@@ -210,7 +362,57 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
             held: 0,
             batch_start: None,
             last_post: None,
+            db: None,
+            check_after: CHECK_AFTER,
+            checks: VecDeque::new(),
+            debug: false,
+            said_skip: false,
+            warned: HashSet::new(),
         })
+    }
+
+    /// Look up each queued item in `db` `after` it was queued. Off for a
+    /// `None` database or a zero `after`.
+    pub fn checking(mut self, db: Option<PathBuf>, after: Duration, debug: bool) -> Self {
+        self.db = db.filter(|_| !after.is_zero());
+        self.check_after = after;
+        self.debug = debug;
+        self
+    }
+
+    /// With `--debug`, say once why a look-up was skipped.
+    fn skip(&mut self, why: &str) {
+        if self.debug && !self.said_skip {
+            self.said_skip = true;
+            eprintln!("cq watch: not checking whether Codex took the queued checks ({why})");
+        }
+    }
+
+    /// Look up each item whose time has come, once. An item still queued
+    /// gives one line: the chat has not taken it, perhaps because the app
+    /// has unloaded the chat.
+    fn look(&mut self) {
+        let now = self.clock.now();
+        while self.checks.front().is_some_and(|c| now >= c.at) {
+            let (Some(check), Some(db)) = (self.checks.pop_front(), self.db.clone()) else {
+                break;
+            };
+            match still_queued(&db, &check.item) {
+                Ok(true) if self.warned.insert(check.item) => {
+                    let _ = writeln!(
+                        self.log,
+                        "cq watch ({}): {} codex thread {} has not taken the queued check after {} s (the chat may be unloaded): open the chat in the Codex app",
+                        self.name,
+                        rfc3339(timefmt::now()),
+                        self.thread,
+                        self.check_after.as_secs()
+                    );
+                    let _ = self.log.flush();
+                }
+                Ok(_) => {}
+                Err(e) => self.skip(&format!("{}: {e}", db.display())),
+            }
+        }
     }
 
     /// Queue the prompt once for every held line: wait for `MIN_GAP`, then
@@ -239,6 +441,15 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
                         rfc3339(timefmt::now())
                     );
                     let _ = self.log.flush();
+                    if self.db.is_some() {
+                        match queued_item(&said) {
+                            Some(item) => self.checks.push_back(Check {
+                                at: self.clock.now() + self.check_after,
+                                item: item.to_owned(),
+                            }),
+                            None => self.skip("codex queue printed no item ID"),
+                        }
+                    }
                     return Ok(());
                 }
                 Err(e) if tries >= POST_TRIES => return Err(e),
@@ -274,6 +485,7 @@ impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
         if due {
             self.post()?;
         }
+        self.look();
         Ok(())
     }
 
@@ -313,6 +525,7 @@ impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::fs;
     use std::rc::Rc;
 
     use super::*;
@@ -472,6 +685,323 @@ mod tests {
         assert_eq!(
             last_line(&"é".repeat(300)).map(|l| l.chars().count()),
             Some(200)
+        );
+    }
+
+    /// A log that the test can read back.
+    #[derive(Clone, Default)]
+    struct Log(Rc<RefCell<Vec<u8>>>);
+
+    impl Write for Log {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Log {
+        fn lines(&self) -> Vec<String> {
+            String::from_utf8_lossy(&self.0.borrow())
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+    }
+
+    /// A Codex queue database with Codex's `queued_items` table, holding
+    /// `ids` for thread t1.
+    fn fake_db(dir: &Path, ids: &[&str]) -> PathBuf {
+        let path = dir.join(QUEUE_DB);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE queued_items (
+                 id TEXT PRIMARY KEY NOT NULL,
+                 thread_id TEXT NOT NULL,
+                 payload_json TEXT NOT NULL,
+                 queue_order INTEGER NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 updated_at_ms INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+        for (n, id) in ids.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO queued_items VALUES (?1, 't1', '{}', ?2, 0, 0)",
+                rusqlite::params![id, n as i64],
+            )
+            .unwrap();
+        }
+        path
+    }
+
+    /// A sink that looks up its items in `db` 5 s after queuing them.
+    fn checking_sink(db: Option<PathBuf>) -> (CodexQueue<FakeRunner, FakeClock>, Log, FakeClock) {
+        let log = Log::default();
+        let c = FakeClock::new();
+        let q = CodexQueue::with(
+            "w",
+            "t1",
+            None,
+            FakeRunner::default(),
+            c.clone(),
+            Box::new(log.clone()),
+        )
+        .unwrap()
+        .checking(db, Duration::from_secs(5), false);
+        (q, log, c)
+    }
+
+    /// Queue one check, then let `after` pass.
+    fn queue_one(q: &mut CodexQueue<FakeRunner, FakeClock>, c: &FakeClock, after: Duration) {
+        q.line(NEW).unwrap();
+        c.advance(BATCH_WINDOW);
+        q.tick().unwrap();
+        c.advance(after);
+        q.tick().unwrap();
+    }
+
+    const NOT_TAKEN: &str = "codex thread t1 has not taken the queued check after 5 s (the chat may be unloaded): open the chat in the Codex app";
+
+    #[test]
+    fn queued_item_is_the_id_after_queued_message() {
+        assert_eq!(queued_item("Queued message q1 for thread t1."), Some("q1"));
+        assert_eq!(queued_item("Queued message for thread t1."), Some("for"));
+        assert_eq!(queued_item("Queued message"), None);
+        assert_eq!(queued_item("Queued message q1"), None);
+        assert_eq!(queued_item("Done."), None);
+    }
+
+    #[test]
+    fn still_queued_reads_the_table_and_never_creates_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("none").join(QUEUE_DB);
+        assert!(still_queued(&missing, "q1").is_err());
+        assert!(!missing.exists(), "created the database");
+
+        let db = fake_db(dir.path(), &["q1"]);
+        assert_eq!(still_queued(&db, "q1"), Ok(true));
+        assert_eq!(still_queued(&db, "q2"), Ok(false));
+
+        // Codex keeps the database open: a new item is still in the WAL.
+        let writer = rusqlite::Connection::open(&db).unwrap();
+        writer
+            .execute(
+                "INSERT INTO queued_items VALUES ('q3', 't1', '{}', 9, 0, 0)",
+                [],
+            )
+            .unwrap();
+        assert!(db.with_extension("sqlite-wal").exists());
+        assert_eq!(still_queued(&db, "q3"), Ok(true));
+        drop(writer);
+
+        let other = tempfile::tempdir().unwrap();
+        let path = other.path().join(QUEUE_DB);
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE items (id TEXT);")
+            .unwrap();
+        assert!(still_queued(&path, "q1").is_err(), "no queued_items table");
+        fs::write(&path, "not a database").unwrap();
+        assert!(still_queued(&path, "q1").is_err());
+    }
+
+    #[test]
+    fn a_pending_item_gives_one_line_after_the_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut q, log, c) = checking_sink(Some(fake_db(dir.path(), &["q1"])));
+        queue_one(&mut q, &c, Duration::from_secs(4));
+        assert_eq!(log.lines().len(), 1, "looked before the wait");
+        c.advance(Duration::from_secs(1));
+        q.tick().unwrap();
+        q.tick().unwrap();
+        let lines = log.lines();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].starts_with("cq watch (w): "), "{}", lines[1]);
+        assert!(lines[1].ends_with(NOT_TAKEN), "{}", lines[1]);
+        c.advance(Duration::from_secs(60));
+        q.tick().unwrap();
+        assert_eq!(log.lines().len(), 2, "said it twice");
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        let lines = log.lines();
+        assert_eq!(lines.len(), 3, "said it again for the same item: {lines:?}");
+        assert!(lines[2].contains("queued a check"), "{}", lines[2]);
+    }
+
+    #[test]
+    fn a_consumed_item_or_a_missing_database_gives_no_line() {
+        let dir = tempfile::tempdir().unwrap();
+        for db in [
+            Some(fake_db(dir.path(), &["other"])),
+            Some(dir.path().join("none").join(QUEUE_DB)),
+            None,
+        ] {
+            let (mut q, log, c) = checking_sink(db.clone());
+            queue_one(&mut q, &c, Duration::from_secs(5));
+            assert_eq!(log.lines().len(), 1, "{db:?}: {:?}", log.lines());
+            assert!(q.checks.is_empty(), "{db:?}");
+        }
+    }
+
+    #[test]
+    fn a_zero_wait_turns_the_look_up_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let (q, _log, _c) = checking_sink(None);
+        let q = q.checking(Some(fake_db(dir.path(), &["q1"])), Duration::ZERO, false);
+        assert!(q.db.is_none());
+    }
+
+    #[test]
+    fn sqlite_home_follows_codex_order() {
+        let codex = tempfile::tempdir().unwrap();
+        let home = codex.path();
+        let env = tempfile::tempdir().unwrap();
+        let env_dir = env.path().as_os_str();
+        let dir = |env: Option<&OsStr>| {
+            let (dir, ignored) = sqlite_home_in(home, env).unwrap();
+            assert_eq!(ignored, None);
+            dir
+        };
+        assert_eq!(dir(None), home);
+        assert_eq!(dir(Some(OsStr::new(" "))), home);
+        assert_eq!(dir(Some(env_dir)), env.path());
+
+        let set = |text: &str| fs::write(home.join("config.toml"), text).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let other_toml = other.path().display().to_string().replace('\\', "\\\\");
+        set(&format!(
+            "model = \"x\"\nsqlite_home = \"{other_toml}\" # here\n[profiles.a]\nsqlite_home = \"/no\"\n"
+        ));
+        assert_eq!(
+            dir(Some(env_dir)),
+            other.path(),
+            "the setting comes before CODEX_SQLITE_HOME"
+        );
+        set("sqlite_home = 'db'\n");
+        assert_eq!(dir(None), home.join("db"));
+        set("\"sqlite_home\" = 'quoted'\n");
+        assert_eq!(dir(None), home.join("quoted"), "missed a quoted key");
+        set("[profiles.a]\nsqlite_home = \"/no\"\n");
+        assert_eq!(dir(None), home, "read a table");
+        set("sqlite_home_x = \"/no\"\n");
+        assert_eq!(dir(None), home);
+    }
+
+    /// Lines inside a multi-line string are not keys or tables.
+    #[test]
+    fn sqlite_home_ignores_text_inside_strings() {
+        let codex = tempfile::tempdir().unwrap();
+        let home = codex.path();
+        let set = |text: &str| fs::write(home.join("config.toml"), text).unwrap();
+        set(
+            "developer_instructions = \"\"\"\nsqlite_home = \"example-db\"\n\"\"\"\nsqlite_home = \"real-db\"\n",
+        );
+        assert_eq!(sqlite_home_in(home, None).unwrap().0, home.join("real-db"));
+        set("developer_instructions = '''\n[profiles.a]\n'''\nsqlite_home = \"real-db\"\n");
+        assert_eq!(sqlite_home_in(home, None).unwrap().0, home.join("real-db"));
+    }
+
+    /// A `config.toml` that is not TOML, or a `sqlite_home` that is not a
+    /// string, is ignored: the next source is used, and the reason kept.
+    #[test]
+    fn a_bad_config_falls_back_to_the_next_source() {
+        let codex = tempfile::tempdir().unwrap();
+        let home = codex.path();
+        let env = tempfile::tempdir().unwrap();
+        for bad in [
+            "sqlite_home = /no\n",
+            "sqlite_home = \"/no\n",
+            "sqlite_home = \"a\\q\"\n",
+            "sqlite_home = 5\n",
+        ] {
+            fs::write(home.join("config.toml"), bad).unwrap();
+            let (dir, ignored) = sqlite_home_in(home, Some(env.path().as_os_str())).unwrap();
+            assert_eq!(dir, env.path(), "{bad:?}");
+            assert!(
+                ignored.is_some_and(|w| w.contains("config.toml")),
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// A writer that holds an exclusive lock makes the look-up fail after
+    /// `DB_BUSY`, not hang, and the sink goes on with no line.
+    #[test]
+    fn a_locked_database_is_skipped_within_the_busy_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = fake_db(dir.path(), &["q1"]);
+        let writer = rusqlite::Connection::open(&db).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA locking_mode = EXCLUSIVE;
+                 BEGIN EXCLUSIVE;
+                 INSERT INTO queued_items VALUES ('q2', 't1', '{}', 5, 0, 0);",
+            )
+            .unwrap();
+        let start = Instant::now();
+        assert!(still_queued(&db, "q1").is_err(), "read past the lock");
+        assert!(start.elapsed() < DB_BUSY + Duration::from_secs(2));
+
+        let (mut q, log, c) = checking_sink(Some(db.clone()));
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        assert_eq!(log.lines().len(), 1, "{:?}", log.lines());
+        assert!(q.checks.is_empty());
+        writer.execute_batch("COMMIT;").unwrap();
+    }
+
+    /// Look-ups can briefly delay a Codex write, never stop it: a writer
+    /// that waits for locks as Codex does commits every insert while they
+    /// run. Codex's SQLite pools wait 5 s (`DEFAULT_BUSY_TIMEOUT` in
+    /// upstream `codex-rs/state/src/sqlite.rs`); this writer waits up to 5 s
+    /// in 1 ms steps and counts the inserts that had to wait.
+    #[test]
+    fn a_writer_commits_while_look_ups_run() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static WAITS: AtomicUsize = AtomicUsize::new(0);
+        static WAITED: AtomicUsize = AtomicUsize::new(0);
+        fn wait(tries: i32) -> bool {
+            if tries == 0 {
+                WAITED.fetch_add(1, Ordering::Relaxed);
+            }
+            WAITS.fetch_add(1, Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(1));
+            tries < 5000
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let db = fake_db(dir.path(), &["q1"]);
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (db, done) = (db.clone(), done.clone());
+            thread::spawn(move || {
+                let mut n = 0;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    assert_eq!(still_queued(&db, "q1"), Ok(true));
+                    n += 1;
+                }
+                n
+            })
+        };
+        let mut writer = rusqlite::Connection::open(&db).unwrap();
+        writer.busy_handler(Some(wait)).unwrap();
+        for i in 1..=50 {
+            writer
+                .execute(
+                    "INSERT INTO queued_items VALUES (?1, 't1', '{}', ?2, 0, 0)",
+                    rusqlite::params![format!("w{i}"), i],
+                )
+                .unwrap();
+            thread::sleep(Duration::from_millis(2));
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(reader.join().unwrap() > 0, "no look-up ran");
+        assert_eq!(still_queued(&db, "w50"), Ok(true));
+        eprintln!(
+            "{} of 50 inserts waited for a look-up, {} ms in all",
+            WAITED.load(Ordering::Relaxed),
+            WAITS.load(Ordering::Relaxed)
         );
     }
 }
