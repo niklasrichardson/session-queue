@@ -64,10 +64,11 @@ The state glyphs are `◌` queued, `◐` claimed, `●` done, `✕` rejected and
 
 One row per Claude Code session on this computer, with what it costs today and whether it is working.
 
-- **CPU and Memory.** Two boxes at the top. Each has figures on the left and a graph on the right. The graph shows the whole computer in one colour and Claude's share of it in a second colour, both 0 to 100 %.
-  - CPU figures: **Total** (0 to 100 % across all cores), **Claude** (all Claude processes together, as a share of the whole computer, so it fits the same graph), **Busy cores** (cores at 50 % or more of that core) and **Cores**. The table's cpu% column stays in % of one core.
-  - Memory figures: **Used** of total, **Available**, **Swap** used of total, and **Claude** (all Claude processes together). GB here are GiB, as Task Manager and `top` count them.
-  - The graph keeps one sample per scan, the newest 120 (6 minutes), and fills from the right. The history exists only in the live view. An export takes one snapshot, so it draws the current level as one bar, Claude's share first, with the note "the graph builds in the live view". The `--html` dashboard gives the same figures as text.
+- **CPU and Memory.** Two boxes at the top. Each has figures on the left and a graph on the right. The graph shows the whole computer, Claude's share of it and Codex's share of it, each in its own theme colour, all 0 to 100 %. Claude's share is drawn from the bottom and Codex's share on top of it. A `■` beside a figure shows its colour.
+  - CPU figures: **Total** (0 to 100 % across all cores), **Claude** and **Codex** (all their processes together, as a share of the whole computer, so they fit the same graph), **Busy cores** (cores at 50 % or more of that core) and **Cores**. The table's cpu% column stays in % of one core.
+  - Memory figures: **Used** of total, **Available**, **Swap** used of total, **Claude** and **Codex**. GB here are GiB, as Task Manager and `top` count them.
+  - Which processes count for Claude and for Codex is in [Claude and Codex processes](#claude-and-codex-processes).
+  - The graph keeps one sample per scan, the newest 120 (6 minutes), and fills from the right. The history exists only in the live view. An export takes one snapshot, so it draws the current level as one bar, Claude's share first, then Codex's, with the note "the graph builds in the live view". The `--html` dashboard gives the same figures as text.
   - A box too narrow for its graph shows the figures only.
 - **Sessions.** One row per session, sorted working, then recent, then idle. Within each group, the newest activity is first.
 
@@ -76,7 +77,7 @@ One row per Claude Code session on this computer, with what it costs today and w
 | session | The name of the cq watcher running in the session's folder. Else the session's custom title, without a leading `RC: `. Else the folder's last part, or `<repo>/<worktree>` for a worktree under `.claude/worktrees`. |
 | state | `● working`, `◐ recent` or `○ idle`. `▲ idle` (warning colour) is an idle session with cq messages queued or claimed. |
 | model | The model of the newest reply, without `claude-` and the date, for example `opus-5-5`. |
-| context | Tokens in the newest reply's prompt: input plus cache writes plus cache reads. |
+| context | Tokens in the newest reply's prompt: input plus cache writes plus cache reads. Over 150,000 the cell is in the warning colour, and over 250,000 in the error colour. The rest of the row keeps its colours. |
 | tokens | Tokens since local midnight: input, cache writes, cache reads and output, for the main transcript and its subagents. |
 | est.cost | An estimate of those tokens at API list prices. It is not your plan's bill. `?` means a model has no price in the table. |
 | cpu% | CPU of the session's process and its child processes. 100 is one core. |
@@ -97,6 +98,14 @@ A narrow terminal drops the least important columns first: mem, sub, claim, mode
 
 The rule is `sessions::state`, and the warning is `sessions::warn`.
 
+### Context colour
+
+- **Normal:** 150,000 tokens or fewer.
+- **Warning colour:** more than 150,000 (`CONTEXT_WARN`).
+- **Error colour:** more than 250,000 (`CONTEXT_BAD`).
+
+The rule is `sessions::context`. Only the context cell changes colour. The `--html` dashboard uses the same rule: orange for the warning and red for the error.
+
 ### How sessions are found and matched
 
 - Transcripts are in `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects` when that is set. On Windows, `~` is `%USERPROFILE%`.
@@ -107,6 +116,18 @@ The rule is `sessions::state`, and the warning is `sessions::warn`.
 - A cq watcher is a `cq` process. Its name comes from `cq watch --as NAME` in its arguments, or else from its `heartbeat/NAME.pid` file in the queue root. It belongs to the nearest session process among its parents, up to 10 steps up, because a session often runs `cq watch` from another folder. A watcher with no session above it belongs to its own working folder.
 - An inbox watcher that the Bash tool starts in the background matches the same way. On Windows it runs under three `bash` processes below the session's `claude` process (checked on 28 October 2026).
 - A sleeping name has no `cq` process. Its row is the one that last showed that name while `cq-top` ran, or else the folder in line 3 of its `members/` record (the watcher's working folder). A name that matches neither shows only on the Overview screen.
+
+### Claude and Codex processes
+
+The CPU and Memory boxes count Claude and Codex like this:
+
+- A **Claude process** is a process named `claude`.
+- A **Codex process** is a process named `codex` or `codex-…` (for example `codex-code-mode-host`), or a process whose executable is in a folder named `OpenAI.Codex_…`, `OpenAI/Codex`, `.codex` or `Codex.app`. On Windows the Codex app is `ChatGPT.exe` in an `OpenAI.Codex_…` package folder, so the ChatGPT app is not counted. Names and folders are compared without case.
+- Every other process counts for the nearest Claude or Codex process among its parents, the same way a session's cpu% includes its child processes. So a build that a Claude session runs counts for Claude, and a `node` that Codex runs counts for Codex.
+- No process counts for both. A Codex that a Claude session starts counts for Codex, with everything below it, and a Claude that Codex starts counts for Claude.
+- A process with neither above it counts for neither.
+
+The rule is `own_owner` and `owners` in `tools/cq-top/src/sessions.rs`. The Codex names were checked on Windows on 29 October 2026. `Codex.app` is for macOS and is not tested.
 
 ### Tokens and cost
 
