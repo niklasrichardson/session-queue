@@ -522,6 +522,31 @@ pub fn warn(state: State, waiting: usize, claimed: usize) -> bool {
     state == State::Idle && waiting + claimed > 0
 }
 
+/// Above this many tokens in the newest reply's prompt, the context cell is a warning.
+pub const CONTEXT_WARN: u64 = 150_000;
+/// Above this many, the context cell is an error.
+pub const CONTEXT_BAD: u64 = 250_000;
+
+/// How full a session's context is, for the colour of its context cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Context {
+    Normal,
+    Warn,
+    Bad,
+}
+
+/// `CONTEXT_WARN` or fewer tokens is normal, more is a warning, and more than `CONTEXT_BAD`
+/// is an error.
+pub fn context(tokens: u64) -> Context {
+    if tokens > CONTEXT_BAD {
+        Context::Bad
+    } else if tokens > CONTEXT_WARN {
+        Context::Warn
+    } else {
+        Context::Normal
+    }
+}
+
 // ---------- git ----------
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -649,10 +674,15 @@ pub struct Machine {
     pub mem_available: u64,
     pub swap_used: u64,
     pub swap_total: u64,
-    /// Every process named `claude`, sessions and helpers: % of one core, and bytes.
+    /// Claude processes and the processes below them (see `owners`): % of one core, and
+    /// bytes.
     pub claude_cpu: f32,
     pub claude_mem: u64,
     pub claude_procs: usize,
+    /// Codex processes and the processes below them, the same way.
+    pub codex_cpu: f32,
+    pub codex_mem: u64,
+    pub codex_procs: usize,
 }
 
 /// `part` as a % of `total`, 0 to 100; an empty total gives 0.
@@ -670,33 +700,42 @@ impl Machine {
         percent(f64::from(self.claude_cpu), 100.0 * self.cores as f64)
     }
 
+    /// Codex's CPU as a % of the whole computer, on the same scale as `cpu`.
+    pub fn codex_share(&self) -> f32 {
+        percent(f64::from(self.codex_cpu), 100.0 * self.cores as f64)
+    }
+
     pub fn sample(&self) -> Sample {
         let total = self.mem_total as f64;
         Sample {
             cpu: self.cpu.clamp(0.0, 100.0),
             claude_cpu: self.claude_share(),
+            codex_cpu: self.codex_share(),
             mem: percent(self.mem_used as f64, total),
             claude_mem: percent(self.claude_mem as f64, total),
+            codex_mem: percent(self.codex_mem as f64, total),
         }
     }
 
     /// The CPU box's figures: (label, value).
-    pub fn cpu_figures(&self) -> [(&'static str, String); 4] {
+    pub fn cpu_figures(&self) -> [(&'static str, String); 5] {
         [
             ("Total", format!("{:.1}%", self.cpu)),
             ("Claude", format!("{:.1}%", self.claude_share())),
+            ("Codex", format!("{:.1}%", self.codex_share())),
             ("Busy cores", self.busy_cores.to_string()),
             ("Cores", self.cores.to_string()),
         ]
     }
 
     /// The Memory box's figures: (label, value).
-    pub fn mem_figures(&self) -> [(&'static str, String); 4] {
+    pub fn mem_figures(&self) -> [(&'static str, String); 5] {
         [
             ("Used", of_gb(self.mem_used, self.mem_total)),
             ("Available", gb(self.mem_available)),
             ("Swap", of_gb(self.swap_used, self.swap_total)),
             ("Claude", gb(self.claude_mem)),
+            ("Codex", gb(self.codex_mem)),
         ]
     }
 }
@@ -706,8 +745,10 @@ impl Machine {
 pub struct Sample {
     pub cpu: f32,
     pub claude_cpu: f32,
+    pub codex_cpu: f32,
     pub mem: f32,
     pub claude_mem: f32,
+    pub codex_mem: f32,
 }
 
 /// The newest `cap` samples, oldest first. Lives only in the running view.
@@ -789,6 +830,76 @@ fn match_watchers(
     out
 }
 
+/// Who a process counts for in the CPU and Memory boxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Claude,
+    Codex,
+}
+
+/// Claude or Codex, by a process's own name (lower case, without `.exe`) and executable,
+/// before its parents are looked at. Claude is a process named `claude`. Codex is a process
+/// named `codex` or `codex-…`, or one whose executable is in a folder named `OpenAI.Codex_…`
+/// (the Codex app on Windows, whose main process is `ChatGPT.exe`), `OpenAI/Codex` (the
+/// programs the app installs), `.codex` (Codex's home folder) or `Codex.app`.
+fn own_owner(stem: &str, exe: Option<&Path>) -> Option<Owner> {
+    if stem == "claude" {
+        return Some(Owner::Claude);
+    }
+    if stem == "codex" || stem.starts_with("codex-") {
+        return Some(Owner::Codex);
+    }
+    let parts: Vec<String> = exe
+        .into_iter()
+        .flat_map(Path::components)
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect();
+    let codex = parts
+        .iter()
+        .any(|p| p.starts_with("openai.codex_") || p == ".codex" || p == "codex.app")
+        || parts
+            .windows(2)
+            .any(|w| w[0] == "openai" && w[1] == "codex");
+    codex.then_some(Owner::Codex)
+}
+
+/// `roots` and every process below them, each once. A process that is not a root and for
+/// which `stop` is true is left out, with everything below it.
+fn tree(
+    roots: impl IntoIterator<Item = sysinfo::Pid>,
+    children: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    stop: impl Fn(sysinfo::Pid) -> bool,
+) -> HashSet<sysinfo::Pid> {
+    let mut seen = HashSet::new();
+    let mut stack: Vec<_> = roots.into_iter().collect();
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        let below = children.get(&pid).into_iter().flatten().copied();
+        stack.extend(below.filter(|c| !stop(*c)));
+    }
+    seen
+}
+
+/// The processes that count for Claude and for Codex. A process counts for the nearest
+/// Claude or Codex process among itself and its parents, so none counts for both: a Codex
+/// started by a Claude session counts for Codex, with everything below it.
+fn owners(
+    own: &HashMap<sysinfo::Pid, Owner>,
+    children: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+) -> (HashSet<sysinfo::Pid>, HashSet<sysinfo::Pid>) {
+    let walk = |who: Owner| {
+        let roots = own.iter().filter(|(_, o)| **o == who).map(|(p, _)| *p);
+        tree(roots, children, |p| own.get(&p).is_some_and(|o| *o != who))
+    };
+    let claude = walk(Owner::Claude);
+    let mut codex = walk(Owner::Codex);
+    // Only a parent loop (from a reused process ID) can reach a process from both sides.
+    codex.retain(|p| !claude.contains(p));
+    (claude, codex)
+}
+
 fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
     if !sysinfo::IS_SUPPORTED_SYSTEM {
@@ -801,7 +912,8 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
             .with_cpu()
             .with_memory()
             .with_cwd(UpdateKind::OnlyIfNotSet)
-            .with_cmd(UpdateKind::OnlyIfNotSet),
+            .with_cmd(UpdateKind::OnlyIfNotSet)
+            .with_exe(UpdateKind::OnlyIfNotSet),
     );
     sys.refresh_cpu_usage();
     sys.refresh_memory();
@@ -845,16 +957,17 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
     let mut roots: HashMap<String, (PathBuf, Vec<Pid>)> = HashMap::new();
     let mut table = HashMap::new();
     let mut watchers = Vec::new();
+    let mut own = HashMap::new();
     for (pid, p) in all {
         if let Some(parent) = p.parent() {
             children.entry(parent).or_default().push(*pid);
         }
+        if let Some(o) = own_owner(&stem(p), p.exe()) {
+            own.insert(*pid, o);
+        }
         let mut session = false;
         match stem(p).as_str() {
             "claude" => {
-                out.machine.claude_cpu += p.cpu_usage();
-                out.machine.claude_mem += p.memory();
-                out.machine.claude_procs += 1;
                 // Electron helpers (`--type=renderer` and so on) are not sessions.
                 session = !args(p).iter().any(|a| a.starts_with("--type="));
                 if session && let Some(dir) = cwd(p) {
@@ -898,23 +1011,24 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
         }
     }
     out.watchers = match_watchers(&table, watchers);
+    let usage = |pids: &HashSet<Pid>| {
+        pids.iter()
+            .filter_map(|pid| all.get(pid))
+            .fold((0.0, 0), |(cpu, mem), p| {
+                (cpu + p.cpu_usage(), mem + p.memory())
+            })
+    };
     // Each session's CPU and memory: its Claude processes and everything below them.
     for (k, (dir, pids)) in roots {
-        let (mut cpu, mut mem) = (0.0, 0);
-        let mut seen = HashSet::new();
-        let mut stack = pids;
-        while let Some(pid) = stack.pop() {
-            if !seen.insert(pid) {
-                continue;
-            }
-            if let Some(p) = all.get(&pid) {
-                cpu += p.cpu_usage();
-                mem += p.memory();
-            }
-            stack.extend(children.get(&pid).into_iter().flatten().copied());
-        }
+        let (cpu, mem) = usage(&tree(pids, &children, |_| false));
         out.sessions.insert(k, (dir, cpu, mem));
     }
+    // The CPU and Memory boxes: Claude and Codex, each with the processes below it.
+    let (claude, codex) = owners(&own, &children);
+    let m = &mut out.machine;
+    (m.claude_cpu, m.claude_mem) = usage(&claude);
+    (m.codex_cpu, m.codex_mem) = usage(&codex);
+    (m.claude_procs, m.codex_procs) = (claude.len(), codex.len());
     Some(out)
 }
 
@@ -1518,6 +1632,104 @@ mod tests {
     }
 
     #[test]
+    fn claude_and_codex_processes_are_told_apart() {
+        let own = |stem: &str, exe: &str| own_owner(stem, Some(Path::new(exe)));
+        assert_eq!(
+            own("claude", "C:/Apps/Claude/claude.exe"),
+            Some(Owner::Claude)
+        );
+        // The Codex CLI, its helpers and the macOS app, by name.
+        assert_eq!(own("codex", "/usr/local/bin/codex"), Some(Owner::Codex));
+        assert_eq!(own("codex-code-mode-host", ""), Some(Owner::Codex));
+        assert_eq!(
+            own_owner("codex-computer-use-swift", None),
+            Some(Owner::Codex)
+        );
+        // The Codex app on Windows, by its package folder; any case.
+        let app = "C:/Program Files/WindowsApps/OpenAI.Codex_1.0.0.0_x64__abc/app/ChatGPT.exe";
+        assert_eq!(own("chatgpt", app), Some(Owner::Codex));
+        assert_eq!(own("chatgpt", &app.to_uppercase()), Some(Owner::Codex));
+        // Programs the Codex app installs, and Codex's home folder.
+        let runtime = "C:/Users/me/AppData/Local/OpenAI/Codex/runtimes/node/bin/node.exe";
+        assert_eq!(own("node", runtime), Some(Owner::Codex));
+        let plugin = "C:/Users/me/.codex/plugins/cache/host/extension-host.exe";
+        assert_eq!(own("extension-host", plugin), Some(Owner::Codex));
+        assert_eq!(
+            own(
+                "codex helper",
+                "/Applications/Codex.app/Contents/MacOS/Codex Helper"
+            ),
+            Some(Owner::Codex)
+        );
+        // Not Codex: the ChatGPT app, other programs, look-alike names.
+        let chatgpt =
+            "C:/Program Files/WindowsApps/OpenAI.ChatGPT-Desktop_1.0.0.0_x64__abc/app/ChatGPT.exe";
+        assert_eq!(own("chatgpt", chatgpt), None);
+        assert_eq!(own("node", "C:/Program Files/nodejs/node.exe"), None);
+        assert_eq!(own("codexer", "D:/Code/my-project/codexer.exe"), None);
+        assert_eq!(own("node", "D:/Code/my-project/codex/node.exe"), None);
+        assert_eq!(own_owner("bash", None), None);
+    }
+
+    #[test]
+    fn each_process_counts_for_the_nearest_claude_or_codex_above_it() {
+        use sysinfo::Pid;
+        let p = Pid::from_u32;
+        let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+        let mut link =
+            |parent: u32, child: u32| children.entry(p(parent)).or_default().push(p(child));
+        // A Claude session (1) runs a shell (2), which runs cargo (3) and the Codex CLI (4);
+        // Codex runs node (5). The Codex app (10) runs a helper (11) and a Claude CLI (12),
+        // which runs git (13). A shell (20) owned by neither runs a tool (21).
+        for (parent, child) in [
+            (1, 2),
+            (2, 3),
+            (2, 4),
+            (4, 5),
+            (10, 11),
+            (10, 12),
+            (12, 13),
+            (20, 21),
+        ] {
+            link(parent, child);
+        }
+        // A parent loop through a Claude and a Codex process.
+        link(30, 31);
+        link(31, 30);
+        let own: HashMap<Pid, Owner> = [
+            (1, Owner::Claude),
+            (4, Owner::Codex),
+            (10, Owner::Codex),
+            (11, Owner::Codex),
+            (12, Owner::Claude),
+            (30, Owner::Claude),
+            (31, Owner::Codex),
+        ]
+        .into_iter()
+        .map(|(n, o)| (p(n), o))
+        .collect();
+        let (claude, codex) = owners(&own, &children);
+        let sorted = |s: HashSet<Pid>| {
+            let mut v: Vec<usize> = s.into_iter().map(|p| p.as_u32() as usize).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(sorted(claude), [1, 2, 3, 12, 13, 30]);
+        assert_eq!(sorted(codex), [4, 5, 10, 11, 31]);
+    }
+
+    #[test]
+    fn context_colours_change_above_150k_and_250k() {
+        assert_eq!(context(0), Context::Normal);
+        assert_eq!(context(CONTEXT_WARN), Context::Normal);
+        assert_eq!(context(150_000), Context::Normal);
+        assert_eq!(context(150_001), Context::Warn);
+        assert_eq!(context(250_000), Context::Warn);
+        assert_eq!(context(250_001), Context::Bad);
+        assert_eq!(context(CONTEXT_BAD + 1), Context::Bad);
+    }
+
+    #[test]
     fn the_state_rule() {
         let now = 10_000;
         assert_eq!(state(now, now - 60, None), State::Working);
@@ -1863,11 +2075,20 @@ mod tests {
             claude_cpu: 160.0,
             claude_mem: 7 << 30,
             claude_procs: 26,
+            codex_cpu: 99.2,
+            codex_mem: 820 << 20,
+            codex_procs: 40,
         };
         let cpu = m.cpu_figures().map(|(l, v)| format!("{l} {v}"));
         assert_eq!(
             cpu,
-            ["Total 12.8%", "Claude 5.0%", "Busy cores 3", "Cores 32"]
+            [
+                "Total 12.8%",
+                "Claude 5.0%",
+                "Codex 3.1%",
+                "Busy cores 3",
+                "Cores 32"
+            ]
         );
         let mem = m.mem_figures().map(|(l, v)| format!("{l} {v}"));
         assert_eq!(
@@ -1876,13 +2097,15 @@ mod tests {
                 "Used 37.4 / 63.9 GB",
                 "Available 26.5 GB",
                 "Swap 0.0 / 4.0 GB",
-                "Claude 7.0 GB"
+                "Claude 7.0 GB",
+                "Codex 0.8 GB"
             ]
         );
         // 160 % of one core on 32 cores is 5 % of the computer.
         let s = m.sample();
-        assert!((s.claude_cpu - 5.0).abs() < 1e-4);
+        assert!((s.claude_cpu - 5.0).abs() < 1e-4 && (s.codex_cpu - 3.1).abs() < 1e-4);
         assert!((s.mem - 58.53).abs() < 0.01 && (s.claude_mem - 10.95).abs() < 0.01);
+        assert!((s.codex_mem - 1.25).abs() < 0.01);
         // Nothing known gives zeros, not NaN.
         assert_eq!(Machine::default().sample(), Sample::default());
     }

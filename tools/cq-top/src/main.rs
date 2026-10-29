@@ -1025,6 +1025,9 @@ mod tests {
                     claude_cpu: 7.0,
                     claude_mem: 2 << 30,
                     claude_procs: 3,
+                    codex_cpu: 4.0,
+                    codex_mem: 1 << 30,
+                    codex_procs: 2,
                 }),
                 rows: vec![
                     sessions::Row {
@@ -1749,6 +1752,68 @@ mod tests {
     }
 
     #[test]
+    fn only_the_context_cell_is_coloured_when_the_context_is_large() {
+        use ratatui::style::{Color, Style};
+        let mut snap = sample();
+        let row = |name: &str, context| sessions::Row {
+            name: name.into(),
+            state: sessions::State::Idle,
+            model: "opus-5-5".into(),
+            context: Some(context),
+            tokens_today: 7_000,
+            active: snap.now - 4000,
+            ..Default::default()
+        };
+        snap.sessions.rows = vec![
+            row("small", 120_000),
+            row("large", 200_000),
+            row("full", 300_000),
+        ];
+        let page = html::dashboard(Path::new("/queue"), &snap);
+        assert!(page.contains("<td class=\"n\">120k</td>"));
+        assert!(page.contains("<span class=\"serious\" title=\"over 150k tokens\">200k</span>"));
+        assert!(page.contains("<span class=\"critical\" title=\"over 250k tokens\">300k</span>"));
+
+        for theme in &THEMES {
+            let mut term = Terminal::new(TestBackend::new(140, 42)).unwrap();
+            term.draw(|f| draw(f, Path::new("/q"), &snap, false, Screen::Sessions, theme))
+                .unwrap();
+            let buf = term.backend().buffer();
+            // The style of the cell where `text` starts, and of the tokens cell beside it.
+            let styles = |text: &str| -> (Style, Style) {
+                for y in 0..42 {
+                    let line: Vec<&str> = (0..140).map(|x| buf[(x, y)].symbol()).collect();
+                    let n = text.chars().count();
+                    if let Some(x) = (0..=140 - n).find(|&x| line[x..x + n].concat() == text) {
+                        let tokens = (x + n..140).find(|&x| line[x] == "7").unwrap();
+                        let at = |x: usize| buf[(x as u16, y)].style();
+                        return (at(x), at(tokens));
+                    }
+                }
+                panic!("{text} not drawn in {}", theme.name);
+            };
+            let (small, small_tokens) = styles("120k");
+            let (large, large_tokens) = styles("200k");
+            let (full, full_tokens) = styles("300k");
+            assert!(
+                small != large && large != full && small != full,
+                "{}",
+                theme.name
+            );
+            // The rest of the row keeps its style.
+            assert_eq!(small, small_tokens, "{}", theme.name);
+            assert_eq!(large_tokens, small_tokens, "{}", theme.name);
+            assert_eq!(full_tokens, small_tokens, "{}", theme.name);
+            if theme.name == "classic" {
+                assert_eq!(
+                    (large.fg, full.fg),
+                    (Some(Color::Indexed(208)), Some(Color::Red))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_theme_draws_the_cpu_and_memory_boxes() {
         let text = |snap: &Snapshot, theme, w, h| {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -1767,8 +1832,10 @@ mod tests {
             .map(|i| sessions::Sample {
                 cpu: (i % 100) as f32,
                 claude_cpu: (i % 10) as f32,
+                codex_cpu: (i % 7) as f32,
                 mem: 40.0,
                 claude_mem: 5.0,
+                codex_mem: 3.0,
             })
             .collect();
         for theme in &THEMES {
@@ -1778,7 +1845,11 @@ mod tests {
                 if w >= 60 {
                     for t in [&a, &b] {
                         assert!(t.contains("CPU") && t.contains("Memory"), "{}", theme.name);
-                        assert!(t.contains("Claude"), "{}", theme.name);
+                        assert!(
+                            t.contains("Claude") && t.contains("Codex"),
+                            "{}",
+                            theme.name
+                        );
                     }
                 }
                 if w == 140 {
