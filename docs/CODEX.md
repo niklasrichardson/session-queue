@@ -7,6 +7,16 @@ There are two ways to use `cq` with Codex:
 
 Everything on this page was tested on Windows only. Back to the [README](../README.md).
 
+## Quick path for a Codex chat
+
+1. Install `cq` and create the queue root with `cq init` ([Setup](SETUP.md#install), steps 1 and 3). Use one absolute `CQ_ROOT` for every session.
+2. Call `cq` and `codex` by their full paths, as the tested setup does, or check that the bare names work in a new Codex chat. `cq watch --to-codex` runs `codex` from `PATH` unless you pass `--codex-bin`.
+3. Add the queue rules and a section for the chat's queue name to `AGENTS.md` ([Give the chat its rules](#give-the-chat-its-rules)).
+4. Let the chat write to the queue root ([Allow `cq` without prompts](#allow-cq-without-prompts)). A setup where Codex never asks for approval is not tested yet.
+5. Start `cq watch --as NAME --to-codex THREAD_ID` outside the chat ([Wake a Codex chat](#wake-a-codex-chat-with-cq-watch---to-codex), steps 1 and 2).
+6. Send NAME a test message, and check that the chat starts a turn (step 3 there).
+7. After a new chat or a restart of the computer, start the watcher again ([After a new chat or a restart](#after-a-new-chat-or-a-restart)).
+
 ## Set up a Codex chat
 
 A Codex chat needs four things: its rules, write access to the queue root without approval prompts, a watcher that wakes it, and a way to recover after a new chat or a restart.
@@ -17,6 +27,8 @@ Codex reads `AGENTS.md` files: the user-level `~/.codex/AGENTS.md` and the repos
 
 1. The [queue rules block](QUEUE-RULES.md#1-queue-rules-block), which is the same for every agent.
 2. One section per Codex queue name. The default wake prompt starts `Queue check as 'NAME'. Follow the 'NAME' section of AGENTS.md.`, so name the section after the queue name.
+
+If you start from [SESSION-RULES.example.md](SESSION-RULES.example.md), keep its "Codex chat" part. Delete the Claude Code parts: they do not apply to Codex. A Codex chat has no inbox mode, no Monitor mode and no `Watching` turn ending, no SessionStart hook, and no `/cq-start` or `/cq-stop` skills.
 
 Example section, for a chat with the queue name `worker-a`:
 
@@ -74,7 +86,7 @@ Steps:
 3. Send NAME a test message. Expected result: one line on the watcher's stdout, `cq watch (NAME): ... queued a check for 1 new message(s): Queued message ...`, and a new turn in the Codex chat within seconds.
 
 - **Security.** The prompt is fixed. Subjects, bodies and sender names never reach Codex through the command line. The chat reads the messages itself with `cq claim`, and must treat them as untrusted data, as for any session. `--codex-prompt TEXT` replaces the default prompt; keep it free of queue text.
-- **Stopping.** The watcher has no time limit. `cq sleep --as NAME NAME` stops it with exit 7. A sleeping name stays asleep: run `cq wake --as NAME NAME` before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. Exit 9 means `codex queue` failed 4 times in a row; check the `cq:` line, then start the watcher again. The Codex chat is not told when its watcher stops. [cq-top](CQ-TOP.md) shows the mode `codex` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
+- **Stopping.** The watcher has no default time limit. `--max-seconds N` stops it after N seconds, but only if you pass it. `cq sleep --as NAME NAME` stops it with exit 7. A sleeping name stays asleep: run `cq wake --as NAME NAME` before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. Exit 9 means `codex queue` failed 4 times in a row, and the watcher has stopped: the chat is not woken until you check the `cq:` line on stderr and start the watcher again. The Codex chat is not told when its watcher stops. [cq-top](CQ-TOP.md) shows the mode `codex` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
 - **Not verified.** What happens to a queued message while the Codex app is closed ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). `codex queue` exits 0 when the message is stored, not when the chat takes it. It is marked experimental in the Codex CLI.
 - **Fallback.** If `codex queue` is not available, or a long test shows lost wake-ups, use the [same-chat scheduled automation](#same-chat-scheduled-automation-fallback).
 

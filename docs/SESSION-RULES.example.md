@@ -30,6 +30,8 @@ Use this only when `cq watch --to-inbox` exits 64, because the session has no in
 
 A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a fixed prompt that names NAME. On that prompt, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If there are none, end the turn with no other work and no update. Do not start, stop or take over a watcher from the chat. See [Codex setup](CODEX.md#set-up-a-codex-chat).
 
+The Claude Code parts do not apply to a Codex chat: skip Monitor mode, the `Watching` turn ending, the SessionStart reminder, and /cq-start and /cq-stop.
+
 ### Codex dispatch worker
 
 `cq dispatch` claims, replies and finishes for its Codex child. Give it its own queue name, trusted scope instructions and allowed senders. The child must not run `cq claim` or `cq done` itself. See [Codex setup](CODEX.md#dispatch-worker-prerequisites).
