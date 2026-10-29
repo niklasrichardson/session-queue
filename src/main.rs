@@ -11,7 +11,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::de::DeserializeOwned;
 
-use cq::codex::CodexQueue;
+use cq::codex::{CHECK_AFTER, CodexQueue};
 use cq::done::{self, DoneRequest};
 use cq::error::{CqError, Result, exit};
 use cq::inbox::Inbox;
@@ -182,6 +182,16 @@ enum Cmd {
         /// prompt. It must not contain anything a queue message wrote.
         #[arg(long, value_name = "TEXT", requires = "to_codex")]
         codex_prompt: Option<String>,
+        /// How long after each queued check --to-codex looks, read-only, in
+        /// Codex's queue database whether the chat has taken it. 0 turns the
+        /// look-up off.
+        #[arg(long, value_name = "SECS", requires = "to_codex",
+              default_value_t = CHECK_AFTER.as_secs())]
+        codex_check_seconds: u64,
+        /// With --to-codex, print to stderr, once, why the look-up in Codex's
+        /// queue database was skipped.
+        #[arg(long, requires = "to_codex")]
+        debug: bool,
         /// Full rescan interval (for tests).
         #[arg(long, hide = true, default_value_t = DEFAULT_RESCAN_SECONDS,
               value_parser = clap::value_parser!(u64).range(1..))]
@@ -408,8 +418,10 @@ fn watch_to_codex(
     thread: &str,
     bin: Option<OsString>,
     prompt: Option<String>,
+    check_after: Duration,
+    debug: bool,
 ) -> Result<Ended> {
-    let mut codex = CodexQueue::start(&opts.name, thread, bin, prompt)?;
+    let mut codex = CodexQueue::start(&opts.name, thread, bin, prompt, check_after, debug)?;
     if let Err(e) = platform::install_interrupt_handler() {
         eprintln!("cq watch: a signal will stop the watcher before it queues held messages ({e})");
     }
@@ -469,6 +481,8 @@ fn run(cmd: Cmd) -> Result<i32> {
             to_codex,
             codex_bin,
             codex_prompt,
+            codex_check_seconds,
+            debug,
         } => {
             let mode = match (&to_codex, to_inbox) {
                 (Some(_), _) => members::Mode::Codex,
@@ -490,7 +504,8 @@ fn run(cmd: Cmd) -> Result<i32> {
                 mode,
             };
             let ended = if let Some(thread) = &to_codex {
-                watch_to_codex(&opts, thread, codex_bin, codex_prompt)?
+                let check_after = Duration::from_secs(codex_check_seconds);
+                watch_to_codex(&opts, thread, codex_bin, codex_prompt, check_after, debug)?
             } else if to_inbox {
                 watch_to_inbox(&opts)?
             } else {

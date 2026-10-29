@@ -152,6 +152,16 @@ Steps:
 - **Not verified.** What happens to a queued message while the Codex app is closed ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). `codex queue` exits 0 when the message is stored, not when the chat takes it. It is marked experimental in the Codex CLI.
 - **Fallback.** If `codex queue` is not available, or a long test shows lost wake-ups, use the [same-chat scheduled automation](#same-chat-scheduled-automation-fallback).
 
+#### If a wake does not start a turn
+
+Codex Desktop starts a turn from a queued check only while the chat is loaded in the app. The Codex app-server documents that it unloads a thread after 30 minutes with no subscribers and no activity (thread status `notLoaded`; see [Unsubscribe from a loaded thread](https://learn.chatgpt.com/docs/app-server#unsubscribe-from-a-loaded-thread)). The check then waits in Codex's queue until you open the chat. This was seen twice on 29 Oct 2026, from Codex's own logs ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). Not verified: that this unload rule caused those two cases.
+
+- **The warning.** About 60 seconds after each queued check, the watcher looks, read-only, in Codex's queue database (`queue_1.sqlite` in `CODEX_HOME`, default `~/.codex`). If the check still waits there, the watcher prints one line on stdout: `cq watch (NAME): <UTC time> codex thread THREAD has not taken the queued check after 60 s (the chat may be unloaded): open the chat in the Codex app`. It prints the line once per queued check. The line says "may be": the look-up shows that the check is still queued, not why.
+- **`CQ-OVERDUE`.** A coordinator's watcher reports a task that has been unclaimed for 30 minutes (see [Overdue tasks](COMMANDS.md#overdue-tasks)). For a task sent to a Codex chat, this line can also mean that the chat has been unloaded.
+- **What to do.** On either line, open the chat in the Codex app. In both cases in issue #25, the waiting check started a turn within a second of the chat being opened.
+- **Limits.** If the database, or its `queued_items` table, cannot be read, the watcher skips the look-up and prints nothing; `--debug` prints the reason once on stderr. `--codex-check-seconds SECS` changes the wait, and 0 turns the look-up off. Not verified: that the ID `codex queue` prints is the item's `id` in `queued_items`. If it is not, the warning never appears, and `CQ-OVERDUE` is the only signal.
+- **Later Codex releases.** The Codex source has a `codex queue --resume` option that loads an unloaded chat. It is not in the tested releases (codex-cli 0.156.1, Desktop app 0.162.0-alpha.2). cq will use it once it is released and tested, which may make this step automatic.
+
 ### A round trip in PowerShell
 
 PowerShell has no heredoc. Pipe a here-string to `cq send`, and pass reply JSON in a UTF-8 file with `--input FILE`. Each block ran against a test queue in PowerShell 7.6, outside Codex. Not yet tested end to end with a Codex chat: see [issue #45](https://github.com/niklasrichardson/session-queue/issues/45).
