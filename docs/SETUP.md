@@ -17,7 +17,7 @@ Set up `cq` in three parts, in this order:
 ## Requirements
 
 - Stable Rust (built and tested with 1.98.1).
-- Windows 10 or 11, or macOS. macOS support is new. The code builds for macOS, but it has not yet been tested on a Mac. Please open an issue if something does not work.
+- Windows 10 or 11, or macOS. macOS is partly tested: what passed, what failed and what is not checked is in [Test status](TESTING.md#macos-29-october-2026) and [#1](https://github.com/niklasrichardson/session-queue/issues/1). Please open an issue if something does not work.
 - An agent that can run shell commands. What each agent needs:
   - **Claude Code:** on Windows, Git for Windows, because Claude Code runs Bash commands in Git Bash. See [Claude Code setup](CLAUDE-CODE.md#wake-a-session-with-cq-watch---to-inbox).
   - **Codex:** the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex on Windows ran its commands in PowerShell in the tested setup. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).

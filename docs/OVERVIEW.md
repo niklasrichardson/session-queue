@@ -86,7 +86,7 @@ Inbox mode became the default for Claude Code on 28 Oct 2026 ([#24](https://gith
 | Platform | `cq` | cq-top |
 | --- | --- | --- |
 | Windows 11 | Tested live with Claude Code (the Claude desktop app's Code tab) and Codex (the Codex Desktop app) | Tested |
-| macOS | Compiles; not run on a Mac ([#1](https://github.com/niklasrichardson/session-queue/issues/1)) | An earlier two-screen version ran on a Mac; the current screens are not tested there ([#17](https://github.com/niklasrichardson/session-queue/issues/17)) |
+| macOS | Partly tested on 29 Oct 2026 ([#1](https://github.com/niklasrichardson/session-queue/issues/1)): the build and all test suites except `tests/dispatch.rs` passed, and inbox mode posted into one Claude Code session in the desktop app. `tests/dispatch.rs` fails intermittently. Codex, live hand-offs between sessions and the Monitor fallback are not checked. | An earlier two-screen version ran on a Mac; the current screens are not tested there ([#17](https://github.com/niklasrichardson/session-queue/issues/17)) |
 | Linux | Not built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)) | Not tested |
 
 On 29 Oct 2026, one Claude Code CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (live test L3 in [Spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked the receiving session's screen for a cap notice in that test. Remote Control has not been tested. The native `--to-codex` watcher has not been tested with an interactive Codex CLI chat. Details are in [Test status](TESTING.md).

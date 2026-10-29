@@ -155,7 +155,7 @@ The dispatcher deliberately does not register its parent chat as owner of the wo
 
 ## Dispatch worker prerequisites
 
-`cq dispatch` was tested on Windows with Codex CLI 0.162.0-alpha.2, Rust 1.98.1 and PowerShell 7.6.5. macOS and Linux dispatcher execution are not verified. The adapter requires a Codex CLI supporting `exec --ignore-user-config`, `--ephemeral`, `--output-schema` and `--json`.
+`cq dispatch` was tested on Windows with Codex CLI 0.162.0-alpha.2, Rust 1.98.1 and PowerShell 7.6.5. macOS and Linux dispatcher execution with a real Codex are not verified. On macOS, `tests/dispatch.rs` fails intermittently ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). The adapter requires a Codex CLI supporting `exec --ignore-user-config`, `--ephemeral`, `--output-schema` and `--json`.
 
 - Install Rust and the Codex CLI. Sign in to Codex using its normal login flow. `codex exec` reuses saved authentication.
 - Use an existing repository as the worker workspace. Review its `AGENTS.md` before accepting queue tasks.

@@ -45,7 +45,7 @@ If your own sessions are using `cq` while you develop, build into a separate fol
 
 ## Platform code
 
-Platform-specific code lives in `src/platform.rs` (stopping an old watcher, checking stdin) and `src/root.rs` (the default queue root). Windows is tested live. macOS compiles but has not run on a Mac. Linux has not been built.
+Platform-specific code lives in `src/platform.rs` (stopping an old watcher, checking stdin) and `src/root.rs` (the default queue root). Windows is tested live. macOS is partly tested ([#1](https://github.com/niklasrichardson/session-queue/issues/1)): most tests pass there, `tests/dispatch.rs` fails intermittently, and only inbox mode in one session was checked live. Linux has not been built.
 
 ## Writing style for docs
 

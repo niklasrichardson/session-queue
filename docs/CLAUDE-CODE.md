@@ -2,7 +2,7 @@
 
 This page holds only what differs for Claude Code. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). The Codex steps are in [Codex setup](CODEX.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
 
-Most live tests used the Claude desktop app's Code tab on Windows 11. On 29 Oct 2026, one Claude Code CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (live test L3 in [Spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked the receiving session's screen for a cap notice in that test. Remote Control has not been tested ([Test status](TESTING.md)). Back to the [README](../README.md).
+Most live tests used the Claude desktop app's Code tab on Windows 11. On 29 Oct 2026, one Claude Code CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (live test L3 in [Spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked the receiving session's screen for a cap notice in that test. On macOS, inbox mode posted into one session in the Code tab; live hand-offs between sessions there are not checked ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Remote Control has not been tested ([Test status](TESTING.md)). Back to the [README](../README.md).
 
 ## Quick path for a Claude Code session
 
