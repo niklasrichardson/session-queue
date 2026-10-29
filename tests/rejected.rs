@@ -414,3 +414,39 @@ fn requeue_holds_the_claim_lock() {
             .exists()
     );
 }
+
+/// When `cq requeue` cannot set the requeue time, it fails (exit 70) and
+/// leaves the message in `rejected/`, so it never reaches the inbox looking
+/// as old as its rejection. Windows only: another handle that allows rename
+/// but not write blocks the time.
+#[cfg(windows)]
+#[test]
+fn a_requeue_that_cannot_set_its_time_moves_nothing() {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_DELETE: u32 = 4;
+
+    let env = Env::new();
+    let info = env.send("alice", "bob", "info", "hello", "body");
+    assert_eq!(code(&env.claim("bob", &info)), 0);
+    assert_eq!(code(&reject(&env, "bob", &info, "not now")), 0);
+    let src = env.path(&format!("rejected/bob/{info}.json"));
+    let _blocker = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(&src)
+        .unwrap();
+    let out = env.run(&["requeue", "--as", "bob", &info], None);
+    assert_eq!(code(&out), 70, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("it stays in rejected/bob/"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(src.exists());
+    assert!(
+        env.path(&format!("rejected/bob/{info}.reason.json"))
+            .exists()
+    );
+    assert!(!env.ids("inbox/bob").contains(&info));
+}

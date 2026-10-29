@@ -38,6 +38,25 @@ pub fn requeue(root: &Root, name: &str, id: &str) -> Result<Option<String>> {
             ),
         ));
     }
+    // A new modified time, set before the move: the watcher announces the
+    // message again even if it never saw the inbox without it, and overdue
+    // scans and a coordinator's CQ-WAKE count the wait from now. Without it
+    // the message would look as old as its rejection, so fail and leave it.
+    match fsutil::touch_with_retry(&src) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(CqError::new(
+                exit::NOT_FOUND,
+                format!("message {id} left rejected/{name}/ before it could be moved"),
+            ));
+        }
+        Err(e) => {
+            return Err(CqError::io(
+                format!("set the requeue time of {id}; it stays in rejected/{name}/"),
+                e,
+            ));
+        }
+    }
     let dst = message_file(&root.inbox(name), id);
     match fsutil::move_with_retry(&src, &dst) {
         Ok(()) => {}
@@ -59,10 +78,6 @@ pub fn requeue(root: &Root, name: &str, id: &str) -> Result<Option<String>> {
             ));
         }
     }
-    // A new modified time: the watcher announces the message again even if
-    // it never saw the inbox without it, and a coordinator's CQ-WAKE counts
-    // the wait from now.
-    let _ = fsutil::touch(&dst);
     match fs::remove_file(reason_file(&dir, id)) {
         Ok(()) => Ok(None),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),

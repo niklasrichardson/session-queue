@@ -76,7 +76,7 @@ REJECTED-OUT 2026-10-26T10:00:00Z (10:00 GMT) rejected=2026-10-26T10:00:40Z by=w
 TOTAL rejected_in=1 rejected_out=1
 ```
 
-`cq requeue --as B ID` moves `rejected/B/ID.json` back to `inbox/B/`, for example after `B`'s allowed senders are fixed. The message keeps its ID and contents, so the watcher announces it again and `B` claims it as usual. The reason file is removed. It moves only from `B`'s own `rejected/` folder: for an ID anywhere else (another session's `rejected/`, the inbox, `.processing/`, `done/`), it exits 6 and moves nothing. It sends nothing to the sender, and `PAUSE` does not stop it. It prints `requeued id=<id> to=inbox/B/`.
+`cq requeue --as B ID` moves `rejected/B/ID.json` back to `inbox/B/`, for example after `B`'s allowed senders are fixed. The message keeps its ID and contents, so the watcher announces it again and `B` claims it as usual. Its modified time is set to now before the move, so overdue scans and `CQ-WAKE` count the wait from the requeue; if that fails, it exits 70 and moves nothing. The reason file is removed. It moves only from `B`'s own `rejected/` folder: for an ID anywhere else (another session's `rejected/`, the inbox, `.processing/`, `done/`), it exits 6 and moves nothing. It sends nothing to the sender, and `PAUSE` does not stop it. It prints `requeued id=<id> to=inbox/B/`.
 
 ## Sleep and wake
 
