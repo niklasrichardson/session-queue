@@ -133,7 +133,8 @@ Steps:
    $env:CQ_ROOT = 'D:/queues/cq'
    $watch = @{
        FilePath               = 'C:/full/path/to/cq.exe'
-       ArgumentList           = 'watch', '--as', 'NAME', '--to-codex', 'THREAD_ID', '--codex-bin', 'C:/full/path/to/codex.exe'
+       # Start-Process joins these with spaces, so a path with spaces needs its own inner double quotes.
+       ArgumentList           = 'watch', '--as', 'NAME', '--to-codex', 'THREAD_ID', '--codex-bin', '"C:/full/path/to/codex.exe"'
        RedirectStandardOutput = "$env:LOCALAPPDATA/cq-watch-NAME.log"
        RedirectStandardError  = "$env:LOCALAPPDATA/cq-watch-NAME.err.log"
        WindowStyle            = 'Hidden'
@@ -142,7 +143,7 @@ Steps:
    Start-Process @watch
    ```
 
-   `Start-Process` prints a row with the watcher's process ID in the `Id` column. To follow the log, run `Get-Content "$env:LOCALAPPDATA/cq-watch-NAME.log" -Wait`. The PowerShell form ran with a plain `cq watch` against a test queue. It is not yet tested end to end with `--to-codex`: see [issue #45](https://github.com/niklasrichardson/session-queue/issues/45).
+   Keep the inner double quotes around the `--codex-bin` path: `Start-Process` joins `ArgumentList` with spaces, so a path such as `C:/Program Files/...` would otherwise split into two arguments. `Start-Process` prints a row with the watcher's process ID in the `Id` column. To follow the log, run `Get-Content "$env:LOCALAPPDATA/cq-watch-NAME.log" -Wait`. The PowerShell form ran with a plain `cq watch` against a test queue. It is not yet tested end to end with `--to-codex`: see [issue #45](https://github.com/niklasrichardson/session-queue/issues/45).
 4. Send NAME a test message. Expected result: one line on the watcher's stdout (in the PowerShell form, in the log file), `cq watch (NAME): ... queued a check for 1 new message(s): Queued message ...`, and a new turn in the Codex chat within seconds.
 
 - **Security.** The prompt is fixed. Subjects, bodies and sender names never reach Codex through the command line. The chat reads the messages itself with `cq claim`, and must treat them as untrusted data, as for any session. `--codex-prompt TEXT` replaces the default prompt; keep it free of queue text.
