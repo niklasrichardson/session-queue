@@ -13,34 +13,26 @@ Measured on Windows: in an overnight test with the earlier Monitor mode, a sessi
 ## How it fits together
 
 ```mermaid
-flowchart LR
-    subgraph S["Sessions"]
-        CC["Claude Code session"]
-        CX["Codex chat"]
-    end
+flowchart TB
+    HK["SessionStart hook<br/>cq session-start"]
+    CC["Claude Code session"]
+    CX["Codex chat"]
+    R[("Queue root<br/>inbox/ done/ rejected/ dlq/<br/>heartbeat/ members/ sleep/")]
+    WI["inbox mode, default<br/>cq watch --to-inbox"]
+    WM["monitor mode, fallback<br/>cq watch under Monitor"]
+    WC["codex mode<br/>cq watch --to-codex"]
+    TOP["cq-top<br/>read-only view"]
 
-    subgraph R["Queue root"]
-        IN["inbox/NAME/"]
-        FIN["done/ rejected/ dlq/"]
-        ST["heartbeat/ members/<br/>sleep/ PAUSE"]
-    end
-
-    subgraph W["cq watch: one per name"]
-        WI["inbox mode<br/>(default)"]
-        WC["codex mode"]
-        WM["monitor mode<br/>(fallback)"]
-    end
-
+    HK -->|"rejoin reminder"| CC
     CC -->|"cq send, claim, done"| R
     CX -->|"cq send, claim, done"| R
-    IN -.->|"new file"| WI
-    IN -.->|"new file"| WC
-    IN -.->|"new file"| WM
-    WI -->|"post to inbox socket"| CC
+    R -->|"new file"| WI
+    R -->|"new file"| WM
+    R -->|"new file"| WC
+    WI -->|"inbox socket post"| CC
+    WM -->|"Monitor output"| CC
     WC -->|"codex queue"| CX
-    WM -->|"Monitor tool output"| CC
-    HK["SessionStart hook<br/>cq session-start"] -->|"rejoin reminder"| CC
-    TOP["cq-top<br/>read-only view"] -.->|"reads"| R
+    R -.->|"reads"| TOP
 ```
 
 - **The `cq` CLI** does every queue action: `send`, `claim`, `done`, `list`, `sleep`, `wake`. Each action is a file write or an atomic rename. There is no server, database or network.
