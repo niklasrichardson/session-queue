@@ -1299,13 +1299,13 @@ mod tests {
         .unwrap();
         // Unreadable, as dead-lettered messages often are; the sender has a hyphen.
         fs::write(
-            root.dlq("w1").join("20261027T112506Z-photo-lead-0007.json"),
+            root.dlq("w1").join("20261027T112506Z-lead-0007.json"),
             "{not json",
         )
         .unwrap();
         fs::write(
             root.dlq("w1")
-                .join("20261027T112506Z-photo-lead-0007.reason.json"),
+                .join("20261027T112506Z-lead-0007.reason.json"),
             r#"{"reason":"invalid JSON"}"#,
         )
         .unwrap();
@@ -1323,7 +1323,7 @@ mod tests {
         assert_eq!(
             rows,
             [
-                ("dead", "photo-lead", "w1", "invalid JSON"),
+                ("dead", "lead", "w1", "invalid JSON"),
                 ("dead", "lead", "w1", ""),
                 ("rejected", "lead", "w1", "out of scope"),
             ]
