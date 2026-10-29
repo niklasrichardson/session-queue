@@ -22,7 +22,7 @@ To build without replacing a `cq-top` that is already installed, use a separate 
 cq-top
 ```
 
-The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#configuration). If the queue root is missing or not set up, `cq-top` prints the reason and exits with code 70.
+The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#configuration). If the queue root is missing or not set up, `cq-top` prints the reason and exits with code 70. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value exits with code 64 (see [Overdue tasks](#overdue-tasks)).
 
 | Key | What it does |
 | --- | --- |
@@ -55,7 +55,7 @@ cq-top --html-screens shots         # shots/overview.html, sessions.html, flow.h
 ## Overview screen
 
 - **Watchers.** One row per name: heartbeat age, [mode](#watcher-mode), watcher process ID, Claude Code session, and the number of queued, claimed, done, rejected and dead-lettered messages. A heartbeat older than 90 seconds shows as `STALE`. A name that is asleep (`sleep/<name>` exists) shows `asleep` instead, and gets a row even with no heartbeat.
-- **In flight.** Queued and claimed messages, oldest first. A message that stays here for a long time is probably stuck.
+- **In flight.** Queued and claimed messages, oldest first. A message that stays here for a long time is probably stuck. An [overdue](#overdue-tasks) task is drawn in the warning colour, with `▲` before its age.
 - **Recent.** The 40 newest finished, rejected and dead-lettered messages.
 
 The state glyphs are `◌` queued, `◐` claimed, `●` done, `✕` rejected and `!` dead-lettered.
@@ -147,11 +147,22 @@ The Flow screen is laid out like the [Sessions screen](#sessions-screen): a box 
 | state | From the heartbeat: `live`, `STALE` after 90 seconds, `asleep` when its name is asleep, `off` without a heartbeat. `-` for a name with no watcher. |
 | mode | The watcher's [mode](#watcher-mode): `inbox`, `codex` or `mon`. |
 | queued, claimed | Messages waiting in its inbox, and being worked on. |
+| overdue | Its [overdue](#overdue-tasks) tasks, as `▲ N` in the warning colour; the worker's name is then also in the warning colour. `-` for a name with no watcher and no overdue tasks. |
 | load | queued + claimed as a bar, full at 4. The colour shows queued messages (warning colour), only claimed ones (info colour), or `STALE` (error colour). |
 | median task→reply | The median time from a task being sent to its reply being sent, over the replies in the last hour. `-` with no replies. |
 | replies | Replies sent in the last hour. |
 
-A narrow terminal drops the least important columns first: replies, mode, the median, load, claimed and queued. In the Who talks to whom table it drops the bar, then last, then messages.
+The overdue rule, with its limits, is under the Workers box. A narrow terminal drops the least important columns first: replies, mode, overdue, the median, load, claimed and queued. In the Who talks to whom table it drops the bar, then last, then messages.
+
+## Overdue tasks
+
+A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 minutes without `cq done`. The rule and its settings are in [Commands](COMMANDS.md#overdue-tasks): `cq-top` reads the same `CQ_OVERDUE_UNCLAIMED_MINUTES` and `CQ_OVERDUE_CLAIMED_MINUTES` variables at start.
+
+- **Header.** Every screen's header shows the count: a dim `0 overdue`, or `▲ N overdue` in the warning colour.
+- **Overview.** Each overdue task's In flight row is in the warning colour, with `▲` before its age.
+- **Flow.** The Workers table has an overdue column.
+- **Export.** The dashboard has a note with the count and the limits, and marks each overdue task in In flight with an `overdue` chip.
+- `cq-top` only reads. It never moves or resends a task, and it shows overdue tasks under `PAUSE` too. Every theme uses its own warning colour.
 
 ## Rejected screen
 

@@ -114,7 +114,7 @@ pub fn list(root: &Root, name: &str, stale_minutes: u64) -> Result<Vec<String>> 
 }
 
 /// Creation time from the ID, which `cq` generates.
-fn created_of(id: &str) -> Timestamp {
+pub(crate) fn created_of(id: &str) -> Timestamp {
     id_parts(id)
         .and_then(|(stamp, _)| timefmt::parse_id_stamp(stamp))
         .unwrap_or(Timestamp::UNIX_EPOCH)

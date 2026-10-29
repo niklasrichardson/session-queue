@@ -11,6 +11,7 @@ use std::{
 };
 
 use cq::members::Mode;
+use cq::overdue::{Limits, State};
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -49,6 +50,8 @@ struct Msg {
     bucket: &'static str,
     /// Why it was rejected or dead-lettered, from `<id>.reason.json`; empty otherwise.
     reason: String,
+    /// A task queued or claimed for longer than its limit (see `cq::overdue`).
+    overdue: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -176,9 +179,24 @@ struct Snapshot {
     problems_total: usize,
     /// Claude Code sessions, collected apart from the queue (see `sessions.rs`).
     sessions: sessions::Report,
+    /// When a queued or claimed task is overdue.
+    limits: Limits,
 }
 
 impl Snapshot {
+    /// Tasks in flight that are overdue.
+    fn overdue(&self) -> usize {
+        self.in_flight.iter().filter(|m| m.overdue).count()
+    }
+
+    /// Overdue tasks waiting for `name`.
+    fn overdue_for(&self, name: &str) -> usize {
+        self.in_flight
+            .iter()
+            .filter(|m| m.overdue && m.to == name)
+            .count()
+    }
+
     /// The watcher's mode: `--to-inbox` or `--to-codex` in its process's arguments while cq-top can see the
     /// process, else its `members/` record. `None` with neither.
     fn mode(&self, w: &Watcher) -> Option<Mode> {
@@ -209,6 +227,13 @@ fn main() -> std::io::Result<()> {
             std::process::exit(EXIT_USAGE);
         }
     };
+    let limits = match Limits::from_env() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("cq-top: {e}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
     let root = match cq::Root::open() {
         Ok(root) => root,
         Err(e) => {
@@ -218,26 +243,26 @@ fn main() -> std::io::Result<()> {
     };
     if exports.html.is_some() || exports.screens.is_some() {
         let scan = || sessions::collect_once(sessions::Sources::live(&root));
-        if let Err(e) = export(&root, &exports, scan) {
+        if let Err(e) = export(&root, &limits, &exports, scan) {
             eprintln!("cq-top: {e}");
             std::process::exit(EXIT_ERROR);
         }
         return Ok(());
     }
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &root);
+    let result = run(&mut terminal, &root, &limits);
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, root: &cq::Root) -> std::io::Result<()> {
+fn run(terminal: &mut DefaultTerminal, root: &cq::Root, limits: &Limits) -> std::io::Result<()> {
     let mut show_bodies = false;
     let (mut screen, mut theme) = load_view();
     let mut beats = Beats::new();
     // Sessions are scanned on their own threads; each frame takes the latest scan.
     let collector = sessions::Collector::start(sessions::Sources::live(root));
     loop {
-        let mut snap = snapshot(root, &mut beats);
+        let mut snap = snapshot(root, &mut beats, limits);
         snap.sessions = collector.latest();
         terminal.draw(|f| draw(f, root.path(), &snap, show_bodies, screen, &THEMES[theme]))?;
         if event::poll(Duration::from_millis(500))?
@@ -375,6 +400,7 @@ fn export_path(root: &Path, path: &Path) -> std::io::Result<PathBuf> {
 /// anything is written, and before `scan` collects the sessions.
 fn export(
     root: &cq::Root,
+    limits: &Limits,
     e: &Exports,
     scan: impl FnOnce() -> sessions::Report,
 ) -> std::io::Result<()> {
@@ -384,7 +410,7 @@ fn export(
             .transpose()
     };
     let (html, screens) = (check(&e.html)?, check(&e.screens)?);
-    let mut snap = snapshot(root, &mut Beats::new());
+    let mut snap = snapshot(root, &mut Beats::new(), limits);
     snap.sessions = scan();
     // Writes go to the checked full path; messages show the path as given.
     if let (Some(path), Some(given)) = (html, &e.html) {
@@ -608,6 +634,7 @@ fn read_msg(path: &Path, mtime: i64, bucket: &'static str) -> Option<Msg> {
         body: s("body"),
         bucket,
         reason: String::new(),
+        overdue: false,
     })
 }
 
@@ -640,6 +667,7 @@ fn read_problem(path: &Path, mtime: i64, bucket: &'static str) -> Msg {
             body: String::new(),
             bucket,
             reason: String::new(),
+            overdue: false,
         }
     });
     // `<id>.json` -> `<id>.reason.json`. A missing or unreadable sidecar leaves no reason.
@@ -655,13 +683,13 @@ fn read_problem(path: &Path, mtime: i64, bucket: &'static str) -> Msg {
 /// read can catch it empty or half written; that read keeps the previous value.
 type Beats = BTreeMap<String, i64>;
 
-fn snapshot(root: &cq::Root, beats: &mut Beats) -> Snapshot {
-    snapshot_at(root, beats, now_epoch())
+fn snapshot(root: &cq::Root, beats: &mut Beats, limits: &Limits) -> Snapshot {
+    snapshot_at(root, beats, now_epoch(), limits)
 }
 
 /// A message moving between folders during a refresh can be counted twice or missed once;
 /// the next refresh is right again (see `docs/CQ-TOP.md`).
-fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
+fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64, limits: &Limits) -> Snapshot {
     // name -> Claude Code session key, from members/<key> (line 1 is the name),
     // name -> the watcher's working folder (line 3, written by newer cq), and
     // name -> the watcher's mode (line 4; an older record without it is a Monitor watcher).
@@ -737,11 +765,19 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
             rejected: json_files(&root.rejected(name)).len(),
             dead: dead.len(),
         });
-        for (p, m) in &queued {
-            in_flight.extend(read_msg(p, *m, "queued"));
-        }
-        for (p, m) in &claimed {
-            in_flight.extend(read_msg(p, *m, "claimed"));
+        // The overdue rule is cq's own, timed by the file's modified time, as in
+        // `cq list --overdue`.
+        for (files, bucket, state) in [
+            (&queued, "queued", State::Unclaimed),
+            (&claimed, "claimed", State::Claimed),
+        ] {
+            for (p, m) in files {
+                in_flight.extend(read_msg(p, *m, bucket).map(|mut msg| {
+                    let waited = Duration::from_secs((now - m).max(0) as u64);
+                    msg.overdue = limits.is_overdue(&msg.kind, state, waited);
+                    msg
+                }));
+            }
         }
         for (p, m) in &dead {
             in_flight.extend(read_msg(p, *m, "dead"));
@@ -797,6 +833,7 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64) -> Snapshot {
         problems,
         problems_total,
         sessions: sessions::Report::default(),
+        limits: *limits,
     }
 }
 
@@ -863,7 +900,7 @@ mod tests {
     }
 
     fn snap(root: &cq::Root, beats: &mut Beats) -> Snapshot {
-        snapshot_at(root, beats, NOW)
+        snapshot_at(root, beats, NOW, &Limits::default())
     }
 
     #[test]
@@ -943,7 +980,10 @@ mod tests {
         for bad in ["", "2026-10-27T1"] {
             fs::write(root.heartbeat("w1"), bad).unwrap();
             assert_eq!(
-                age(&snapshot_at(&root, &mut beats, NOW + 30), "w1"),
+                age(
+                    &snapshot_at(&root, &mut beats, NOW + 30, &Limits::default()),
+                    "w1"
+                ),
                 Some(90)
             );
         }
@@ -968,6 +1008,7 @@ mod tests {
             body: BODY.into(),
             bucket,
             reason: String::new(),
+            overdue: false,
         };
         Snapshot {
             now: 1_793_100_400,
@@ -1011,6 +1052,7 @@ mod tests {
                 ..msg("rejected", "task")
             }],
             problems_total: 3,
+            limits: Limits::default(),
             sessions: sessions::Report {
                 ready: true,
                 machine: Some(sessions::Machine {
@@ -1093,6 +1135,7 @@ mod tests {
             body: BODY.into(),
             bucket,
             reason: String::new(),
+            overdue: false,
         };
         let mut snap = sample();
         snap.window = vec![
@@ -1249,13 +1292,14 @@ mod tests {
                 ["design-a", "napper", "1", "26m40s"]
             );
             assert_eq!(
-                line_with("worker")[1..10],
+                line_with("worker")[1..11],
                 [
                     "worker",
                     "state",
                     "mode",
                     "queued",
                     "claimed",
+                    "overdue",
                     "load",
                     "median",
                     "task→reply",
@@ -1384,7 +1428,7 @@ mod tests {
             html: Some(out.path().join("dash.html")),
             screens: Some(r.join("shots")),
         };
-        assert!(export(&root, &e, sessions::Report::default).is_err());
+        assert!(export(&root, &Limits::default(), &e, sessions::Report::default).is_err());
         assert!(!out.path().join("dash.html").exists());
         assert!(!r.join("shots").exists());
     }
@@ -1398,7 +1442,7 @@ mod tests {
             html: Some(out.path().join("dash.html")),
             screens: Some(out.path().join("shots")),
         };
-        export(&root, &e, sessions::Report::default).unwrap();
+        export(&root, &Limits::default(), &e, sessions::Report::default).unwrap();
         for f in [
             "dash.html",
             "shots/overview.html",
@@ -1801,5 +1845,122 @@ mod tests {
         assert!(!page.contains("<img"));
         // The total is shown even when only some rows are.
         assert!(page.contains("1 of 3"));
+    }
+
+    /// Make a message file look as if it arrived, or was claimed, `mins` minutes before NOW.
+    fn age_file(dir: &Path, id: &str, mins: i64) {
+        let f = fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(format!("{id}.json")))
+            .unwrap();
+        f.set_modified(UNIX_EPOCH + Duration::from_secs((NOW - mins * 60) as u64))
+            .unwrap();
+    }
+
+    #[test]
+    fn snapshot_marks_overdue_tasks_by_file_age() {
+        let (_dir, root) = temp_queue();
+        let (inbox, claimed) = (root.inbox("w1"), root.processing("w1"));
+        for (dir, id, kind, mins) in [
+            (&inbox, "20261027T103000Z-lead-0001", "task", 45),
+            (&inbox, "20261027T103001Z-lead-0002", "task", 29),
+            (&inbox, "20261027T103002Z-lead-0003", "info", 600),
+            (&claimed, "20261027T090000Z-lead-0004", "task", 150),
+            (&claimed, "20261027T090001Z-lead-0005", "task", 60),
+        ] {
+            put(dir, id, kind);
+            age_file(dir, id, mins);
+        }
+        let s = snap(&root, &mut Beats::new());
+        assert_eq!(
+            (s.overdue(), s.overdue_for("w1"), s.overdue_for("lead")),
+            (2, 2, 0)
+        );
+        let mut late: Vec<_> = s
+            .in_flight
+            .iter()
+            .filter(|m| m.overdue)
+            .map(|m| m.bucket)
+            .collect();
+        late.sort();
+        assert_eq!(late, ["claimed", "queued"]);
+        // Tighter limits: the young task and the recent claim join; the note never does.
+        let tight = Limits::from_minutes(20, 60);
+        assert_eq!(
+            snapshot_at(&root, &mut Beats::new(), NOW, &tight).overdue(),
+            4
+        );
+        // PAUSE does not hide them, and nothing moved.
+        fs::write(root.pause(), "").unwrap();
+        assert_eq!(snap(&root, &mut Beats::new()).overdue(), 2);
+        assert_eq!(json_files(&inbox).len(), 3);
+        assert_eq!(json_files(&claimed).len(), 2);
+    }
+
+    /// Every theme shows an overdue task in its warning colour: the count in the header, the
+    /// In flight row on Overview, and the worker on Flow.
+    #[test]
+    fn every_theme_shows_overdue_tasks_in_the_warning_colour() {
+        let mut snap = sample();
+        // The queued task to w1.
+        snap.in_flight[0].overdue = true;
+        let mark = draw::OVERDUE_MARK;
+        for theme in &THEMES {
+            let warn = theme.warn.fg.unwrap();
+            let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            term.draw(|f| draw(f, Path::new("/q"), &snap, false, Screen::Overview, theme))
+                .unwrap();
+            let buf = term.backend().buffer();
+            let line = |y: u16| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>();
+            // Where the mark is in row `y`, and its colour.
+            let mark_fg = |y: u16| {
+                (0..120)
+                    .find(|&x| buf[(x, y)].symbol() == mark)
+                    .map(|x| buf[(x, y)].fg)
+            };
+            assert!(
+                line(0).contains(&format!("{mark} 1 overdue")),
+                "{}",
+                line(0)
+            );
+            assert_eq!(mark_fg(0), Some(warn), "{}", theme.name);
+            let rows: Vec<u16> = (1..40).filter(|&y| mark_fg(y).is_some()).collect();
+            assert_eq!(rows.len(), 1, "one In flight row in {}", theme.name);
+            assert_eq!(mark_fg(rows[0]), Some(warn), "{}", theme.name);
+            assert!(line(rows[0]).contains("queued"), "{}", line(rows[0]));
+
+            let flow = screen_lines(&snap, Screen::Flow, theme, 120, 30).join("\n");
+            assert!(flow.contains(&format!("{mark} 1")), "{flow}");
+            assert!(
+                flow.contains("overdue: a task unclaimed 30m or claimed 120m"),
+                "{flow}"
+            );
+        }
+
+        // None overdue: a dim zero, and no mark anywhere.
+        let snap = sample();
+        for screen in [Screen::Overview, Screen::Flow] {
+            let text = screen_lines(&snap, screen, &THEMES[0], 120, 30).join("\n");
+            assert!(
+                text.contains("0 overdue") || screen == Screen::Flow,
+                "{text}"
+            );
+            assert!(!text.contains(mark), "{screen:?}\n{text}");
+        }
+    }
+
+    #[test]
+    fn dashboard_marks_overdue_tasks() {
+        let mut snap = sample();
+        let page = html::dashboard(Path::new("/queue"), &snap);
+        assert!(!page.contains("overdue"));
+        snap.in_flight[1].overdue = true;
+        let page = html::dashboard(Path::new("/queue"), &snap);
+        assert!(
+            page.contains("1 task overdue (unclaimed for 30 min or claimed for 120 min)"),
+            "{page}"
+        );
+        assert_eq!(page.matches(">overdue<").count(), 1, "{page}");
+        assert!(!page.contains(BODY));
     }
 }

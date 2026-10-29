@@ -253,7 +253,7 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
 }
 
 impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
-    /// Hold `CQ-NEW` lines; drop the rest (`CQ-WAKE`, `CQ-SLEEP`).
+    /// Hold `CQ-NEW` lines; drop the rest (`CQ-WAKE`, `CQ-OVERDUE`, `CQ-SLEEP`).
     fn line(&mut self, line: &str) -> io::Result<()> {
         if line.starts_with("CQ-NEW ") {
             if self.held == 0 {

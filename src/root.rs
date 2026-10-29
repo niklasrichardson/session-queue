@@ -10,6 +10,7 @@
 //! heartbeat/<name>          touched by `cq watch` every 30 seconds
 //! heartbeat/<name>.lock     held by the running watcher
 //! heartbeat/<name>.pid      the running watcher's process ID
+//! heartbeat/<name>.overdue  tasks a coordinator's watcher reported overdue
 //! members/<key>             the name owned by a Claude Code session
 //! sleep/<name>              while it exists, the name is asleep
 //! coordinators              names that may sleep and wake others (owner-edited)
@@ -62,6 +63,12 @@ impl Root {
             )));
         }
         Ok(Self { path: raw })
+    }
+
+    /// A root at `path`, for unit tests.
+    #[cfg(test)]
+    pub(crate) fn at(path: PathBuf) -> Self {
+        Self { path }
     }
 
     /// Read `CQ_ROOT` and check that `cq init` has created the layout.
@@ -139,6 +146,12 @@ impl Root {
 
     pub fn pid_file(&self, name: &str) -> PathBuf {
         self.path.join("heartbeat").join(format!("{name}.pid"))
+    }
+
+    /// The overdue tasks a coordinator's watcher has reported, one ID per
+    /// line, so a restarted watcher does not report them again.
+    pub fn overdue_marker(&self, name: &str) -> PathBuf {
+        self.path.join("heartbeat").join(format!("{name}.overdue"))
     }
 
     pub fn members(&self) -> PathBuf {

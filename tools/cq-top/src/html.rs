@@ -228,6 +228,20 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
             ),
         ));
     }
+    let overdue = s.overdue();
+    if overdue > 0 {
+        notes.push(chip(
+            Tone::Warning,
+            "▲",
+            &format!(
+                "{overdue} task{} overdue (unclaimed for {} min or claimed for {} min); \
+                 a coordinator follows up",
+                if overdue == 1 { "" } else { "s" },
+                s.limits.unclaimed.as_secs() / 60,
+                s.limits.claimed.as_secs() / 60
+            ),
+        ));
+    }
     if dead > 0 {
         notes.push(chip(
             Tone::Critical,
@@ -714,6 +728,11 @@ fn msg_table(b: &mut String, title: &str, sub: &str, msgs: &[Msg], now: i64) {
             "" => String::new(),
             "failed" => format!(" {}", chip(Tone::Serious, "✕", "failed")),
             st => format!(" <span class=\"dim\">{}</span>", esc(st)),
+        };
+        let status = if m.overdue {
+            format!("{status} {}", chip(Tone::Warning, "▲", "overdue"))
+        } else {
+            status
         };
         let _ = write!(
             b,
