@@ -50,7 +50,7 @@ Set this up before you rely on the chat unattended. A turn that waits for an app
 
 `cq watch --as NAME --to-codex THREAD` watches NAME's inbox like any watcher. For each batch of new messages, it runs `codex queue` once with a fixed prompt. Codex then starts a turn in that chat, and the chat handles the queue as its `AGENTS.md` section says. An idle chat runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#wake-a-codex-chat).
 
-Live test, 28 Oct 2026, on Windows: an idle Codex Desktop chat and an idle interactive Codex CLI chat both woke within about 7 to 12 seconds.
+Live tests on Windows: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat within about 7 to 12 seconds. The native `cq watch --to-codex` then woke two idle Desktop chats, which each claimed a queued message within about 6 seconds. On 29 Oct 2026, a review task sent through it (send, wake, claim, reply) took 52 seconds from end to end.
 
 Prerequisites:
 
@@ -74,7 +74,7 @@ Steps:
 3. Send NAME a test message. Expected result: one line on the watcher's stdout, `cq watch (NAME): ... queued a check for 1 new message(s): Queued message ...`, and a new turn in the Codex chat within seconds.
 
 - **Security.** The prompt is fixed. Subjects, bodies and sender names never reach Codex through the command line. The chat reads the messages itself with `cq claim`, and must treat them as untrusted data, as for any session. `--codex-prompt TEXT` replaces the default prompt; keep it free of queue text.
-- **Stopping.** The watcher has no time limit. `cq sleep --as NAME NAME` stops it with exit 7. Exit 9 means `codex queue` failed 4 times in a row; check the `cq:` line, then start the watcher again. The Codex chat is not told when its watcher stops. [cq-top](CQ-TOP.md) shows the mode `codex` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
+- **Stopping.** The watcher has no time limit. `cq sleep --as NAME NAME` stops it with exit 7. A sleeping name stays asleep: run `cq wake --as NAME NAME` before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. Exit 9 means `codex queue` failed 4 times in a row; check the `cq:` line, then start the watcher again. The Codex chat is not told when its watcher stops. [cq-top](CQ-TOP.md) shows the mode `codex` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
 - **Not verified.** What happens to a queued message while the Codex app is closed ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). `codex queue` exits 0 when the message is stored, not when the chat takes it. It is marked experimental in the Codex CLI.
 - **Fallback.** If `codex queue` is not available, or a long test shows lost wake-ups, use the [same-chat scheduled automation](#same-chat-scheduled-automation-fallback).
 
@@ -85,7 +85,7 @@ Claude Code uses the `cq session-start` hook, because a Claude Code session forg
 - The watcher runs outside the chat, so compaction in the chat does not stop it.
 - Every wake prompt names the queue name and points the chat at its `AGENTS.md` section, so each woken turn is told its rules again.
 - A new chat has a new thread ID. Start the watcher again with the new ID and `--takeover`, which stops the old watcher.
-- After the computer restarts, start the watcher again. If messages are already waiting, it queues one check at start.
+- After the computer restarts, start the watcher again. If the name is asleep, run `cq wake --as NAME NAME` first. If messages are already waiting, it queues one check at start.
 
 Do not install `cq session-start` as a Codex hook: its reminder describes the Claude Code workflow.
 
@@ -95,7 +95,7 @@ Four routes were tested on Windows:
 
 | Route | Chat context | Pickup latency | Test status |
 | --- | --- | --- | --- |
-| `cq watch --to-codex` (`codex queue`) | Keeps the existing chat's context | Seconds: an idle chat woke within about 7 to 12 seconds in the live test | Live test, 28 Oct 2026: woke an idle Codex Desktop chat and an idle interactive Codex CLI chat. An earlier prototype script also ran a message queued during a turn after that turn, and kept a burst of 3 in order ([issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). |
+| `cq watch --to-codex` (`codex queue`) | Keeps the existing chat's context | Seconds: an idle chat woke within about 7 to 12 seconds in the live test | Live tests: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat, and the native watcher woke two Desktop chats (claimed within about 6 seconds); on 29 Oct 2026, a review task round trip through the native watcher took 52 seconds. An earlier prototype script also ran a message queued during a turn after that turn, and kept a burst of 3 in order ([issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). |
 | Same-chat scheduled automation | Keeps the existing chat's context | Up to the configured interval under normal scheduling; a busy chat or delayed scheduler can add time | A one-minute heartbeat woke the existing desktop chat, claimed Claude's task and replied. Claude confirmed receipt with the literal text intact. |
 | `cq dispatch` | Fresh `codex exec` per task; no previous chat context | Seconds to pick up work: scans once a second when idle. Agent startup and task execution add time. | Native dispatcher integration tests and a real Codex task passed. |
 | Custom app-server bridge | Can target the thread managed by the custom client | Event-driven; no latency guarantee measured | Brief bounded test only: an explicit `turn/start.toolOutput` request started a turn in an idle ephemeral thread. No persistent bridge ships with cq. |
