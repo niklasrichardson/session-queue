@@ -253,20 +253,43 @@ impl BackgroundTask {
         })
     }
 
-    /// A `cq watch` run: the command's program is `cq` or `cq.exe`, at any
-    /// path, and its first argument is `watch`. A task with no command
-    /// (a subagent, or a tool that reports none) is never the watcher,
+    /// A `cq watch` run on its own: the command's program is `cq` or
+    /// `cq.exe`, at any path, its first argument is `watch`, and it runs
+    /// nothing else (see `is_compound`). A task with no command (a
+    /// subagent, or a tool that reports none) is never the watcher,
     /// whatever its description says.
     fn is_cq_watcher(&self) -> bool {
         let Some(command) = &self.command else {
             return false;
         };
+        if is_compound(command) {
+            return false;
+        }
         let mut words = Words(command);
         let program = words.next().unwrap_or_default();
         let file = program.rsplit(['/', '\\']).next().unwrap_or_default();
         matches!(file.to_ascii_lowercase().as_str(), "cq" | "cq.exe")
             && words.next().as_deref() == Some("watch")
     }
+}
+
+/// True when a command line may run more than one command: it has `&&`,
+/// `||`, `;`, `|`, a lone `&`, `$(`, a backtick or a line break, even in
+/// quotes. A redirection such as `2>&1`, `>&2` or `&> file` is allowed.
+fn is_compound(command: &str) -> bool {
+    if command.contains("$(") {
+        return true;
+    }
+    let chars: Vec<char> = command.chars().collect();
+    chars.iter().enumerate().any(|(i, c)| match c {
+        ';' | '|' | '`' | '\n' | '\r' => true,
+        '&' => {
+            let redirect =
+                (i > 0 && matches!(chars[i - 1], '>' | '<')) || chars.get(i + 1) == Some(&'>');
+            !redirect
+        }
+        _ => false,
+    })
 }
 
 /// The words of a command line, split at spaces. A word in double or single
@@ -681,6 +704,9 @@ mod tests {
             r"'C:\Program Files\cq\CQ.EXE' watch --as worker-a",
             "/usr/local/bin/cq watch --as worker-a 2>&1",
             "  cq   watch",
+            "cq watch --as worker-a --to-inbox 2>&1",
+            "cq watch --as worker-a > watch.log 2>/dev/null",
+            "cq watch --as worker-a &> watch.log",
         ] {
             assert!(!busy(Some(watcher)), "{watcher}");
         }
@@ -692,6 +718,16 @@ mod tests {
             "cqx watch",
             r#""C:\tools\cq.exe watch""#,
             "cargo build",
+            // A watcher with other work after it.
+            "cq watch --as worker-a --max-seconds 1 && cargo test",
+            "cq watch --as worker-a --max-seconds 1 || cargo test",
+            "cq watch --as worker-a | tee watch.log",
+            "cq watch --as worker-a; sleep 999",
+            "cq watch --as worker-a & cargo test",
+            "cq watch --as worker-a &",
+            "cq watch --as $(cat name)",
+            "cq watch --as `cat name`",
+            "cq watch --as worker-a\ncargo test",
         ] {
             assert!(busy(Some(work)), "{work}");
         }

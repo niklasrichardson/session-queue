@@ -369,7 +369,10 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
 /// can drop a turn end recorded before a line woke the session. A sink
 /// that holds lines delivers them when a tick leaves it holding none; one
 /// that holds none (stdout) delivers each line at once. A line a sink
-/// drops by design counts too, which can only stop an alert.
+/// drops by design counts too, which can only stop an alert. The time is
+/// taken before the call: the session may wake and end a new turn before
+/// the call returns, and that turn end must not look older than the
+/// delivery.
 struct Counted<'a, S: Sink> {
     inner: &'a mut S,
     delivered: Option<SystemTime>,
@@ -377,17 +380,19 @@ struct Counted<'a, S: Sink> {
 
 impl<S: Sink> Sink for Counted<'_, S> {
     fn line(&mut self, line: &str) -> io::Result<()> {
+        let at = SystemTime::now();
         self.inner.line(line)?;
         if !self.inner.holding() {
-            self.delivered = Some(SystemTime::now());
+            self.delivered = Some(at);
         }
         Ok(())
     }
     fn tick(&mut self) -> io::Result<()> {
         let held = self.inner.holding();
+        let at = SystemTime::now();
         self.inner.tick()?;
         if held && !self.inner.holding() {
-            self.delivered = Some(SystemTime::now());
+            self.delivered = Some(at);
         }
         Ok(())
     }
@@ -654,6 +659,124 @@ fn prune(dir: &Path) {
             .is_some_and(|age| age > PRUNE_AFTER);
         if meta.is_file() && old {
             let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::idle::{IdleCheck, Marked, StopInput, mark_turn_end};
+
+    /// A root where `worker-a` is listed, and Stop hook input with its
+    /// transcript.
+    fn listed() -> (tempfile::TempDir, Root, StopInput) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Root::at(dir.path().to_owned());
+        root.init().unwrap();
+        fs::write(root.idle_alerts(), "worker-a lead\n").unwrap();
+        let tx = dir.path().join("transcript.jsonl");
+        fs::write(&tx, "{\"type\":\"user\"}\n").unwrap();
+        let input = StopInput {
+            transcript_path: Some(tx),
+            background_tasks: None,
+        };
+        (dir, root, input)
+    }
+
+    /// A sink that delivers in `line`, or holds the line and delivers it in
+    /// `tick`. With `turn_ends`, the session wakes and ends a new turn while
+    /// the line is delivered, before the call returns.
+    struct Fake<'a> {
+        root: &'a Root,
+        input: &'a StopInput,
+        hold: bool,
+        held: bool,
+        turn_ends: bool,
+    }
+
+    impl Fake<'_> {
+        fn deliver(&mut self) {
+            if self.turn_ends {
+                sleep(Duration::from_millis(10));
+                let marked = mark_turn_end(self.root, "worker-a", self.input);
+                assert!(matches!(marked, Marked::Written), "{marked:?}");
+                sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    impl Sink for Fake<'_> {
+        fn line(&mut self, _line: &str) -> io::Result<()> {
+            if self.hold {
+                self.held = true;
+            } else {
+                self.deliver();
+            }
+            Ok(())
+        }
+        fn tick(&mut self) -> io::Result<()> {
+            if self.held {
+                self.deliver();
+                self.held = false;
+            }
+            Ok(())
+        }
+        fn holding(&self) -> bool {
+            self.held
+        }
+        fn failed(&mut self, e: io::Error) -> Result<String> {
+            Err(CqError::io("fake sink", e))
+        }
+    }
+
+    /// Deliver one line through `Counted`, then run one idle check with
+    /// the delivery time.
+    fn deliver_and_check(root: &Root, input: &StopInput, hold: bool, turn_ends: bool) {
+        let mut sink = Fake {
+            root,
+            input,
+            hold,
+            held: false,
+            turn_ends,
+        };
+        let mut out = Counted {
+            inner: &mut sink,
+            delivered: None,
+        };
+        out.line("CQ-NEW x").unwrap();
+        out.tick().unwrap();
+        let at = out.delivered.expect("a delivery time");
+        let mut check = IdleCheck::default();
+        check.delivered(at);
+        check.run(
+            root,
+            "worker-a",
+            idle::DEFAULT_IDLE_AFTER,
+            idle::DEFAULT_EVERY,
+        );
+    }
+
+    #[test]
+    fn a_turn_end_during_a_delivery_survives_it() {
+        for hold in [false, true] {
+            let (_dir, root, input) = listed();
+            deliver_and_check(&root, &input, hold, true);
+            assert!(root.turn_end_marker("worker-a").exists(), "hold={hold}");
+        }
+    }
+
+    #[test]
+    fn a_turn_end_before_a_delivery_is_cancelled() {
+        for hold in [false, true] {
+            let (_dir, root, input) = listed();
+            assert!(matches!(
+                mark_turn_end(&root, "worker-a", &input),
+                Marked::Written
+            ));
+            sleep(Duration::from_millis(10));
+            deliver_and_check(&root, &input, hold, false);
+            assert!(!root.turn_end_marker("worker-a").exists(), "hold={hold}");
         }
     }
 }
