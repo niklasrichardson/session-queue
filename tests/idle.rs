@@ -6,9 +6,11 @@ mod common;
 
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::sync::{Arc, Barrier};
 use std::thread;
+use std::time::{Duration, SystemTime};
 
 use common::*;
 
@@ -255,4 +257,198 @@ fn parallel_hooks_send_one_alert() {
         assert_eq!(stderr(&out), "");
     }
     assert_eq!(env.ids("inbox/lead").len(), 1);
+}
+
+/// `cq turn-end` for session `KEY`, with `input` as the Stop hook's JSON.
+fn turn_end(env: &Env, input: &str) -> Output {
+    let mut c = env.cmd(&["turn-end"]);
+    c.env(HOST, KEY)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("spawn cq turn-end");
+    let mut pipe = child.stdin.take().unwrap();
+    let _ = pipe.write_all(input.as_bytes());
+    drop(pipe);
+    child.wait_with_output().unwrap()
+}
+
+/// The Stop hook's JSON for a transcript at `path`, with `tasks` as its
+/// `background_tasks` (left out when `None`).
+fn stop_input(path: &Path, tasks: Option<serde_json::Value>) -> String {
+    let mut v = serde_json::json!({
+        "session_id": "s-1",
+        "transcript_path": path,
+        "cwd": "/work",
+        "hook_event_name": "Stop",
+        "stop_hook_active": false,
+        "last_assistant_message": "SECRET WORK",
+        "session_crons": [{"id": "c-1", "schedule": "0 9 * * *", "recurring": true, "prompt": "SECRET"}],
+    });
+    if let Some(tasks) = tasks {
+        v["background_tasks"] = tasks;
+    }
+    v.to_string()
+}
+
+fn marker(env: &Env, name: &str) -> Option<serde_json::Value> {
+    let text = fs::read_to_string(env.path(&format!("idle/{name}.turn-end"))).ok()?;
+    Some(serde_json::from_str(&text).unwrap())
+}
+
+/// Run the hook and check it is silent and exits 0.
+fn quiet_turn_end(env: &Env, input: &str) {
+    let out = turn_end(env, input);
+    assert_eq!(code(&out), 0);
+    assert_eq!(stdout(&out), "");
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn turn_end_records_the_time_generation_and_transcript() {
+    let env = setup("worker-a", "worker-a lead\n");
+    let tx = env.path("transcript.jsonl");
+    quiet_turn_end(&env, &stop_input(&tx, Some(serde_json::json!([]))));
+
+    let m = marker(&env, "worker-a").expect("a turn-end marker");
+    assert_eq!(m["transcript_path"], serde_json::json!(tx));
+    let at = m["turn_end"].as_str().unwrap();
+    assert!(at.ends_with('Z') && at.len() == 20, "{at:?}");
+    assert_eq!(m.as_object().unwrap().len(), 3, "{m}");
+    let text = m.to_string();
+    assert!(!text.contains("SECRET"), "{text}");
+    assert!(env.ids("inbox/lead").is_empty(), "the hook sends nothing");
+
+    // A second turn end writes a new generation.
+    let first = m["generation"].clone();
+    quiet_turn_end(&env, &stop_input(&tx, None));
+    assert_ne!(marker(&env, "worker-a").unwrap()["generation"], first);
+}
+
+#[test]
+fn turn_end_with_background_work_records_nothing() {
+    let env = setup("worker-a", "worker-a lead\n");
+    let tx = env.path("transcript.jsonl");
+    let watcher = serde_json::json!({"id": "t-1", "type": "shell", "status": "running",
+        "description": "queue watcher", "command": "cq watch --as worker-a --to-inbox"});
+    let agent = serde_json::json!({"id": "t-2", "type": "subagent", "status": "running",
+        "description": "SECRET review", "agent_type": "coder"});
+
+    // Only the cq watcher: recorded.
+    quiet_turn_end(&env, &stop_input(&tx, Some(serde_json::json!([watcher]))));
+    assert!(marker(&env, "worker-a").is_some());
+
+    // A running subagent as well: nothing, and the older marker goes.
+    quiet_turn_end(
+        &env,
+        &stop_input(&tx, Some(serde_json::json!([watcher, agent]))),
+    );
+    assert!(marker(&env, "worker-a").is_none());
+
+    // No background_tasks field: unknown, so recorded.
+    quiet_turn_end(&env, &stop_input(&tx, None));
+    assert!(marker(&env, "worker-a").is_some());
+}
+
+#[test]
+fn turn_end_records_nothing_when_it_should_not() {
+    let tx = PathBuf::from("/t/transcript.jsonl");
+
+    // Not listed.
+    let env = setup("worker-b", "worker-a lead\n");
+    quiet_turn_end(&env, &stop_input(&tx, None));
+    assert!(marker(&env, "worker-b").is_none());
+
+    // Asleep.
+    let env = setup("worker-a", "worker-a lead\n");
+    let out = env.run(&["sleep", "--as", "worker-a", "worker-a"], None);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    quiet_turn_end(&env, &stop_input(&tx, None));
+    assert!(marker(&env, "worker-a").is_none());
+
+    // No transcript path, bad JSON, or no input at all.
+    let env = setup("worker-a", "worker-a lead\n");
+    quiet_turn_end(&env, r#"{"session_id":"s-1","hook_event_name":"Stop"}"#);
+    quiet_turn_end(&env, "not json");
+    let out = env.run(&["turn-end"], None);
+    assert_eq!(code(&out), 0);
+    assert_eq!(stderr(&out), "");
+    assert!(marker(&env, "worker-a").is_none());
+
+    // No member record.
+    fs::remove_file(env.path(&format!("members/{KEY}"))).unwrap();
+    quiet_turn_end(&env, &stop_input(&tx, None));
+    assert!(marker(&env, "worker-a").is_none());
+}
+
+/// Plant a marker for `worker-a` whose turn end was `minutes` ago, with a
+/// transcript last written then.
+fn plant_turn_end(env: &Env, minutes: i64) -> PathBuf {
+    let tx = env.path("transcript.jsonl");
+    fs::write(&tx, "{}\n").unwrap();
+    let f = fs::OpenOptions::new().write(true).open(&tx).unwrap();
+    let ago = Duration::from_secs(minutes as u64 * 60);
+    f.set_modified(SystemTime::now() - ago).unwrap();
+    fs::create_dir_all(env.path("idle")).unwrap();
+    let text = serde_json::json!({"generation": format!("g-{minutes}"),
+        "turn_end": minutes_ago(minutes), "transcript_path": tx});
+    fs::write(env.path("idle/worker-a.turn-end"), text.to_string()).unwrap();
+    tx
+}
+
+/// Run a watcher for `worker-a` for 2 seconds.
+fn watch_briefly(env: &Env, flags: &[&str]) -> Output {
+    let mut args = vec!["watch", "--as", "worker-a", "--max-seconds", "2"];
+    args.extend_from_slice(flags);
+    let out = env.run(&args, None);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    out
+}
+
+#[test]
+fn a_restarted_watcher_alerts_after_an_idle_turn_end() {
+    let env = setup("worker-a", "worker-a lead\n");
+    plant_turn_end(&env, 10);
+    let out = watch_briefly(&env, &[]);
+    assert_eq!(stdout(&out), "", "no line for the alert");
+
+    let ids = env.ids("inbox/lead");
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    let msg = env.read_json(&format!("inbox/lead/{}.json", ids[0]));
+    assert_eq!(msg["subject"], "worker-a is idle");
+    assert!(marker(&env, "worker-a").is_none(), "the marker is removed");
+}
+
+#[test]
+fn the_watcher_sends_nothing_after_a_busy_or_recent_turn_end() {
+    // The transcript changed after the settle time.
+    let env = setup("worker-a", "worker-a lead\n");
+    let tx = plant_turn_end(&env, 10);
+    fs::write(&tx, "{}\n{}\n").unwrap();
+    watch_briefly(&env, &[]);
+    assert!(env.ids("inbox/lead").is_empty());
+    assert!(marker(&env, "worker-a").is_none(), "the marker is removed");
+
+    // Within --idle-after: the marker waits.
+    plant_turn_end(&env, 2);
+    watch_briefly(&env, &[]);
+    assert!(env.ids("inbox/lead").is_empty());
+    assert!(marker(&env, "worker-a").is_some(), "the marker stays");
+
+    // A shorter --idle-after alerts; one of 30 s or less is refused.
+    watch_briefly(&env, &["--idle-after", "90s"]);
+    assert_eq!(env.ids("inbox/lead").len(), 1);
+    let out = env.run(&["watch", "--as", "worker-a", "--idle-after", "30s"], None);
+    assert_eq!(code(&out), 64);
+}
+
+#[test]
+fn a_line_from_the_watcher_cancels_the_turn_end() {
+    let env = setup("worker-a", "worker-a lead\n");
+    plant_turn_end(&env, 10);
+    let id = env.send("lead", "worker-a", "task", "wake up", "x");
+    let out = watch_briefly(&env, &[]);
+    assert!(stdout(&out).contains(&id), "{}", stdout(&out));
+    assert!(env.ids("inbox/lead").is_empty(), "no alert");
+    assert!(marker(&env, "worker-a").is_none(), "the marker is removed");
 }

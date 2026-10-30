@@ -149,7 +149,9 @@ enum Cmd {
     /// prints CQ-SLEEP and exits 7. A coordinator's watcher also prints one
     /// CQ-WAKE line per message that has waited 2 minutes for a sleeping
     /// name. Experimental: --to-inbox posts the lines into this Claude Code
-    /// session's inbox instead, and --to-codex wakes a Codex chat.
+    /// session's inbox instead, and --to-codex wakes a Codex chat. When your
+    /// name is listed in CQ_ROOT/idle-alerts, it also sends the idle alert
+    /// after a turn end recorded by `cq turn-end`, if the session stays idle.
     #[command(after_help = exit_help())]
     Watch {
         /// Your session name.
@@ -196,6 +198,18 @@ enum Cmd {
         /// queue database was skipped.
         #[arg(long, requires = "to_codex")]
         debug: bool,
+        /// Send the idle alert this long after a turn end recorded by
+        /// `cq turn-end`, when no activity is observed since: no transcript
+        /// write after the first 30 s, and no line from this watcher. For
+        /// example 10m; more than 30s. Only for a name listed in
+        /// CQ_ROOT/idle-alerts.
+        #[arg(long, value_name = "DURATION", default_value = "5m",
+              value_parser = parse_idle_after)]
+        idle_after: Duration,
+        /// The least time between two idle alerts for this name.
+        #[arg(long, value_name = "DURATION", default_value = "1h",
+              value_parser = parse_every)]
+        idle_every: Duration,
         /// Full rescan interval (for tests).
         #[arg(long, hide = true, default_value_t = DEFAULT_RESCAN_SECONDS,
               value_parser = clap::value_parser!(u64).range(1..))]
@@ -364,11 +378,12 @@ enum Cmd {
         debug: bool,
     },
 
-    /// For a Claude Code Notification hook (idle_prompt). If this session
-    /// owns a name listed in CQ_ROOT/idle-alerts as "worker lead", send the
-    /// lead one info message "<name> is idle", at most once per --every.
-    /// Skipped while the name is asleep. Exits 0, except 64 for a bad
-    /// --every.
+    /// For a Claude Code Notification hook (idle_prompt), or manual use. If
+    /// this session owns a name listed in CQ_ROOT/idle-alerts as "worker
+    /// lead", send the lead one info message "<name> is idle", at most once
+    /// per --every. Skipped while the name is asleep. Exits 0, except 64 for
+    /// a bad --every. The desktop app does not send idle_prompt: use the
+    /// Stop hook with `cq turn-end` instead.
     IdleAlert {
         /// The least time between two alerts for one name, for example 30m
         /// or 2h.
@@ -382,11 +397,27 @@ enum Cmd {
         #[arg(long, hide = true, default_value_t = 0)]
         hold_ms: u64,
     },
+
+    /// For a Claude Code Stop hook. If this session owns a name listed in
+    /// CQ_ROOT/idle-alerts and awake, record the turn end and the hook's
+    /// transcript_path in CQ_ROOT/idle/<name>.turn-end. The name's watcher
+    /// then sends the idle alert if the session stays idle (see cq watch
+    /// --idle-after). Records nothing when the hook reports background work
+    /// other than a cq watcher. Prints nothing and always exits 0.
+    TurnEnd {
+        /// Print the session key, the name and the result to stderr.
+        #[arg(long)]
+        debug: bool,
+    },
 }
 
 /// How long `session-start` waits for the hook's JSON once bytes are
 /// waiting. The content is not used.
 const HOOK_INPUT_WAIT: Duration = Duration::from_millis(100);
+/// How long `turn-end` waits for the hook's JSON once bytes are waiting. It
+/// needs the transcript path, so it waits longer; the read ends as soon as
+/// Claude Code closes stdin.
+const TURN_END_INPUT_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, ValueEnum)]
 enum ReplyStatus {
@@ -509,6 +540,8 @@ fn run(cmd: Cmd) -> Result<i32> {
             codex_check_seconds,
             codex_queue_db,
             debug,
+            idle_after,
+            idle_every,
         } => {
             let mode = match (&to_codex, to_inbox) {
                 (Some(_), _) => members::Mode::Codex,
@@ -528,6 +561,8 @@ fn run(cmd: Cmd) -> Result<i32> {
                 rescan: Duration::from_secs(rescan_seconds),
                 fs_events: !no_fs_events,
                 mode,
+                idle_after,
+                idle_every,
             };
             let ended = if let Some(thread) = &to_codex {
                 let check_after = Duration::from_secs(codex_check_seconds);
@@ -725,6 +760,7 @@ fn run(cmd: Cmd) -> Result<i32> {
             debug,
             hold_ms,
         } => idle_alert(every, debug, Duration::from_millis(hold_ms)),
+        Cmd::TurnEnd { debug } => turn_end(debug),
     }
     Ok(exit::OK)
 }
@@ -801,6 +837,30 @@ fn idle_alert(every: Duration, debug: bool, hold: Duration) {
     }
 }
 
+/// The Stop hook. Like `session-start`, it never fails, never blocks for
+/// long and, without `--debug`, never writes to stdout or stderr. It finds
+/// the name the same way. Without valid hook input it records nothing.
+fn turn_end(debug: bool) {
+    let input = read_hook_input(TURN_END_INPUT_WAIT).and_then(|b| idle::StopInput::parse(&b));
+    let key = members::session_key();
+    let root = Root::open().ok();
+    let name = match (&key, &root) {
+        (Some(k), Some(root)) => members::name_for(root, k),
+        _ => None,
+    };
+    let outcome = match (&root, &name, &input) {
+        (Some(root), Some(name), Some(input)) => Some(idle::mark_turn_end(root, name, input)),
+        _ => None,
+    };
+    // Never the input itself: it holds text from the session's work.
+    if debug {
+        eprintln!(
+            "cq turn-end: key={key:?} name={name:?} input={} outcome={outcome:?}",
+            input.is_some()
+        );
+    }
+}
+
 /// A positive duration such as `90s`, `30m` or `1h` (jiff's friendly or
 /// ISO 8601 format).
 fn parse_every(s: &str) -> std::result::Result<Duration, String> {
@@ -809,6 +869,17 @@ fn parse_every(s: &str) -> std::result::Result<Duration, String> {
         Ok(d.unsigned_abs())
     } else {
         Err("must be more than 0".to_owned())
+    }
+}
+
+/// `--idle-after`: a duration longer than the settle time after a turn
+/// end, during which transcript writes do not count.
+fn parse_idle_after(s: &str) -> std::result::Result<Duration, String> {
+    let d = parse_every(s)?;
+    if d > idle::SETTLE {
+        Ok(d)
+    } else {
+        Err(format!("must be more than {}s", idle::SETTLE.as_secs()))
     }
 }
 
@@ -833,17 +904,23 @@ fn rules_ref<'a>(runtime: Option<&'a str>, build: Option<&'a str>) -> &'a str {
 }
 
 /// Read and drop the hook's JSON, if any, so the writer never sees a broken
-/// pipe. The read runs on its own thread with a time limit, so a pipe that
-/// never closes cannot hold up the hook; the thread ends with the process.
+/// pipe.
 fn drain_hook_input() {
+    let _ = read_hook_input(HOOK_INPUT_WAIT);
+}
+
+/// The hook's JSON, if any arrives within `wait`. The read runs on its own
+/// thread with that time limit, so a pipe that never closes cannot hold up
+/// the hook; the thread ends with the process.
+fn read_hook_input(wait: Duration) -> Option<Vec<u8>> {
     if !platform::stdin_has_input() {
-        return;
+        return None;
     }
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(read_stdin().is_ok());
+        let _ = tx.send(read_stdin().ok());
     });
-    let _ = rx.recv_timeout(HOOK_INPUT_WAIT);
+    rx.recv_timeout(wait).ok().flatten()
 }
 
 /// The JSON input text: from `--input FILE` (or `-`), else from stdin when
@@ -899,5 +976,13 @@ mod tests {
         assert!(parse_every("0s").is_err());
         assert!(parse_every("-5m").is_err());
         assert!(parse_every("soon").is_err());
+    }
+
+    #[test]
+    fn parse_idle_after_is_longer_than_the_settle_time() {
+        assert_eq!(parse_idle_after("5m"), Ok(idle::DEFAULT_IDLE_AFTER));
+        assert_eq!(parse_idle_after("31s"), Ok(Duration::from_secs(31)));
+        assert!(parse_idle_after("30s").is_err());
+        assert!(parse_idle_after("0s").is_err());
     }
 }

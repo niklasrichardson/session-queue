@@ -18,6 +18,11 @@
 //! restarted watcher does not report it again; a line lost in a failed post
 //! is reported again. It never moves the tasks.
 //!
+//! A watcher whose name is listed in `idle-alerts` also checks the turn end
+//! that `cq turn-end` records, and sends the idle alert when the session
+//! stays idle (see `idle::IdleCheck`). It prints nothing for this. Each
+//! line it delivers wakes the session, so it drops the turn end.
+//!
 //! With `--to-inbox` (experimental), the lines go into the session's own
 //! Claude Code inbox instead of stdout (see `inbox`), and the watcher has no
 //! default time limit. `--to-codex` instead wakes a Codex chat with
@@ -40,6 +45,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::error::{CqError, Result};
 use crate::fsutil;
+use crate::idle;
 use crate::members;
 use crate::message::{EVENT_SUBJECT_MAX, event_text, header};
 use crate::names::{check_name, is_valid_id};
@@ -71,6 +77,8 @@ const WAKE_SCAN_EVERY: Duration = Duration::from_secs(1);
 pub const WAKE_AFTER: Duration = Duration::from_secs(120);
 /// How often a coordinator's watcher looks for newly overdue tasks.
 const OVERDUE_SCAN_EVERY: Duration = Duration::from_secs(30);
+/// How often the watcher checks the turn end recorded by `cq turn-end`.
+const IDLE_CHECK_EVERY: Duration = Duration::from_secs(5);
 
 /// How a watcher run ended without an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +108,11 @@ pub struct WatchOptions {
     /// Where the lines go, recorded in the session's `members/` record, so
     /// that `cq session-start` does not ask for a Monitor after `/clear`.
     pub mode: members::Mode,
+    /// Send the idle alert this long after a turn end with no change to the
+    /// transcript (`--idle-after`).
+    pub idle_after: Duration,
+    /// The least time between two idle alerts (`--idle-every`).
+    pub idle_every: Duration,
 }
 
 impl WatchOptions {
@@ -112,6 +125,8 @@ impl WatchOptions {
             fs_events: true,
             member_key: None,
             mode: members::Mode::Monitor,
+            idle_after: idle::DEFAULT_IDLE_AFTER,
+            idle_every: idle::DEFAULT_EVERY,
         }
     }
 }
@@ -228,6 +243,13 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     // has delivered, so a line lost in a failed post is reported again.
     let mut saved = reported.clone();
     let mut next_overdue_scan = started;
+    let mut idle_check = idle::IdleCheck::default();
+    let mut next_idle_check = started;
+    let mut out = Counted {
+        inner: out,
+        lines: 0,
+    };
+    let out = &mut out;
 
     let end = loop {
         let now = Instant::now();
@@ -283,6 +305,14 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
                 break out.failed(e).map(|r| (r, Ended::Normal));
             }
         }
+        if out.lines > 0 {
+            out.lines = 0;
+            idle_check.cancel(root, name);
+        }
+        if !paused && now >= next_idle_check {
+            next_idle_check = now + IDLE_CHECK_EVERY;
+            idle_check.run(root, name, opts.idle_after, opts.idle_every);
+        }
         if let Err(e) = out.tick() {
             break out.failed(e).map(|r| (r, Ended::Normal));
         }
@@ -332,6 +362,32 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     // Ignore a failed write: stderr may be the same closed pipe as stdout.
     let _ = writeln!(io::stderr(), "cq watch: exiting: {reason}");
     Ok(ended)
+}
+
+/// A sink that counts the lines given to it, so the loop can drop the
+/// turn end recorded by `cq turn-end` when it wakes the session.
+struct Counted<'a, S: Sink> {
+    inner: &'a mut S,
+    lines: usize,
+}
+
+impl<S: Sink> Sink for Counted<'_, S> {
+    fn line(&mut self, line: &str) -> io::Result<()> {
+        self.lines += 1;
+        self.inner.line(line)
+    }
+    fn tick(&mut self) -> io::Result<()> {
+        self.inner.tick()
+    }
+    fn holding(&self) -> bool {
+        self.inner.holding()
+    }
+    fn stopped(&mut self, reason: &str, ended: Ended) -> bool {
+        self.inner.stopped(reason, ended)
+    }
+    fn failed(&mut self, e: io::Error) -> Result<String> {
+        self.inner.failed(e)
+    }
 }
 
 /// Deliver the `CQ-SLEEP` line. A failed write is ignored: the watcher

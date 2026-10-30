@@ -1,6 +1,6 @@
 [package]
 name = "cq"
-version = "1.6.1"
+version = "1.7.0"
 edition = "2024"
 description = "File-based message queue for AI coding sessions"
 license = "MIT"

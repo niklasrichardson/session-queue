@@ -81,6 +81,16 @@ Live on Windows 11: on 28 Oct 2026, `cq watch --to-codex` woke two idle Codex De
 
 Not verified: a real Claude Code inbox (the owner's earlier live test used a separate script); a long run; macOS and Linux at run time (the Unix socket test compiles but has not run); a stopped message after SIGTERM from `--takeover`; how the desktop app treats a long-running background Bash command.
 
+## Idle alerts from a Stop hook on Windows, 30 October 2026
+
+[Issue #50](https://github.com/niklasrichardson/session-queue/issues/50): `cq turn-end` and the idle check in `cq watch`. Checked on Windows 11 with `cargo test --workspace` (254 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
+
+- Unit tests in `src/idle.rs` cover the decision: wait before `--idle-after`; alert after it; a final write inside the 30-second settle time still alerts; a write after it cancels; a missing transcript cancels; a watcher that starts late decides from the modified time alone. They also cover the hook input (background work other than the watcher, only the watcher, a finished task, the field absent), the marker fields, a newer generation that survives a stale consume, a held lock, a delivered line, a recent alert, and a failed send tried 3 times.
+- `tests/idle.rs` runs `cq turn-end` with Stop hook JSON on stdin, and `cq watch` with planted turn ends: the marker holds only the time, generation and transcript path; background work records nothing; a restarted watcher alerts once and prints nothing; a busy transcript and a recent turn end send nothing; a `CQ-NEW` line cancels the turn end; `--idle-after 30s` exits 64.
+- Turn-end times are planted in the past, not waited for.
+
+Not verified: the Stop hook in a live Claude Code session, its `background_tasks` field in practice, and how long Claude Code writes to the transcript after the hook.
+
 ## Idle alerts on Windows, 29 October 2026
 
 [Issue #50](https://github.com/niklasrichardson/session-queue/issues/50): `cq idle-alert`. Checked on Windows 11 with `cargo test --workspace` (214 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
