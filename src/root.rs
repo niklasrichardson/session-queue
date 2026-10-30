@@ -18,7 +18,7 @@
 //! idle/<name>               the time of the last idle alert for the name
 //! idle/<name>.lock          held by `cq idle-alert` while it sends
 //! idle/<name>.turn-end      the last turn end, written by `cq turn-end`
-//! idle/<name>.turn-end.lock held while the turn end is written or removed
+//! idle/<name>.turn-end.lock held while the turn end is written, checked or removed
 //! PAUSE                     while it exists, watchers emit nothing
 //! ```
 

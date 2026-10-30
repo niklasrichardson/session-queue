@@ -261,6 +261,11 @@ fn parallel_hooks_send_one_alert() {
 
 /// `cq turn-end` for session `KEY`, with `input` as the Stop hook's JSON.
 fn turn_end(env: &Env, input: &str) -> Output {
+    turn_end_after(env, input, Duration::ZERO)
+}
+
+/// `cq turn-end`, with the hook's JSON written after `delay`.
+fn turn_end_after(env: &Env, input: &str, delay: Duration) -> Output {
     let mut c = env.cmd(&["turn-end"]);
     c.env(HOST, KEY)
         .stdin(Stdio::piped())
@@ -268,6 +273,7 @@ fn turn_end(env: &Env, input: &str) -> Output {
         .stderr(Stdio::piped());
     let mut child = c.spawn().expect("spawn cq turn-end");
     let mut pipe = child.stdin.take().unwrap();
+    std::thread::sleep(delay);
     let _ = pipe.write_all(input.as_bytes());
     drop(pipe);
     child.wait_with_output().unwrap()
@@ -296,6 +302,13 @@ fn marker(env: &Env, name: &str) -> Option<serde_json::Value> {
     Some(serde_json::from_str(&text).unwrap())
 }
 
+/// A transcript for the hook's input, with one entry.
+fn transcript(env: &Env) -> PathBuf {
+    let tx = env.path("transcript.jsonl");
+    fs::write(&tx, "{\"type\":\"user\"}\n").unwrap();
+    tx
+}
+
 /// Run the hook and check it is silent and exits 0.
 fn quiet_turn_end(env: &Env, input: &str) {
     let out = turn_end(env, input);
@@ -307,14 +320,15 @@ fn quiet_turn_end(env: &Env, input: &str) {
 #[test]
 fn turn_end_records_the_time_generation_and_transcript() {
     let env = setup("worker-a", "worker-a lead\n");
-    let tx = env.path("transcript.jsonl");
+    let tx = transcript(&env);
     quiet_turn_end(&env, &stop_input(&tx, Some(serde_json::json!([]))));
 
     let m = marker(&env, "worker-a").expect("a turn-end marker");
     assert_eq!(m["transcript_path"], serde_json::json!(tx));
+    assert_eq!(m["transcript_len"], fs::metadata(&tx).unwrap().len());
     let at = m["turn_end"].as_str().unwrap();
-    assert!(at.ends_with('Z') && at.len() == 20, "{at:?}");
-    assert_eq!(m.as_object().unwrap().len(), 3, "{m}");
+    assert!(at.ends_with('Z') && at.len() >= 20, "{at:?}");
+    assert_eq!(m.as_object().unwrap().len(), 4, "{m}");
     let text = m.to_string();
     assert!(!text.contains("SECRET"), "{text}");
     assert!(env.ids("inbox/lead").is_empty(), "the hook sends nothing");
@@ -326,13 +340,25 @@ fn turn_end_records_the_time_generation_and_transcript() {
 }
 
 #[test]
+fn turn_end_waits_for_input_that_starts_late() {
+    let env = setup("worker-a", "worker-a lead\n");
+    let tx = transcript(&env);
+    let out = turn_end_after(&env, &stop_input(&tx, None), Duration::from_millis(300));
+    assert_eq!(code(&out), 0);
+    assert!(marker(&env, "worker-a").is_some());
+}
+
+#[test]
 fn turn_end_with_background_work_records_nothing() {
     let env = setup("worker-a", "worker-a lead\n");
-    let tx = env.path("transcript.jsonl");
+    let tx = transcript(&env);
     let watcher = serde_json::json!({"id": "t-1", "type": "shell", "status": "running",
         "description": "queue watcher", "command": "cq watch --as worker-a --to-inbox"});
     let agent = serde_json::json!({"id": "t-2", "type": "subagent", "status": "running",
         "description": "SECRET review", "agent_type": "coder"});
+    // A watcher through a tool that reports no command: it counts.
+    let monitor = serde_json::json!({"id": "t-3", "type": "monitor", "status": "running",
+        "description": "cq watch --as worker-a"});
 
     // Only the cq watcher: recorded.
     quiet_turn_end(&env, &stop_input(&tx, Some(serde_json::json!([watcher]))));
@@ -343,6 +369,9 @@ fn turn_end_with_background_work_records_nothing() {
         &env,
         &stop_input(&tx, Some(serde_json::json!([watcher, agent]))),
     );
+    assert!(marker(&env, "worker-a").is_none());
+    quiet_turn_end(&env, &stop_input(&tx, None));
+    quiet_turn_end(&env, &stop_input(&tx, Some(serde_json::json!([monitor]))));
     assert!(marker(&env, "worker-a").is_none());
 
     // No background_tasks field: unknown, so recorded.
@@ -391,7 +420,7 @@ fn plant_turn_end(env: &Env, minutes: i64) -> PathBuf {
     f.set_modified(SystemTime::now() - ago).unwrap();
     fs::create_dir_all(env.path("idle")).unwrap();
     let text = serde_json::json!({"generation": format!("g-{minutes}"),
-        "turn_end": minutes_ago(minutes), "transcript_path": tx});
+        "turn_end": minutes_ago(minutes), "transcript_path": tx, "transcript_len": 3});
     fs::write(env.path("idle/worker-a.turn-end"), text.to_string()).unwrap();
     tx
 }

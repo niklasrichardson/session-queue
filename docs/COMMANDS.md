@@ -122,12 +122,18 @@ Two ways send the alert. The Stop hook way works in the desktop app; `idle_promp
 
 **Stop hook: `cq turn-end` and the watcher.**
 
-- `cq turn-end` finds this session's name from its `members/` record, as `cq session-start` does. With no record, no listed name, a sleeping name, or no `transcript_path` in the hook input, it does nothing.
-- When the hook input has a `background_tasks` list with a task that is not finished and is not the `cq watch` watcher, it writes nothing and removes an older turn end: background work may wake the session later. The watcher is a task whose command contains `cq watch` or `cq.exe watch`, or, with no command, whose description does. When the field is absent, the background work is unknown, and it writes the turn end anyway. `session_crons` is not used: a scheduled wake writes to the transcript, which cancels the alert.
-- Otherwise it writes `idle/worker-a.turn-end`: a JSON object with a unique `generation`, the UTC `turn_end` time and the hook's `transcript_path`. Nothing else from the hook input goes into it. It writes under a lock on `idle/worker-a.turn-end.lock`.
-- The watcher for `worker-a` checks the file every 5 seconds, while the name is listed and `PAUSE` does not exist. It sends the alert as `cq idle-alert` would, once `--idle-after` (default `5m`, more than `30s`) has passed since the turn end with no activity observed. Activity is a transcript modified time later than 30 seconds after the turn end, or a missing transcript. The check uses only the file and the transcript, so a restarted watcher decides the same way.
-- Each line the watcher delivers (`CQ-NEW`, `CQ-WAKE`, `CQ-OVERDUE`, in any mode) wakes the session, so the watcher removes the turn end.
-- The watcher removes the turn end after the alert is sent, after `Recent` (an alert within `--idle-every`, default `1h`), or when the name is no longer listed or is asleep. When the lock is taken or the send fails (a limit, I/O), it tries again after 90 seconds and 3 more minutes, then removes the turn end. It removes a turn end only under the lock and only when its `generation` is unchanged, so a newer turn end stays.
+- `cq turn-end` finds this session's name from its `members/` record, as `cq session-start` does. With no record, no listed name, a sleeping name, no `transcript_path` in the hook input, or a transcript it cannot read, it does nothing. It reads the hook input for up to 2 seconds in all, from the first byte to the end; input that is not complete by then counts as none.
+- When the hook input has a `background_tasks` list with a task that is not finished and is not the `cq watch` watcher, it writes nothing and removes an older turn end: background work may wake the session later. The watcher is a task whose command runs `cq` or `cq.exe` (at any path, quotes allowed) with the first argument `watch`. A task with no command, such as a subagent, is never the watcher, whatever its description says. So a watcher run through a tool that reports no command blocks the alert. When the field is absent, the background work is unknown, and it writes the turn end anyway. `session_crons` is not used: a scheduled wake that starts a new turn is detected like any new turn, from a new `user` entry in the transcript or a later transcript write.
+- Otherwise it writes `idle/worker-a.turn-end`: a JSON object with a unique `generation`, the UTC `turn_end` time (with fractions of a second), the hook's `transcript_path`, and `transcript_len`, the transcript's length in bytes. Nothing else from the hook input or the transcript goes into it. It writes, or removes an older turn end, only under a lock on `idle/worker-a.turn-end.lock`. When that lock stays taken for 1 second, it changes nothing.
+- The watcher for `worker-a` checks the file every 5 seconds, while the name is listed and `PAUSE` does not exist. It sends the alert as `cq idle-alert` would, once `--idle-after` (default `5m`, more than `30s`) has passed since the turn end with no activity observed. Activity is any of these:
+  - a complete transcript entry with `type` `user` added after `transcript_len`: a new prompt, a tool result or a queued notification;
+  - more than 1 MB added to the transcript;
+  - a transcript that shrank, is missing or cannot be read;
+  - a transcript modified time later than 30 seconds after the turn end.
+- The watcher reads only the added bytes, at most 1 MB, and only each entry's `type`. It never keeps or prints transcript text. These checks use only the file and the transcript, so a restarted watcher decides the same way.
+- Each line the watcher delivers (`CQ-NEW`, `CQ-WAKE`, `CQ-OVERDUE`, in any mode) wakes the session. The watcher records when it last delivered a line: written to stdout, or posted by `--to-inbox` or `--to-codex`. It cancels a turn end that is earlier than that time. A line that `--to-codex` drops by design also counts, which can only stop an alert. While a line waits to be posted, the watcher sends no alert.
+- Each check runs under the lock on `idle/worker-a.turn-end.lock`: the watcher reads the turn end, decides, sends and removes it while it holds the lock. When `cq turn-end` holds the lock, the watcher skips that check.
+- The watcher removes the turn end after the alert is sent, after `Recent` (an alert within `--idle-every`, default `1h`), when it cancels it, or when the name is no longer listed or is asleep. When `idle/worker-a.lock` is taken or the send fails (a limit, I/O), it tries again after 90 seconds and 3 more minutes, then removes the turn end. When the removal fails, it tries the removal again on each check, and never sends for that turn end.
 - The watcher prints nothing for this.
 - Limits: a Stop hook does not run when the user interrupts a turn, and an API error runs `StopFailure` instead, so neither records a turn end. A session that waits on work the hook input does not report can be reported idle, at most once per `--idle-every`.
 
@@ -241,7 +247,7 @@ CQ_ROOT/
   idle/<name>                the UTC time of the last idle alert for the name
   idle/<name>.lock           locked by cq idle-alert while it checks, sends and records
   idle/<name>.turn-end       the last turn end, written by cq turn-end and removed by the name's watcher
-  idle/<name>.turn-end.lock  locked while the turn end is written or removed
+  idle/<name>.turn-end.lock  locked while the turn end is written, checked or removed
   PAUSE                      while it exists, watchers print nothing and cq send refuses
 ```
 

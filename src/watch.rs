@@ -21,7 +21,8 @@
 //! A watcher whose name is listed in `idle-alerts` also checks the turn end
 //! that `cq turn-end` records, and sends the idle alert when the session
 //! stays idle (see `idle::IdleCheck`). It prints nothing for this. Each
-//! line it delivers wakes the session, so it drops the turn end.
+//! line it delivers wakes the session, so a turn end recorded before the
+//! last delivery is dropped.
 //!
 //! With `--to-inbox` (experimental), the lines go into the session's own
 //! Claude Code inbox instead of stdout (see `inbox`), and the watcher has no
@@ -247,7 +248,7 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     let mut next_idle_check = started;
     let mut out = Counted {
         inner: out,
-        lines: 0,
+        delivered: None,
     };
     let out = &mut out;
 
@@ -305,16 +306,16 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
                 break out.failed(e).map(|r| (r, Ended::Normal));
             }
         }
-        if out.lines > 0 {
-            out.lines = 0;
-            idle_check.cancel(root, name);
-        }
-        if !paused && now >= next_idle_check {
-            next_idle_check = now + IDLE_CHECK_EVERY;
-            idle_check.run(root, name, opts.idle_after, opts.idle_every);
-        }
         if let Err(e) = out.tick() {
             break out.failed(e).map(|r| (r, Ended::Normal));
+        }
+        if let Some(at) = out.delivered.take() {
+            idle_check.delivered(at);
+        }
+        // A held line wakes the session once it is posted: no alert first.
+        if !paused && !out.holding() && now >= next_idle_check {
+            next_idle_check = now + IDLE_CHECK_EVERY;
+            idle_check.run(root, name, opts.idle_after, opts.idle_every);
         }
         if reported != saved && !out.holding() {
             save_reported(root, name, &reported);
@@ -364,20 +365,31 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     Ok(ended)
 }
 
-/// A sink that counts the lines given to it, so the loop can drop the
-/// turn end recorded by `cq turn-end` when it wakes the session.
+/// A sink that records when it last delivered lines, so the idle check
+/// can drop a turn end recorded before a line woke the session. A sink
+/// that holds lines delivers them when a tick leaves it holding none; one
+/// that holds none (stdout) delivers each line at once. A line a sink
+/// drops by design counts too, which can only stop an alert.
 struct Counted<'a, S: Sink> {
     inner: &'a mut S,
-    lines: usize,
+    delivered: Option<SystemTime>,
 }
 
 impl<S: Sink> Sink for Counted<'_, S> {
     fn line(&mut self, line: &str) -> io::Result<()> {
-        self.lines += 1;
-        self.inner.line(line)
+        self.inner.line(line)?;
+        if !self.inner.holding() {
+            self.delivered = Some(SystemTime::now());
+        }
+        Ok(())
     }
     fn tick(&mut self) -> io::Result<()> {
-        self.inner.tick()
+        let held = self.inner.holding();
+        self.inner.tick()?;
+        if held && !self.inner.holding() {
+            self.delivered = Some(SystemTime::now());
+        }
+        Ok(())
     }
     fn holding(&self) -> bool {
         self.inner.holding()

@@ -414,10 +414,10 @@ enum Cmd {
 /// How long `session-start` waits for the hook's JSON once bytes are
 /// waiting. The content is not used.
 const HOOK_INPUT_WAIT: Duration = Duration::from_millis(100);
-/// How long `turn-end` waits for the hook's JSON once bytes are waiting. It
-/// needs the transcript path, so it waits longer; the read ends as soon as
-/// Claude Code closes stdin.
-const TURN_END_INPUT_WAIT: Duration = Duration::from_secs(1);
+/// How long `turn-end` waits for the whole of the hook's JSON, from the
+/// first byte to the end. It needs the transcript path, so it waits longer;
+/// the read ends as soon as Claude Code closes stdin.
+const TURN_END_INPUT_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, ValueEnum)]
 enum ReplyStatus {
@@ -841,7 +841,12 @@ fn idle_alert(every: Duration, debug: bool, hold: Duration) {
 /// long and, without `--debug`, never writes to stdout or stderr. It finds
 /// the name the same way. Without valid hook input it records nothing.
 fn turn_end(debug: bool) {
-    let input = read_hook_input(TURN_END_INPUT_WAIT).and_then(|b| idle::StopInput::parse(&b));
+    // Not `read_hook_input`: its first-byte check gives up after a short
+    // grace, and here one time limit covers the whole read.
+    let input = (!io::stdin().is_terminal())
+        .then(|| read_stdin_within(TURN_END_INPUT_WAIT))
+        .flatten()
+        .and_then(|b| idle::StopInput::parse(&b));
     let key = members::session_key();
     let root = Root::open().ok();
     let name = match (&key, &root) {
@@ -916,6 +921,12 @@ fn read_hook_input(wait: Duration) -> Option<Vec<u8>> {
     if !platform::stdin_has_input() {
         return None;
     }
+    read_stdin_within(wait)
+}
+
+/// All of stdin, if it ends within `wait`. The read runs on its own thread,
+/// which ends with the process.
+fn read_stdin_within(wait: Duration) -> Option<Vec<u8>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let _ = tx.send(read_stdin().ok());
