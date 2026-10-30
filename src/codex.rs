@@ -19,7 +19,11 @@
 //! Codex Desktop starts a turn from a queued message only while the chat is
 //! loaded in the app. So `CHECK_AFTER` after each queued check, the watcher
 //! looks, read-only, whether the item still waits in Codex's queue database,
-//! and if it does prints one line that says to open the chat. See issue #25.
+//! and if it does prints one line that says to open the chat. It also
+//! sends that warning to each coordinator as a cq `info` message, so it
+//! reaches someone when nobody reads the watcher's output. A check queued
+//! only for such warnings sends none of its own: two coordinators that are
+//! both unloaded Codex chats would otherwise warn each other in a loop.
 
 use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -31,9 +35,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::{CqError, Result, exit};
+use crate::fsutil;
 use crate::inbox::{
     BATCH_WINDOW, Clock, MIN_GAP, POST_TRIES, RETRY_FIRST, SOCKET_VAR, SystemClock, TOKEN_VAR,
 };
+use crate::message::MsgType;
+use crate::names::is_valid_id;
+use crate::root::Root;
+use crate::send::{self, Hops, Outgoing};
+use crate::sleep;
 use crate::timefmt::{self, rfc3339};
 use crate::watch::{Ended, Sink};
 
@@ -252,10 +262,31 @@ pub fn still_queued(db: &Path, id: &str) -> std::result::Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The subject of the "has not taken" warning from watcher `name`.
+fn alert_subject(name: &str) -> String {
+    format!("{name}: Codex chat has not taken a queued check")
+}
+
+/// Whether a `CQ-NEW` line announces a "has not taken" warning: an `info`
+/// whose subject is exactly the warning subject of its sender.
+fn is_alert(line: &str) -> bool {
+    let Some((head, subject)) = line.split_once(" subject=") else {
+        return false;
+    };
+    let field = |key: &str| head.split(' ').find_map(|t| t.strip_prefix(key));
+    let (Some(from), Some("info")) = (field("from="), field("type=")) else {
+        return false;
+    };
+    serde_json::from_str::<String>(subject).is_ok_and(|s| s == alert_subject(from))
+}
+
 /// A queued item to look up once `at` has passed.
 struct Check {
     at: Instant,
     item: String,
+    /// Queued only for "has not taken" warnings: if it stalls too, it
+    /// sends no warning of its own.
+    alerts_only: bool,
 }
 
 /// A `Sink` that wakes a Codex chat once per batch of new messages.
@@ -269,6 +300,8 @@ pub struct CodexQueue<R: Runner, C: Clock> {
     log: Box<dyn Write>,
     /// `CQ-NEW` lines not acted on yet.
     held: usize,
+    /// How many of the `held` lines are "has not taken" warnings.
+    held_alerts: usize,
     /// When the batch in `held` started.
     batch_start: Option<Instant>,
     last_post: Option<Instant>,
@@ -284,6 +317,9 @@ pub struct CodexQueue<R: Runner, C: Clock> {
     said_skip: bool,
     /// Items already reported as still queued.
     warned: HashSet<String>,
+    /// The queue the warning is sent through to the coordinators; `None`
+    /// sends nothing.
+    root: Option<Root>,
 }
 
 impl CodexQueue<CodexBin, SystemClock> {
@@ -360,6 +396,7 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
             clock,
             log,
             held: 0,
+            held_alerts: 0,
             batch_start: None,
             last_post: None,
             db: None,
@@ -368,6 +405,7 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
             debug: false,
             said_skip: false,
             warned: HashSet::new(),
+            root: None,
         })
     }
 
@@ -377,6 +415,12 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
         self.db = db.filter(|_| !after.is_zero());
         self.check_after = after;
         self.debug = debug;
+        self
+    }
+
+    /// Also send each "has not taken" warning to the coordinators in `root`.
+    pub fn alerting(mut self, root: Root) -> Self {
+        self.root = Some(root);
         self
     }
 
@@ -408,9 +452,48 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
                         self.check_after.as_secs()
                     );
                     let _ = self.log.flush();
+                    if !check.alerts_only {
+                        self.alert();
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => self.skip(&format!("{}: {e}", db.display())),
+            }
+        }
+    }
+
+    /// Send the "has not taken" warning to each coordinator but this
+    /// watcher's own name, through `cq send`, so its limits and `PAUSE`
+    /// apply. A send that fails prints one line on stderr; the watcher
+    /// carries on.
+    fn alert(&mut self) {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let waiting = fsutil::json_stems(&root.inbox(&self.name), is_valid_id).len();
+        let mut sent = HashSet::new();
+        let body = format!(
+            "Codex thread {} has not taken the check that cq watch queued {} s ago. {waiting} unclaimed message(s) wait for {}. The chat may be unloaded: the user must open that chat in the Codex app.",
+            self.thread,
+            self.check_after.as_secs(),
+            self.name
+        );
+        for to in sleep::coordinators(root) {
+            if to == self.name || !sent.insert(to.clone()) {
+                continue;
+            }
+            let out = Outgoing {
+                from: self.name.clone(),
+                to: to.clone(),
+                kind: MsgType::Info,
+                subject: alert_subject(&self.name),
+                body: body.clone(),
+                reply_to: None,
+                parent: None,
+                status: None,
+            };
+            if let Err(e) = send::send(root, out, Hops::Lookup) {
+                eprintln!("cq watch: could not send the not-taken warning to {to} ({e})");
             }
         }
     }
@@ -419,6 +502,7 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
     /// try up to `POST_TRIES` times with a doubling wait between tries.
     fn post(&mut self) -> io::Result<()> {
         let n = std::mem::take(&mut self.held);
+        let alerts_only = std::mem::take(&mut self.held_alerts) == n;
         self.batch_start = None;
         let mut wait = RETRY_FIRST;
         let mut tries = 0;
@@ -446,6 +530,7 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
                             Some(item) => self.checks.push_back(Check {
                                 at: self.clock.now() + self.check_after,
                                 item: item.to_owned(),
+                                alerts_only,
                             }),
                             None => self.skip("codex queue printed no item ID"),
                         }
@@ -471,6 +556,9 @@ impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
                 self.batch_start = Some(self.clock.now());
             }
             self.held += 1;
+            if is_alert(line) {
+                self.held_alerts += 1;
+            }
         }
         Ok(())
     }
@@ -536,6 +624,8 @@ mod tests {
     struct FakeRunner {
         calls: Rc<RefCell<Vec<(String, String)>>>,
         fail: Rc<RefCell<u32>>,
+        /// The queued item ID Codex prints; `q1` when `None`.
+        item: Option<&'static str>,
     }
 
     impl Runner for FakeRunner {
@@ -548,7 +638,10 @@ mod tests {
                 *fail -= 1;
                 return Err(io::Error::other("exit code: 1: thread not found"));
             }
-            Ok("Queued message q1 for thread t1.".to_owned())
+            Ok(format!(
+                "Queued message {} for thread t1.",
+                self.item.unwrap_or("q1")
+            ))
         }
     }
 
@@ -829,6 +922,185 @@ mod tests {
         let lines = log.lines();
         assert_eq!(lines.len(), 3, "said it again for the same item: {lines:?}");
         assert!(lines[2].contains("queued a check"), "{}", lines[2]);
+    }
+
+    /// A queue root whose `coordinators` file holds `coordinators`, if
+    /// given, and a checking sink that sends its warnings through it.
+    fn alerting_sink(
+        dir: &Path,
+        coordinators: Option<&str>,
+    ) -> (CodexQueue<FakeRunner, FakeClock>, Log, FakeClock, Root) {
+        let root = Root::at(dir.join("cq"));
+        root.init().unwrap();
+        if let Some(text) = coordinators {
+            fs::write(root.coordinators(), text).unwrap();
+        }
+        let (q, log, c) = checking_sink(Some(fake_db(dir, &["q1"])));
+        (q.alerting(root.clone()), log, c, root)
+    }
+
+    /// The messages in `name`'s inbox.
+    fn inbox_of(root: &Root, name: &str) -> Vec<serde_json::Value> {
+        fsutil::json_stems(&root.inbox(name), is_valid_id)
+            .iter()
+            .map(|id| {
+                let bytes = fs::read(crate::root::message_file(&root.inbox(name), id)).unwrap();
+                serde_json::from_slice(&bytes).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_warning_is_sent_once_to_each_coordinator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut q, log, c, root) = alerting_sink(dir.path(), Some("# leads\nlead\n\nops\n"));
+        fs::create_dir_all(root.inbox("w")).unwrap();
+        fs::write(
+            crate::root::message_file(&root.inbox("w"), "20261028T100000Z-a-0001"),
+            "{}",
+        )
+        .unwrap();
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        assert!(log.lines()[1].ends_with(NOT_TAKEN), "{:?}", log.lines());
+        for lead in ["lead", "ops"] {
+            let got = inbox_of(&root, lead);
+            assert_eq!(got.len(), 1, "{lead}: {got:?}");
+            let m = &got[0];
+            assert_eq!(m["from"], "w");
+            assert_eq!(m["type"], "info");
+            assert_eq!(m["subject"], "w: Codex chat has not taken a queued check");
+            let body = m["body"].as_str().unwrap();
+            for part in ["thread t1", "5 s", "1 unclaimed message(s)", "Codex app"] {
+                assert!(body.contains(part), "{part}: {body}");
+            }
+        }
+        c.advance(Duration::from_secs(60));
+        q.tick().unwrap();
+        assert_eq!(inbox_of(&root, "lead").len(), 1, "sent twice");
+    }
+
+    #[test]
+    fn the_warning_is_not_sent_to_the_watcher_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut q, log, c, root) = alerting_sink(dir.path(), Some("w\n"));
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        assert_eq!(log.lines().len(), 2, "{:?}", log.lines());
+        assert!(inbox_of(&root, "w").is_empty());
+    }
+
+    #[test]
+    fn no_coordinators_means_no_message() {
+        let dir = tempfile::tempdir().unwrap();
+        for coordinators in [None, Some(""), Some("# none\n")] {
+            let (mut q, log, c, root) = alerting_sink(dir.path(), coordinators);
+            queue_one(&mut q, &c, Duration::from_secs(5));
+            assert!(log.lines()[1].ends_with(NOT_TAKEN), "{:?}", log.lines());
+            let inboxes = fs::read_dir(root.path().join("inbox")).unwrap().count();
+            assert_eq!(inboxes, 0, "{coordinators:?}");
+            fs::remove_dir_all(root.path()).unwrap();
+            fs::remove_file(dir.path().join(QUEUE_DB)).unwrap();
+        }
+    }
+
+    #[test]
+    fn repeated_coordinators_get_one_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = ["lead", "  lead ", "lead\t", "\tlead", "lead"].join("\n");
+        let (mut q, _log, c, root) = alerting_sink(dir.path(), Some(&text));
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        assert_eq!(inbox_of(&root, "lead").len(), 1);
+    }
+
+    #[test]
+    fn a_warning_line_is_known_by_its_sender_type_and_subject() {
+        let line = |from: &str, kind: &str, subject: &str| {
+            format!(
+                "CQ-NEW 2026-10-28T10:00:00Z (10:00 UK) to=b from={from} type={kind} id=x subject={}",
+                serde_json::to_string(subject).unwrap()
+            )
+        };
+        let warning = alert_subject("a");
+        assert!(is_alert(&line("a", "info", &warning)));
+        assert!(!is_alert(&line("c", "info", &warning)), "another sender");
+        assert!(!is_alert(&line("a", "task", &warning)), "a task");
+        assert!(!is_alert(&line("a", "info", &format!("{warning} again"))));
+        assert!(!is_alert(NEW));
+    }
+
+    #[test]
+    fn two_unloaded_codex_coordinators_do_not_warn_each_other_in_a_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Root::at(dir.path().join("cq"));
+        root.init().unwrap();
+        fs::write(root.coordinators(), "a\nb\n").unwrap();
+        let watcher = |name: &'static str, item: &'static str| {
+            let home = dir.path().join(name);
+            fs::create_dir_all(&home).unwrap();
+            let log = Log::default();
+            let c = FakeClock::new();
+            let runner = FakeRunner {
+                item: Some(item),
+                ..FakeRunner::default()
+            };
+            let q = CodexQueue::with(name, "t1", None, runner, c.clone(), Box::new(log.clone()))
+                .unwrap()
+                .checking(Some(fake_db(&home, &[item])), Duration::from_secs(5), false)
+                .alerting(root.clone());
+            (q, log, c)
+        };
+        let (mut a, a_log, a_clock) = watcher("a", "qa");
+        let (mut b, b_log, b_clock) = watcher("b", "qb");
+
+        // A real task stalls in A's chat: B gets the warning.
+        queue_one(&mut a, &a_clock, Duration::from_secs(5));
+        assert!(a_log.lines()[1].ends_with(NOT_TAKEN), "{:?}", a_log.lines());
+        let to_b = fsutil::json_stems(&root.inbox("b"), is_valid_id);
+        assert_eq!(to_b.len(), 1);
+
+        // B's watcher wakes B's chat for the warning, as `cq watch` would,
+        // and that check stalls too, with its own item ID.
+        let bytes = fs::read(crate::root::message_file(&root.inbox("b"), &to_b[0])).unwrap();
+        let line = crate::watch::event_line("CQ-NEW", "b", &to_b[0], &bytes);
+        assert!(is_alert(&line), "{line}");
+        b.line(&line).unwrap();
+        b_clock.advance(BATCH_WINDOW);
+        b.tick().unwrap();
+        b_clock.advance(Duration::from_secs(5));
+        b.tick().unwrap();
+        let lines = b_log.lines();
+        assert!(lines[0].contains("Queued message qb"), "{lines:?}");
+        assert!(lines[1].ends_with(NOT_TAKEN), "{lines:?}");
+        assert!(inbox_of(&root, "a").is_empty(), "B warned A back");
+
+        // A real task in the same batch as a warning still warns.
+        b.line(&line).unwrap();
+        b.line(NEW).unwrap();
+        b.checks.clear();
+        b.warned.clear();
+        b_clock.advance(MIN_GAP);
+        b.tick().unwrap();
+        b_clock.advance(Duration::from_secs(5));
+        b.tick().unwrap();
+        assert_eq!(inbox_of(&root, "a").len(), 1);
+    }
+
+    #[test]
+    fn a_failed_send_does_not_stop_the_watcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut q, log, c, root) = alerting_sink(dir.path(), Some("lead\n"));
+        fs::write(root.pause(), "").unwrap();
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        assert!(log.lines()[1].ends_with(NOT_TAKEN), "{:?}", log.lines());
+        assert!(inbox_of(&root, "lead").is_empty());
+        q.line(NEW).unwrap();
+        c.advance(MIN_GAP);
+        q.tick().unwrap();
+        assert_eq!(log.lines().len(), 3, "{:?}", log.lines());
+        assert!(
+            log.lines()[2].contains("queued a check"),
+            "{}",
+            log.lines()[2]
+        );
     }
 
     #[test]

@@ -445,11 +445,12 @@ fn watch_to_codex(
     db: Option<PathBuf>,
     debug: bool,
 ) -> Result<Ended> {
-    let mut codex = CodexQueue::start(&opts.name, thread, bin, prompt, check_after, db, debug)?;
+    let codex = CodexQueue::start(&opts.name, thread, bin, prompt, check_after, db, debug)?;
     if let Err(e) = platform::install_interrupt_handler() {
         eprintln!("cq watch: a signal will stop the watcher before it queues held messages ({e})");
     }
     let root = Root::open()?;
+    let mut codex = codex.alerting(root.clone());
     watch::watch(&root, opts, &mut codex)
 }
 
