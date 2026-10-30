@@ -19,7 +19,9 @@
 //! Codex Desktop starts a turn from a queued message only while the chat is
 //! loaded in the app. So `CHECK_AFTER` after each queued check, the watcher
 //! looks, read-only, whether the item still waits in Codex's queue database,
-//! and if it does prints one line that says to open the chat. See issue #25.
+//! and if it does prints one line that says to open the chat. It also
+//! sends that warning to each coordinator as a cq `info` message, so it
+//! reaches someone when nobody reads the watcher's output.
 
 use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -31,9 +33,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::{CqError, Result, exit};
+use crate::fsutil;
 use crate::inbox::{
     BATCH_WINDOW, Clock, MIN_GAP, POST_TRIES, RETRY_FIRST, SOCKET_VAR, SystemClock, TOKEN_VAR,
 };
+use crate::message::MsgType;
+use crate::names::is_valid_id;
+use crate::root::Root;
+use crate::send::{self, Hops, Outgoing};
+use crate::sleep;
 use crate::timefmt::{self, rfc3339};
 use crate::watch::{Ended, Sink};
 
@@ -284,6 +292,9 @@ pub struct CodexQueue<R: Runner, C: Clock> {
     said_skip: bool,
     /// Items already reported as still queued.
     warned: HashSet<String>,
+    /// The queue the warning is sent through to the coordinators; `None`
+    /// sends nothing.
+    root: Option<Root>,
 }
 
 impl CodexQueue<CodexBin, SystemClock> {
@@ -368,6 +379,7 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
             debug: false,
             said_skip: false,
             warned: HashSet::new(),
+            root: None,
         })
     }
 
@@ -377,6 +389,12 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
         self.db = db.filter(|_| !after.is_zero());
         self.check_after = after;
         self.debug = debug;
+        self
+    }
+
+    /// Also send each "has not taken" warning to the coordinators in `root`.
+    pub fn alerting(mut self, root: Root) -> Self {
+        self.root = Some(root);
         self
     }
 
@@ -408,9 +426,45 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
                         self.check_after.as_secs()
                     );
                     let _ = self.log.flush();
+                    self.alert();
                 }
                 Ok(_) => {}
                 Err(e) => self.skip(&format!("{}: {e}", db.display())),
+            }
+        }
+    }
+
+    /// Send the "has not taken" warning to each coordinator but this
+    /// watcher's own name, through `cq send`, so its limits and `PAUSE`
+    /// apply. A send that fails prints one line on stderr; the watcher
+    /// carries on.
+    fn alert(&mut self) {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let waiting = fsutil::json_stems(&root.inbox(&self.name), is_valid_id).len();
+        let body = format!(
+            "Codex thread {} has not taken the check that cq watch queued {} s ago. {waiting} unclaimed message(s) wait for {}. The chat may be unloaded: the user must open that chat in the Codex app.",
+            self.thread,
+            self.check_after.as_secs(),
+            self.name
+        );
+        for to in sleep::coordinators(root) {
+            if to == self.name {
+                continue;
+            }
+            let out = Outgoing {
+                from: self.name.clone(),
+                to: to.clone(),
+                kind: MsgType::Info,
+                subject: format!("{}: Codex chat has not taken a queued check", self.name),
+                body: body.clone(),
+                reply_to: None,
+                parent: None,
+                status: None,
+            };
+            if let Err(e) = send::send(root, out, Hops::Lookup) {
+                eprintln!("cq watch: could not send the not-taken warning to {to} ({e})");
             }
         }
     }
@@ -829,6 +883,103 @@ mod tests {
         let lines = log.lines();
         assert_eq!(lines.len(), 3, "said it again for the same item: {lines:?}");
         assert!(lines[2].contains("queued a check"), "{}", lines[2]);
+    }
+
+    /// A queue root whose `coordinators` file holds `coordinators`, if
+    /// given, and a checking sink that sends its warnings through it.
+    fn alerting_sink(
+        dir: &Path,
+        coordinators: Option<&str>,
+    ) -> (CodexQueue<FakeRunner, FakeClock>, Log, FakeClock, Root) {
+        let root = Root::at(dir.join("cq"));
+        root.init().unwrap();
+        if let Some(text) = coordinators {
+            fs::write(root.coordinators(), text).unwrap();
+        }
+        let (q, log, c) = checking_sink(Some(fake_db(dir, &["q1"])));
+        (q.alerting(root.clone()), log, c, root)
+    }
+
+    /// The messages in `name`'s inbox.
+    fn inbox_of(root: &Root, name: &str) -> Vec<serde_json::Value> {
+        fsutil::json_stems(&root.inbox(name), is_valid_id)
+            .iter()
+            .map(|id| {
+                let bytes = fs::read(crate::root::message_file(&root.inbox(name), id)).unwrap();
+                serde_json::from_slice(&bytes).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_warning_is_sent_once_to_each_coordinator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut q, log, c, root) = alerting_sink(dir.path(), Some("# leads\nlead\n\nops\n"));
+        fs::create_dir_all(root.inbox("w")).unwrap();
+        fs::write(
+            crate::root::message_file(&root.inbox("w"), "20261028T100000Z-a-0001"),
+            "{}",
+        )
+        .unwrap();
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        assert!(log.lines()[1].ends_with(NOT_TAKEN), "{:?}", log.lines());
+        for lead in ["lead", "ops"] {
+            let got = inbox_of(&root, lead);
+            assert_eq!(got.len(), 1, "{lead}: {got:?}");
+            let m = &got[0];
+            assert_eq!(m["from"], "w");
+            assert_eq!(m["type"], "info");
+            assert_eq!(m["subject"], "w: Codex chat has not taken a queued check");
+            let body = m["body"].as_str().unwrap();
+            for part in ["thread t1", "5 s", "1 unclaimed message(s)", "Codex app"] {
+                assert!(body.contains(part), "{part}: {body}");
+            }
+        }
+        c.advance(Duration::from_secs(60));
+        q.tick().unwrap();
+        assert_eq!(inbox_of(&root, "lead").len(), 1, "sent twice");
+    }
+
+    #[test]
+    fn the_warning_is_not_sent_to_the_watcher_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut q, log, c, root) = alerting_sink(dir.path(), Some("w\n"));
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        assert_eq!(log.lines().len(), 2, "{:?}", log.lines());
+        assert!(inbox_of(&root, "w").is_empty());
+    }
+
+    #[test]
+    fn no_coordinators_means_no_message() {
+        let dir = tempfile::tempdir().unwrap();
+        for coordinators in [None, Some(""), Some("# none\n")] {
+            let (mut q, log, c, root) = alerting_sink(dir.path(), coordinators);
+            queue_one(&mut q, &c, Duration::from_secs(5));
+            assert!(log.lines()[1].ends_with(NOT_TAKEN), "{:?}", log.lines());
+            let inboxes = fs::read_dir(root.path().join("inbox")).unwrap().count();
+            assert_eq!(inboxes, 0, "{coordinators:?}");
+            fs::remove_dir_all(root.path()).unwrap();
+            fs::remove_file(dir.path().join(QUEUE_DB)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_failed_send_does_not_stop_the_watcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut q, log, c, root) = alerting_sink(dir.path(), Some("lead\n"));
+        fs::write(root.pause(), "").unwrap();
+        queue_one(&mut q, &c, Duration::from_secs(5));
+        assert!(log.lines()[1].ends_with(NOT_TAKEN), "{:?}", log.lines());
+        assert!(inbox_of(&root, "lead").is_empty());
+        q.line(NEW).unwrap();
+        c.advance(MIN_GAP);
+        q.tick().unwrap();
+        assert_eq!(log.lines().len(), 3, "{:?}", log.lines());
+        assert!(
+            log.lines()[2].contains("queued a check"),
+            "{}",
+            log.lines()[2]
+        );
     }
 
     #[test]
