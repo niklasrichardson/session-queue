@@ -10,7 +10,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | --- | --- |
 | `cq init` | Create the layout under `CQ_ROOT`. |
 | `cq send --from A --to B --type task\|result\|info [--reply-to ID] [--parent ID] [--status ok\|failed\|rejected] [--input FILE]` | Read `{"subject": "...", "body": "..."}`, write the message, print its ID. |
-| `cq watch --as B [--takeover] [--max-seconds 1790] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT] [--codex-check-seconds 60] [--codex-queue-db PATH] [--debug]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)) and `CQ-OVERDUE` lines (see [Overdue tasks](#overdue-tasks)). `--to-inbox` posts the lines into the Claude Code session's own inbox instead, the default for Claude Code (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` runs `codex queue` to wake a Codex chat instead, the default for Codex (see [Wake a Codex chat](#wake-a-codex-chat)). |
+| `cq watch --as B [--takeover] [--max-seconds 1790] [--idle-after 5m] [--idle-every 1h] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT] [--codex-check-seconds 60] [--codex-queue-db PATH] [--debug]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)) and `CQ-OVERDUE` lines (see [Overdue tasks](#overdue-tasks)). `--to-inbox` posts the lines into the Claude Code session's own inbox instead, the default for Claude Code (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` runs `codex queue` to wake a Codex chat instead, the default for Codex (see [Wake a Codex chat](#wake-a-codex-chat)). When `B` is listed in `CQ_ROOT/idle-alerts`, also send the idle alert after a turn end recorded by `cq turn-end`, once no activity is observed for `--idle-after` (see [Idle alerts](#idle-alerts)). |
 | `cq dispatch --as B --codex FILE --workspace DIR --instructions FILE --allow-from NAME [--allow-from NAME ...] [--sandbox read-only\|workspace-write] [--timeout-seconds 600] [--once]` | Run one fresh Codex process per task, serially. See [Codex setup](CODEX.md). |
 | `cq claim --as B ID` | Move the message to `.processing/` and print its JSON. |
 | `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}` and tells the sender (see [Rejections](#rejections)). |
@@ -23,7 +23,8 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | `cq sleep --as A B [--reason TEXT]` | Put `B` to sleep: write `sleep/B`. `A` may be `B` itself or a coordinator. |
 | `cq wake --as A B` | Wake `B`: remove `sleep/B`. Any name may wake any name. Exit 0 when `B` was not asleep. |
 | `cq session-start [--debug]` | For the Claude Code SessionStart hook. Prints the rejoin reminder when this session owns a name, a "you are asleep" note when that name is asleep, else nothing. The text ends with a note that a subagent ignores it, because subagents share the host session ID. Always exits 0. |
-| `cq idle-alert [--every 1h] [--debug]` | For the Claude Code Notification hook (matcher `idle_prompt`). When this session owns a name listed in `CQ_ROOT/idle-alerts`, send its lead one fixed `info` message, at most once per `--every`. Prints nothing and exits 0. A bad `--every` value is a configuration error and exits 64. See [Idle alerts](#idle-alerts). |
+| `cq turn-end [--debug]` | For the Claude Code Stop hook. When this session owns a name listed in `CQ_ROOT/idle-alerts`, record the turn end in `idle/<name>.turn-end` for the name's watcher. Records nothing when the hook input lists other running background work. Prints nothing and always exits 0. See [Idle alerts](#idle-alerts). |
+| `cq idle-alert [--every 1h] [--debug]` | For the Claude Code Notification hook (matcher `idle_prompt`), or manual use. When this session owns a name listed in `CQ_ROOT/idle-alerts`, send its lead one fixed `info` message at once, at most once per `--every`. The desktop app does not send `idle_prompt`: use `cq turn-end` there. Prints nothing and exits 0. A bad `--every` value is a configuration error and exits 64. See [Idle alerts](#idle-alerts). |
 
 Example:
 
@@ -107,7 +108,7 @@ cq wake --as lead worker-a
 
 ## Idle alerts
 
-[Issue #50](https://github.com/niklasrichardson/session-queue/issues/50). The lead hears when a chosen worker session waits for input, without a timed check. Claude Code only: the hook setup is in [Claude Code setup](CLAUDE-CODE.md#tell-a-lead-when-a-worker-is-idle).
+[Issue #50](https://github.com/niklasrichardson/session-queue/issues/50). The lead hears when a chosen worker session has stopped working, without a timed check by the lead. Claude Code only: the hook setup is in [Claude Code setup](CLAUDE-CODE.md#tell-a-lead-when-a-worker-is-idle).
 
 `CQ_ROOT/idle-alerts` lists the workers, one `worker lead` pair per line. The owner edits it by hand:
 
@@ -117,6 +118,27 @@ worker-a lead
 ```
 
 - Blank lines, lines starting with `#`, and lines that are not exactly two valid names are skipped. When a worker is listed more than once, the first valid line wins.
+Two ways send the alert. The Stop hook way works in the desktop app; `idle_prompt` does not fire there.
+
+**Stop hook: `cq turn-end` and the watcher.**
+
+- `cq turn-end` finds this session's name from its `members/` record, as `cq session-start` does. With no record, no listed name, a sleeping name, no `transcript_path` in the hook input, or a transcript it cannot read, it does nothing. It reads the hook input for up to 2 seconds in all, from the first byte to the end; input that is not complete by then counts as none.
+- When the hook input has a `background_tasks` list with a task that is not finished and is not the `cq watch` watcher, it writes nothing and removes an older turn end: background work may wake the session later. The watcher is a task whose command runs `cq` or `cq.exe` (at any path, quotes allowed) with the first argument `watch`, and runs nothing else. A command with `&&`, `||`, `;`, `|`, a lone `&` (run in the background), `$(`, `<(` or `>(` (process substitution), a backtick or a line break is not the watcher, even when those characters are in quotes. A redirection such as `2>&1`, `> file` or `2>/dev/null` is allowed. A task with no command, such as a subagent, is never the watcher, whatever its description says. So a watcher run through a tool that reports no command blocks the alert. When the field is absent, the background work is unknown, and it writes the turn end anyway. `session_crons` is not used: a scheduled wake that starts a new turn is detected like any new turn, from a new `user` entry in the transcript or a later transcript write.
+- Otherwise it writes `idle/worker-a.turn-end`: a JSON object with a unique `generation`, the UTC `turn_end` time (with fractions of a second), the hook's `transcript_path`, and `transcript_len`, the transcript's length in bytes. Nothing else from the hook input or the transcript goes into it. It writes, or removes an older turn end, only under a lock on `idle/worker-a.turn-end.lock`. When that lock stays taken for 1 second, it changes nothing.
+- The watcher for `worker-a` checks the file every 5 seconds, while the name is listed and `PAUSE` does not exist. It sends the alert as `cq idle-alert` would, once `--idle-after` (default `5m`, more than `30s`) has passed since the turn end with no activity observed. Activity is any of these:
+  - a complete transcript entry with `type` `user` added after `transcript_len`: a new prompt, a tool result or a queued notification;
+  - more than 1 MB added to the transcript;
+  - a transcript that shrank, is missing or cannot be read;
+  - a transcript modified time later than 30 seconds after the turn end.
+- The watcher reads only the added bytes, at most 1 MB, and only each entry's `type`. It never keeps or prints transcript text. These checks use only the file and the transcript, so a restarted watcher decides the same way.
+- Each line the watcher delivers (`CQ-NEW`, `CQ-WAKE`, `CQ-OVERDUE`, in any mode) wakes the session. The watcher records when it last delivered a line: written to stdout, or posted by `--to-inbox` or `--to-codex`. It cancels a turn end that is earlier than that time. A line that `--to-codex` drops by design also counts, which can only stop an alert. While a line waits to be posted, the watcher sends no alert.
+- Each check runs under the lock on `idle/worker-a.turn-end.lock`: the watcher reads the turn end, decides, sends and removes it while it holds the lock. When `cq turn-end` holds the lock, the watcher skips that check.
+- The watcher removes the turn end after the alert is sent, after `Recent` (an alert within `--idle-every`, default `1h`), when it cancels it, or when the name is no longer listed or is asleep. When `idle/worker-a.lock` is taken or the send fails (a limit, I/O), it tries again after 90 seconds and 3 more minutes, then removes the turn end. When the removal fails, it tries the removal again on each check, and never sends for that turn end.
+- The watcher prints nothing for this.
+- Limits: a Stop hook does not run when the user interrupts a turn, and an API error runs `StopFailure` instead, so neither records a turn end. A session that waits on work the hook input does not report can be reported idle, at most once per `--idle-every`.
+
+**`idle_prompt`: `cq idle-alert`.**
+
 - `cq idle-alert` finds this session's name from its `members/` record, as `cq session-start` does. With no record, no listed name, or a sleeping name, it does nothing.
 - Otherwise it sends the lead the message that `cq send --from worker-a --to lead --type info` would send, with the subject `worker-a is idle` and the body `Idle since 14:05 UK.` (the local time, as in `CQ-NEW` lines). The text is fixed: nothing from the session's work or the hook's input goes into it.
 - After a send it writes the UTC time to `idle/worker-a`. It skips the alert while that time is less than `--every` ago (default `1h`; for example `--every 30m`). A time in the future does not count.
@@ -224,6 +246,8 @@ CQ_ROOT/
   idle-alerts                `worker lead` pairs for cq idle-alert, one per line (edited by the owner)
   idle/<name>                the UTC time of the last idle alert for the name
   idle/<name>.lock           locked by cq idle-alert while it checks, sends and records
+  idle/<name>.turn-end       the last turn end, written by cq turn-end and removed by the name's watcher
+  idle/<name>.turn-end.lock  locked while the turn end is written, checked or removed
   PAUSE                      while it exists, watchers print nothing and cq send refuses
 ```
 

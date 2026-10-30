@@ -18,6 +18,12 @@
 //! restarted watcher does not report it again; a line lost in a failed post
 //! is reported again. It never moves the tasks.
 //!
+//! A watcher whose name is listed in `idle-alerts` also checks the turn end
+//! that `cq turn-end` records, and sends the idle alert when the session
+//! stays idle (see `idle::IdleCheck`). It prints nothing for this. Each
+//! line it delivers wakes the session, so a turn end recorded before the
+//! last delivery is dropped.
+//!
 //! With `--to-inbox` (experimental), the lines go into the session's own
 //! Claude Code inbox instead of stdout (see `inbox`), and the watcher has no
 //! default time limit. `--to-codex` instead wakes a Codex chat with
@@ -40,6 +46,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::error::{CqError, Result};
 use crate::fsutil;
+use crate::idle;
 use crate::members;
 use crate::message::{EVENT_SUBJECT_MAX, event_text, header};
 use crate::names::{check_name, is_valid_id};
@@ -71,6 +78,8 @@ const WAKE_SCAN_EVERY: Duration = Duration::from_secs(1);
 pub const WAKE_AFTER: Duration = Duration::from_secs(120);
 /// How often a coordinator's watcher looks for newly overdue tasks.
 const OVERDUE_SCAN_EVERY: Duration = Duration::from_secs(30);
+/// How often the watcher checks the turn end recorded by `cq turn-end`.
+const IDLE_CHECK_EVERY: Duration = Duration::from_secs(5);
 
 /// How a watcher run ended without an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +109,11 @@ pub struct WatchOptions {
     /// Where the lines go, recorded in the session's `members/` record, so
     /// that `cq session-start` does not ask for a Monitor after `/clear`.
     pub mode: members::Mode,
+    /// Send the idle alert this long after a turn end with no change to the
+    /// transcript (`--idle-after`).
+    pub idle_after: Duration,
+    /// The least time between two idle alerts (`--idle-every`).
+    pub idle_every: Duration,
 }
 
 impl WatchOptions {
@@ -112,6 +126,8 @@ impl WatchOptions {
             fs_events: true,
             member_key: None,
             mode: members::Mode::Monitor,
+            idle_after: idle::DEFAULT_IDLE_AFTER,
+            idle_every: idle::DEFAULT_EVERY,
         }
     }
 }
@@ -228,6 +244,13 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     // has delivered, so a line lost in a failed post is reported again.
     let mut saved = reported.clone();
     let mut next_overdue_scan = started;
+    let mut idle_check = idle::IdleCheck::default();
+    let mut next_idle_check = started;
+    let mut out = Counted {
+        inner: out,
+        delivered: None,
+    };
+    let out = &mut out;
 
     let end = loop {
         let now = Instant::now();
@@ -286,6 +309,14 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
         if let Err(e) = out.tick() {
             break out.failed(e).map(|r| (r, Ended::Normal));
         }
+        if let Some(at) = out.delivered.take() {
+            idle_check.delivered(at);
+        }
+        // A held line wakes the session once it is posted: no alert first.
+        if !paused && !out.holding() && now >= next_idle_check {
+            next_idle_check = now + IDLE_CHECK_EVERY;
+            idle_check.run(root, name, opts.idle_after, opts.idle_every);
+        }
         if reported != saved && !out.holding() {
             save_reported(root, name, &reported);
             saved = reported.clone();
@@ -332,6 +363,48 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     // Ignore a failed write: stderr may be the same closed pipe as stdout.
     let _ = writeln!(io::stderr(), "cq watch: exiting: {reason}");
     Ok(ended)
+}
+
+/// A sink that records when it last delivered lines, so the idle check
+/// can drop a turn end recorded before a line woke the session. A sink
+/// that holds lines delivers them when a tick leaves it holding none; one
+/// that holds none (stdout) delivers each line at once. A line a sink
+/// drops by design counts too, which can only stop an alert. The time is
+/// taken before the call: the session may wake and end a new turn before
+/// the call returns, and that turn end must not look older than the
+/// delivery.
+struct Counted<'a, S: Sink> {
+    inner: &'a mut S,
+    delivered: Option<SystemTime>,
+}
+
+impl<S: Sink> Sink for Counted<'_, S> {
+    fn line(&mut self, line: &str) -> io::Result<()> {
+        let at = SystemTime::now();
+        self.inner.line(line)?;
+        if !self.inner.holding() {
+            self.delivered = Some(at);
+        }
+        Ok(())
+    }
+    fn tick(&mut self) -> io::Result<()> {
+        let held = self.inner.holding();
+        let at = SystemTime::now();
+        self.inner.tick()?;
+        if held && !self.inner.holding() {
+            self.delivered = Some(at);
+        }
+        Ok(())
+    }
+    fn holding(&self) -> bool {
+        self.inner.holding()
+    }
+    fn stopped(&mut self, reason: &str, ended: Ended) -> bool {
+        self.inner.stopped(reason, ended)
+    }
+    fn failed(&mut self, e: io::Error) -> Result<String> {
+        self.inner.failed(e)
+    }
 }
 
 /// Deliver the `CQ-SLEEP` line. A failed write is ignored: the watcher
@@ -586,6 +659,124 @@ fn prune(dir: &Path) {
             .is_some_and(|age| age > PRUNE_AFTER);
         if meta.is_file() && old {
             let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::idle::{IdleCheck, Marked, StopInput, mark_turn_end};
+
+    /// A root where `worker-a` is listed, and Stop hook input with its
+    /// transcript.
+    fn listed() -> (tempfile::TempDir, Root, StopInput) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Root::at(dir.path().to_owned());
+        root.init().unwrap();
+        fs::write(root.idle_alerts(), "worker-a lead\n").unwrap();
+        let tx = dir.path().join("transcript.jsonl");
+        fs::write(&tx, "{\"type\":\"user\"}\n").unwrap();
+        let input = StopInput {
+            transcript_path: Some(tx),
+            background_tasks: None,
+        };
+        (dir, root, input)
+    }
+
+    /// A sink that delivers in `line`, or holds the line and delivers it in
+    /// `tick`. With `turn_ends`, the session wakes and ends a new turn while
+    /// the line is delivered, before the call returns.
+    struct Fake<'a> {
+        root: &'a Root,
+        input: &'a StopInput,
+        hold: bool,
+        held: bool,
+        turn_ends: bool,
+    }
+
+    impl Fake<'_> {
+        fn deliver(&mut self) {
+            if self.turn_ends {
+                sleep(Duration::from_millis(10));
+                let marked = mark_turn_end(self.root, "worker-a", self.input);
+                assert!(matches!(marked, Marked::Written), "{marked:?}");
+                sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    impl Sink for Fake<'_> {
+        fn line(&mut self, _line: &str) -> io::Result<()> {
+            if self.hold {
+                self.held = true;
+            } else {
+                self.deliver();
+            }
+            Ok(())
+        }
+        fn tick(&mut self) -> io::Result<()> {
+            if self.held {
+                self.deliver();
+                self.held = false;
+            }
+            Ok(())
+        }
+        fn holding(&self) -> bool {
+            self.held
+        }
+        fn failed(&mut self, e: io::Error) -> Result<String> {
+            Err(CqError::io("fake sink", e))
+        }
+    }
+
+    /// Deliver one line through `Counted`, then run one idle check with
+    /// the delivery time.
+    fn deliver_and_check(root: &Root, input: &StopInput, hold: bool, turn_ends: bool) {
+        let mut sink = Fake {
+            root,
+            input,
+            hold,
+            held: false,
+            turn_ends,
+        };
+        let mut out = Counted {
+            inner: &mut sink,
+            delivered: None,
+        };
+        out.line("CQ-NEW x").unwrap();
+        out.tick().unwrap();
+        let at = out.delivered.expect("a delivery time");
+        let mut check = IdleCheck::default();
+        check.delivered(at);
+        check.run(
+            root,
+            "worker-a",
+            idle::DEFAULT_IDLE_AFTER,
+            idle::DEFAULT_EVERY,
+        );
+    }
+
+    #[test]
+    fn a_turn_end_during_a_delivery_survives_it() {
+        for hold in [false, true] {
+            let (_dir, root, input) = listed();
+            deliver_and_check(&root, &input, hold, true);
+            assert!(root.turn_end_marker("worker-a").exists(), "hold={hold}");
+        }
+    }
+
+    #[test]
+    fn a_turn_end_before_a_delivery_is_cancelled() {
+        for hold in [false, true] {
+            let (_dir, root, input) = listed();
+            assert!(matches!(
+                mark_turn_end(&root, "worker-a", &input),
+                Marked::Written
+            ));
+            sleep(Duration::from_millis(10));
+            deliver_and_check(&root, &input, hold, false);
+            assert!(!root.turn_end_marker("worker-a").exists(), "hold={hold}");
         }
     }
 }

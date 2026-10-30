@@ -81,6 +81,19 @@ Live on Windows 11: on 28 Oct 2026, `cq watch --to-codex` woke two idle Codex De
 
 Not verified: a real Claude Code inbox (the owner's earlier live test used a separate script); a long run; macOS and Linux at run time (the Unix socket test compiles but has not run); a stopped message after SIGTERM from `--takeover`; how the desktop app treats a long-running background Bash command.
 
+## Idle alerts from a Stop hook on Windows, 30 October 2026
+
+[Issue #50](https://github.com/niklasrichardson/session-queue/issues/50): `cq turn-end` and the idle check in `cq watch`. Checked on Windows 11 with `cargo test --workspace` (263 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
+
+- Unit tests in `src/idle.rs` cover the decision: wait before `--idle-after`; alert after it; a final write inside the 30-second settle time still alerts; a write after it cancels; a missing transcript cancels; a watcher that starts late decides from the modified time alone.
+- They cover the new-turn check: a `user` entry added 10 seconds after the turn end, inside the settle time, cancels; only `assistant` and `system` entries added still alert; a line with no newline is skipped; a transcript that shrank, cannot be read or grew by more than 1 MB cancels.
+- They cover the hook input: `cq watch` and `cq.exe` watchers at any path and in quotes, with redirections such as `2>&1`, are exempt; a watcher with other work after it (`&&`, `||`, `|`, `;`, `&`, `$(`, `<(`, `>(`, a backtick, a line break) counts; `grep "cq watch"`, `echo cq watch`, other `cq` commands, and tasks with no command (a subagent described "review cq watch races", a Monitor) count as background work; a finished task; the field absent.
+- They cover the locks and outcomes: `cq turn-end` writes and removes nothing while the marker lock is held; a check skips while the lock is held, and decides again on a marker replaced meanwhile; a failed removal is tried again with no send; a line delivered after the turn end cancels it, and one delivered before does not; in `src/watch.rs`, a fake sink that ends a new turn while it delivers, before it returns, leaves that turn end in place, for a line delivered at once and for one held until a tick; a recent alert; a failed send tried 3 times; the marker's 4 fields.
+- `tests/idle.rs` runs `cq turn-end` with Stop hook JSON on stdin, and `cq watch` with planted turn ends: the marker holds only the time, generation, transcript path and length; input whose first byte comes 300 ms late is still read; background work, and a watcher task with no command, record nothing; a restarted watcher alerts once and prints nothing; a busy transcript and a recent turn end send nothing; a `CQ-NEW` line cancels the turn end; `--idle-after 30s` exits 64.
+- Turn-end times are planted in the past, not waited for.
+
+Not verified: the Stop hook in a live Claude Code session, its `background_tasks` field in practice (including whether a Monitor watcher has a command), the transcript entry types Claude Code writes after the hook, and how long it writes to the transcript after the hook.
+
 ## Idle alerts on Windows, 29 October 2026
 
 [Issue #50](https://github.com/niklasrichardson/session-queue/issues/50): `cq idle-alert`. Checked on Windows 11 with `cargo test --workspace` (214 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.

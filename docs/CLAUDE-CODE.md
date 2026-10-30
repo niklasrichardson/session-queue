@@ -83,7 +83,7 @@ Expected result: after `/clear` in a session whose watcher ran, the new context 
 
 ### Tell a lead when a worker is idle
 
-Optional. `cq idle-alert` sends a lead one `info` message when a chosen worker session waits for input, at most once an hour per worker. The message is fixed (`worker-a is idle`, `Idle since 14:05 UK.`) and holds nothing from the worker's work. Details: [Idle alerts](COMMANDS.md#idle-alerts).
+Optional. A lead gets one `info` message when a chosen worker session has finished a turn and no activity is observed for about 5 minutes, at most once an hour per worker. The message is fixed (`worker-a is idle`, `Idle since 14:05 UK.`) and holds nothing from the worker's work. Details: [Idle alerts](COMMANDS.md#idle-alerts).
 
 1. List each worker and its lead in `CQ_ROOT/idle-alerts`, one pair per line:
 
@@ -91,22 +91,44 @@ Optional. `cq idle-alert` sends a lead one `info` message when a chosen worker s
    worker-a lead
    ```
 
-2. Add a Notification hook to `~/.claude/settings.json`, and merge it into any existing `hooks` object:
+2. Add a Stop hook to `~/.claude/settings.json`, and merge it into any existing `hooks` object:
 
    ```json
    "hooks": {
-     "Notification": [{"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "cq idle-alert", "timeout": 10}]}]
+     "Stop": [{"hooks": [{"type": "command", "command": "cq turn-end", "timeout": 10}]}]
    }
    ```
 
-   To change the interval, add `--every`, for example `cq idle-alert --every 30m`.
+3. Run the worker's `cq watch` with `cq` 1.7.0 or later. The watcher sends the alert, not the hook. An older watcher ignores the turn end, and no alert is sent. To change the wait, add `--idle-after` to the watcher command, for example `cq watch --as worker-a --to-inbox --idle-after 10m`. `--idle-every` changes the hour.
 
-- The hook runs for every session. A session whose name is not listed, or that has no queue name, exits at once and sends nothing. A sleeping name sends nothing.
-- When it fires: the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks#notification) says to expect `idle_prompt` about 60 seconds after Claude finishes responding, only if the user has not typed since and no background agent (such as a background subagent) still runs. It does not fire while Claude Code waits for a usage limit to reset. The page does not say that it repeats.
-- Claude Code runs matching hooks in parallel. `cq idle-alert` holds a lock per worker, so two hooks at once send one alert.
-- `cq idle-alert` exits 0 in every case except a bad `--every` value, which is a configuration error (exit 64). The hook command above uses the default, so it cannot hit this.
-- **Not verified.** The hook in a live session, and the 60-second timing. The command is covered by tests that run it with hook input.
+How it works:
+
+- At each turn end, `cq turn-end` writes the time, the transcript path and the transcript's length in bytes to `idle/worker-a.turn-end`. It writes nothing for a name that is not listed or is asleep, and nothing when the hook input lists background work that is still running, other than the `cq watch` watcher.
+- The worker's watcher checks that file every 5 seconds. It sends the alert when `--idle-after` (default 5 minutes) has passed since the turn end with no activity observed. Any of these cancels the alert:
+  - a new `user` entry in the transcript after the turn end: a new prompt, a tool result or a queued notification;
+  - a transcript write later than 30 seconds after the turn end;
+  - a queue line that the watcher delivered after the turn end (it wakes the session);
+  - a newer turn end.
+- So the alert means "no activity observed", not "certainly idle".
+
+Limits:
+
+- A Stop hook does not run when the user interrupts a turn, so that turn end records nothing. An API error runs `StopFailure` instead of `Stop`, which also records nothing.
+- A session that waits on work the hook input does not report can be reported idle, at most once an hour. When the hook input has no `background_tasks` field (older Claude Code versions), `cq turn-end` cannot see background work, and records the turn end anyway.
+- The watcher is recognised in `background_tasks` only by its command: the program is `cq` or `cq.exe`, the first argument is `watch`, and the command runs nothing else. A command with `&&`, `||`, `;`, `|`, a lone `&`, `$(`, `<(`, `>(`, a backtick or a line break counts as background work; a redirection such as `2>&1` is allowed. A task with no command is never the watcher, whatever its description says. So a watcher run through a tool that reports no command counts as background work, and no alert is sent for that session. **Not verified:** whether Claude Code reports a command for a Monitor watcher.
+- The watcher reads at most 1 MB of transcript added after the turn end, and only each entry's `type` field. It never keeps or prints transcript text. More than 1 MB added counts as a new turn.
+- **Not verified** in a live session: the Stop hook input, the transcript timing after the hook, and the alert end to end. The commands are covered by tests that run them with hook input and planted turn ends.
 - The macOS note above about a bare `cq` in a hook command applies here too.
+
+`cq idle-alert` sends the same alert at once. It is for a `Notification` hook with matcher `idle_prompt`, or for manual use. The Claude desktop app does not send `idle_prompt` (seen in live tests), so use the Stop hook above there. The [Claude Code hooks reference](https://code.claude.com/docs/en/hooks#notification) describes `idle_prompt` for terminal sessions, about 60 seconds after Claude finishes responding. To use it:
+
+```json
+"hooks": {
+  "Notification": [{"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "cq idle-alert", "timeout": 10}]}]
+}
+```
+
+- `cq idle-alert` holds a lock per worker, so two hooks at once send one alert. It exits 0 in every case except a bad `--every` value (exit 64). `--every 30m` changes the hour.
 
 ### Sleep and wake
 

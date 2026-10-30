@@ -17,6 +17,8 @@
 //! idle-alerts               `worker lead` pairs for `cq idle-alert` (owner-edited)
 //! idle/<name>               the time of the last idle alert for the name
 //! idle/<name>.lock          held by `cq idle-alert` while it sends
+//! idle/<name>.turn-end      the last turn end, written by `cq turn-end`
+//! idle/<name>.turn-end.lock held while the turn end is written, checked or removed
 //! PAUSE                     while it exists, watchers emit nothing
 //! ```
 
@@ -185,7 +187,7 @@ impl Root {
         self.path.join("idle-alerts")
     }
 
-    /// Created on demand by `cq idle-alert`.
+    /// Created on demand by `cq idle-alert` and `cq turn-end`.
     pub fn idle_dir(&self) -> PathBuf {
         self.path.join("idle")
     }
@@ -197,6 +199,17 @@ impl Root {
     /// Held by `cq idle-alert` while it checks, sends and records.
     pub fn idle_lock(&self, name: &str) -> PathBuf {
         self.idle_dir().join(format!("{name}.lock"))
+    }
+
+    /// The last turn end of the session that owns the name, written by
+    /// `cq turn-end` and removed by the name's watcher.
+    pub fn turn_end_marker(&self, name: &str) -> PathBuf {
+        self.idle_dir().join(format!("{name}.turn-end"))
+    }
+
+    /// Held while `idle/<name>.turn-end` is written or removed.
+    pub fn turn_end_lock(&self, name: &str) -> PathBuf {
+        self.idle_dir().join(format!("{name}.turn-end.lock"))
     }
 
     pub fn pause(&self) -> PathBuf {
