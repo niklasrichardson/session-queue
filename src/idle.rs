@@ -274,10 +274,11 @@ impl BackgroundTask {
 }
 
 /// True when a command line may run more than one command: it has `&&`,
-/// `||`, `;`, `|`, a lone `&`, `$(`, a backtick or a line break, even in
-/// quotes. A redirection such as `2>&1`, `>&2` or `&> file` is allowed.
+/// `||`, `;`, `|`, a lone `&`, `$(`, `<(`, `>(`, a backtick or a line
+/// break, even in quotes. A redirection such as `2>&1`, `>&2` or `&> file`
+/// is allowed.
 fn is_compound(command: &str) -> bool {
-    if command.contains("$(") {
+    if ["$(", "<(", ">("].iter().any(|s| command.contains(s)) {
         return true;
     }
     let chars: Vec<char> = command.chars().collect();
@@ -726,6 +727,9 @@ mod tests {
             "cq watch --as worker-a & cargo test",
             "cq watch --as worker-a &",
             "cq watch --as $(cat name)",
+            "cq watch --as worker-a --to-inbox > >(cargo test)",
+            "cq watch --as worker-a --to-inbox 2> >(cargo test)",
+            "cq watch --as worker-a < <(cargo test)",
             "cq watch --as `cat name`",
             "cq watch --as worker-a\ncargo test",
         ] {
