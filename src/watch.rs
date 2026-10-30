@@ -547,7 +547,7 @@ fn save_reported(root: &Root, name: &str, reported: &HashSet<String>) {
 
 /// `<kind> <UTC> (<local>) to=... from=... type=... id=... subject="..."`,
 /// timed now.
-fn event_line(kind: &str, to: &str, id: &str, bytes: &[u8]) -> String {
+pub(crate) fn event_line(kind: &str, to: &str, id: &str, bytes: &[u8]) -> String {
     let h = header(bytes);
     let now = timefmt::now();
     format!(
