@@ -7,6 +7,8 @@
 
 `cq` lets AI coding sessions on one computer hand work to each other and wake each other, with nobody typing. Each message is one JSON file in a shared folder, the queue root, and a small watcher process per session wakes its session when a message arrives. A hand-off between sessions usually needs a person to pass it on; with `cq`, hand-offs continue when nobody is at the keyboard. It is for people who run several coding sessions on one project, for example a lead and two workers.
 
+The name `cq` is short for Claude/Codex queue: it began as a queue between Claude Code sessions, and Codex sessions joined later.
+
 **Status:** tested live on Windows 11. macOS is partly tested: the build, most automated tests and inbox mode in one Claude Code session passed on a Mac, the dispatcher tests fail intermittently, and Codex and live hand-offs between sessions are not checked there ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Linux has not been built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)). The cq-top Sessions screen is not yet tested on macOS ([#17](https://github.com/niklasrichardson/session-queue/issues/17)). See [Platform status](docs/OVERVIEW.md#platform-status).
 
 ## How it works
