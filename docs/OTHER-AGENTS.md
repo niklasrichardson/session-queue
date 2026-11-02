@@ -1,8 +1,8 @@
 # Other agents
 
-This page holds only what differs for an agent other than Claude Code and Codex, or for a script. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). Back to the [README](../README.md).
+This page holds only what differs for an agent other than Claude Code, Codex and Antigravity CLI, or for a script. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). Back to the [README](../README.md).
 
-`cq` has been tested with Claude Code and Codex only. Nothing on this page has been tested with another agent. The tested setups are in [Claude Code setup](CLAUDE-CODE.md) and [Codex setup](CODEX.md).
+`cq` has been tested with Claude Code, Codex and Antigravity CLI (Gemini). Nothing on this page has been tested with another agent. The tested setups are in [Claude Code setup](CLAUDE-CODE.md), [Codex setup](CODEX.md) and [Antigravity setup](ANTIGRAVITY.md).
 
 ## Quick path for another agent
 

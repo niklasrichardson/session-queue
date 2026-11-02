@@ -32,6 +32,10 @@ A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a
 
 The other parts for Claude Code do not apply to a Codex chat. For a block to paste into AGENTS.md as is, use the [Codex-only rules block](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md#give-the-chat-its-rules) instead of this file.
 
+### Antigravity CLI
+
+Start `cq-watch-once.ps1` in a background `run_command` task (`IsDaemon: false`, `WaitMsBeforeAsync: 500`), passing your queue name and conversation ID. When the task completes, Antigravity wakes the session with the task output: claim and finish each `CQ-NEW` line, then re-arm `cq-watch-once.ps1` in the background. On `--max-seconds 1790 reached` (exit 0 with no lines), re-arm in the background. On `CQ-SLEEP` (exit 7), do not re-arm. See [Antigravity setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/ANTIGRAVITY.md).
+
 ### Other agents
 
 Use the wake route your setup provides, such as polling. On each wake or poll, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If the first line starts with `ASLEEP`, the name is asleep: end the turn with no other work, even if messages are listed. If there are none, end the turn with no other work and no update. See [Other agents](https://github.com/niklasrichardson/session-queue/blob/main/docs/OTHER-AGENTS.md#wake-the-agent).

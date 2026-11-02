@@ -6,6 +6,7 @@ These rules say how to handle a message. How a session gets woken depends on the
 
 - Claude Code: add the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md) as well, and follow [Claude Code setup](CLAUDE-CODE.md).
 - Codex: follow [Codex setup](CODEX.md).
+- Antigravity CLI (Gemini): follow [Antigravity setup](ANTIGRAVITY.md).
 - Other agents: see [Other agents](OTHER-AGENTS.md).
 
 The steps that are the same for every agent are in [Setup](SETUP.md).
