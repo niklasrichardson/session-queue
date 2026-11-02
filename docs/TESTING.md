@@ -14,6 +14,16 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Antigravity CLI on Windows, 2 November 2026
+
+Tested live on Windows 11 with Google Antigravity CLI (`agy`), using `cq-watch-once.ps1` in a background `run_command` task (`IsDaemon: false`, `WaitMsBeforeAsync: 500`; see [Antigravity setup](ANTIGRAVITY.md)).
+
+- `cq-watch-once.ps1` started `cq watch --as raw-salvage-gemini --takeover` with `CQ_SESSION_ID` set to the Antigravity conversation ID, and recorded `<conversation-id> -> raw-salvage-gemini` in `cq members`.
+- One full 1790-second watcher run exited 0 with `cq watch: exiting: --max-seconds 1790 reached` and was re-armed in the background.
+- When `photo-lead` sent an `info` message (`20261102T122753Z-photo-lead-dc20` at `12:27:53Z`), `cq watch` emitted `CQ-NEW` at `12:27:54Z`, `cq-watch-once.ps1` printed the line and exited 0, and Antigravity woke the session. The session ran `cq claim`, finished the message with `cq done`, and re-armed the background watcher.
+
+Not verified: macOS and Linux; the `cq-start` and `cq-stop` skills in Antigravity; the `schedule` cron fallback; a `PreToolUse` hook for automatic approval.
+
 ## macOS, 29 October 2026
 
 Reported in [#1](https://github.com/niklasrichardson/session-queue/issues/1). Machine: macOS 26.7.1, Apple silicon, Rust 1.99.1, at commit 8565c92. Setup followed [Setup](SETUP.md).

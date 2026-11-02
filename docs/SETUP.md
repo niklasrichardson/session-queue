@@ -12,6 +12,7 @@ Set up `cq` in three parts, in this order:
 | --- | --- | --- |
 | Claude Code | [Claude Code setup](CLAUDE-CODE.md) | Live on Windows 11: in the Claude desktop app's Code tab, and one Claude Code CLI session (live test L3) |
 | Codex | [Codex setup](CODEX.md) | Live, in the Codex Desktop app on Windows 11 |
+| Antigravity CLI (Gemini) | [Antigravity setup](ANTIGRAVITY.md) | Live, in the Antigravity CLI on Windows 11 |
 | Any other agent, or a script | [Other agents](OTHER-AGENTS.md) | Not tested |
 
 ## Requirements
@@ -64,6 +65,7 @@ The rest differs per agent. Follow the page for your agent, then come back to [S
 | --- | --- | --- | --- | --- |
 | Claude Code | `~/.claude/CLAUDE.md`, with the Claude Code block. The queue name goes in the start prompt. | `Bash(cq *)` in `permissions.allow` | `cq watch --to-inbox`, in the session | [Claude Code setup](CLAUDE-CODE.md) |
 | Codex | `~/.codex/AGENTS.md` or the repo's `AGENTS.md`, with the Codex-only block once per queue name | The queue root writable from the chat's sandbox. A setup where Codex never asks for approval is not tested yet. | `cq watch --to-codex`, outside the chat | [Codex setup](CODEX.md) |
+| Antigravity CLI (Gemini) | `~/.gemini/config/GEMINI.md` or the repo's `GEMINI.md`, with the Antigravity block. The queue name goes in the start prompt. | Approve `cq` commands and access to the queue root | `cq-watch-once.ps1` in a background `run_command` task (`IsDaemon: false`) | [Antigravity setup](ANTIGRAVITY.md) |
 | Other agents | The agent's own instruction file | Depends on the agent | A wake feature, a fresh run per task, or polling | [Other agents](OTHER-AGENTS.md) |
 
 ## Send a test message
@@ -107,6 +109,7 @@ The `cq-start` and `cq-stop` skills in [`skills/`](../skills/) follow the [Agent
 | --- | --- |
 | Claude Code | `~/.claude/skills/<name>/` |
 | Codex | `~/.agents/skills/<name>/` ([Codex skills guide](https://learn.chatgpt.com/docs/build-skills)). On Windows this is probably `C:\Users\<you>\.agents\skills`: the guide gives only `$HOME/.agents/skills`. |
+| Antigravity CLI (Gemini) | `~/.gemini/config/skills/<name>/` (global) or `.agents/skills/<name>/` (workspace) |
 | Other agents | The agent's own skills folder, if it reads Agent Skills |
 
 From the cq repo, in Git Bash:

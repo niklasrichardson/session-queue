@@ -10,7 +10,7 @@ Measured on Windows: in an overnight test with the earlier Monitor mode, a sessi
 
 ## Agent support
 
-`cq` is the same for every agent: the queue root, the commands, the queue rules and the safety model. Only the parts below differ. The setup for each agent is in [Claude Code setup](CLAUDE-CODE.md), [Codex setup](CODEX.md) and [Other agents](OTHER-AGENTS.md).
+`cq` is the same for every agent: the queue root, the commands, the queue rules and the safety model. Only the parts below differ. The setup for each agent is in [Claude Code setup](CLAUDE-CODE.md), [Codex setup](CODEX.md), [Antigravity setup](ANTIGRAVITY.md) and [Other agents](OTHER-AGENTS.md).
 
 | | Claude Code | Codex |
 | --- | --- | --- |

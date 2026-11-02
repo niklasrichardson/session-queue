@@ -45,12 +45,12 @@ Either agent can send a task to the other. The receiving agent's own watcher wak
 - **The `cq` CLI** does every queue action: `send`, `claim`, `done`, `list`, `sleep`, `wake`. Each action reads or writes files; messages move between folders by atomic rename. The full layout is in [Commands](docs/COMMANDS.md#layout). There is no server, database or network.
 - **The watcher** (`cq watch --as NAME`) watches one inbox. Only one watcher runs per name. Each agent has its own way to be woken:
 
-| | Claude Code | Codex |
-| --- | --- | --- |
-| Default wake | `cq watch --as NAME --to-inbox`, started in the session as a background Bash command. It posts the lines into the session's own Claude Code inbox. A message to an idle session starts a turn. | `cq watch --as NAME --to-codex THREAD`, started outside the chat. It runs `codex queue` with a fixed prompt. The Codex app starts a turn in that chat. |
-| Fallback | Monitor mode: `cq watch --as NAME` under the Monitor tool. It expires after 30 minutes, so the session re-arms it. Only when `--to-inbox` exits 64 (no inbox). | Same-chat scheduled automation in the Codex app. Each run costs a model turn, even with an empty inbox. Only when `codex queue` is not available. |
-| Fresh run per task | Not available | `cq dispatch` runs `codex exec` once per task. |
-| Setup | [Claude Code setup](docs/CLAUDE-CODE.md) | [Codex setup](docs/CODEX.md) |
+| | Claude Code | Codex | Antigravity CLI (Gemini) |
+| --- | --- | --- | --- |
+| Default wake | `cq watch --as NAME --to-inbox`, started in the session as a background Bash command. It posts the lines into the session's own Claude Code inbox. A message to an idle session starts a turn. | `cq watch --as NAME --to-codex THREAD`, started outside the chat. It runs `codex queue` with a fixed prompt. The Codex app starts a turn in that chat. | `cq-watch-once.ps1` in a background `run_command` task (`IsDaemon: false`). It runs `cq watch --as NAME`, prints the first batch of `CQ-NEW` lines and exits 0, which wakes the session. |
+| Fallback | Monitor mode: `cq watch --as NAME` under the Monitor tool. It expires after 30 minutes, so the session re-arms it. Only when `--to-inbox` exits 64 (no inbox). | Same-chat scheduled automation in the Codex app. Each run costs a model turn, even with an empty inbox. Only when `codex queue` is not available. | The `schedule` tool (`CronExpression`) polling `cq list --as NAME`. Each run costs a model turn. |
+| Fresh run per task | Not available | `cq dispatch` runs `codex exec` once per task. | Not available |
+| Setup | [Claude Code setup](docs/CLAUDE-CODE.md) | [Codex setup](docs/CODEX.md) | [Antigravity setup](docs/ANTIGRAVITY.md) |
 
 `cq --help` marks both `--to-inbox` and `--to-codex` as experimental. Any other agent needs a wake route of its own: see [Other agents](docs/OTHER-AGENTS.md). One task from start to finish, what each agent supports, the cost of an idle session, the safety model and the platform status are in [How cq works](docs/OVERVIEW.md).
 
@@ -96,6 +96,14 @@ You also need the Codex Desktop app or the interactive Codex CLI, and a Codex CL
    cq watch --as worker-a --to-codex THREAD_ID
    ```
 
+#### Antigravity CLI (Gemini)
+
+Tested on Windows 11. The full steps are in [Antigravity setup](docs/ANTIGRAVITY.md).
+
+1. Add the [queue rules](docs/QUEUE-RULES.md#1-queue-rules-block) and the Antigravity watcher block to `~/.gemini/config/GEMINI.md` or the repository's `GEMINI.md`.
+2. Approve `cq` commands and access to the queue root.
+3. Have the session write `cq-watch-once.ps1` to its scratch folder and start it as a background `run_command` task (`IsDaemon: false`, `WaitMsBeforeAsync: 500`). When a `CQ-NEW` batch arrives, the script prints the lines and exits 0, waking the session.
+
 #### Other agents
 
 Not tested. The agent needs shell access to run `cq`, the queue rules in its instruction file, and a wake route: a wake feature, a fresh run per task, or polling with `cq list`. See [Other agents](docs/OTHER-AGENTS.md).
@@ -120,6 +128,7 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | [Setup](docs/SETUP.md) | The shared steps for every agent: requirements, install, the test message, configuration, sleep and wake, upgrading |
 | [Claude Code setup](docs/CLAUDE-CODE.md) | What differs for Claude Code: rules, permissions, the inbox watcher, the rejoin hook, the idle alert hook, the skills, Monitor mode |
 | [Codex setup](docs/CODEX.md) | What differs for Codex: rules, approvals, the `--to-codex` watcher, restart, the `cq dispatch` worker |
+| [Antigravity setup](docs/ANTIGRAVITY.md) | What differs for Antigravity CLI (Gemini): rules, approvals, the background `run_command` watcher script, the `schedule` fallback |
 | [Other agents](docs/OTHER-AGENTS.md) | What any other agent or script needs: rules, permissions, a wake route |
 | [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
 | [`CLAUDE-snippets.md`](CLAUDE-snippets.md) | Claude Code blocks and session prompts to paste |
