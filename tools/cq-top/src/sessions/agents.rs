@@ -9,11 +9,14 @@
 //!   `~/.gemini/antigravity-cli/conversation_summaries.db`. Its model and token data are in
 //!   undocumented protobuf blobs, which are not parsed, so those rows show only activity.
 //!
-//! Both databases are opened read-only. With no write-ahead log waiting, the file is opened
-//! `immutable`: SQLite takes no lock and creates no file. With a log and its `-shm` file
-//! (the app has the database open), it is opened `mode=ro`, so the newest writes in the log
-//! are seen; a read-only connection never checkpoints. A missing file, table or column gives
-//! no rows, never an error.
+//! Both databases are opened `mode=ro`, the normal read-only access of any SQLite reader,
+//! so a write by the app in another process is seen whole or not at all. Like any reader,
+//! this takes brief shared read locks, never a write lock, and never checkpoints. When the
+//! app has closed the database, SQLite may create its own `-shm` file (and an empty `-wal`
+//! file) beside it, and may leave them there; both are SQLite's, and the app reuses or
+//! removes them. A lock held past `DB_BUSY`, a database SQLite cannot open read-only in its
+//! current state, or a missing file, table or column gives no rows for that scan, never an
+//! error, and the next scan tries again. The databases are never copied.
 //!
 //! Message text is never read: not Codex's `first_user_message` or `preview`, not the
 //! Antigravity CLI's `preview` or `raw_summary`, and not the message lines of a rollout.
@@ -55,27 +58,16 @@ fn sqlite_uri(path: &Path, query: &str) -> String {
     out
 }
 
-/// `db` opened read-only, as the module docs say; `None` when there is no such file.
+/// `db` opened read-only, as the module docs say; `None` when there is no such file or
+/// SQLite cannot open it.
 fn open(db: &Path) -> Option<Connection> {
     if !db.is_file() {
         return None;
     }
-    let beside = |suffix: &str| {
-        let mut p = db.as_os_str().to_owned();
-        p.push(suffix);
-        PathBuf::from(p)
-    };
-    let wal = fs::metadata(beside("-wal")).is_ok_and(|m| m.len() > 0);
-    // Without `-shm`, `mode=ro` would create it; `immutable` reads the main file only.
-    let query = if wal && beside("-shm").is_file() {
-        "mode=ro"
-    } else {
-        "mode=ro&immutable=1"
-    };
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_URI
         | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = Connection::open_with_flags(sqlite_uri(db, query), flags).ok()?;
+    let conn = Connection::open_with_flags(sqlite_uri(db, "mode=ro"), flags).ok()?;
     conn.busy_timeout(DB_BUSY).ok()?;
     Some(conn)
 }
@@ -564,6 +556,98 @@ mod tests {
         let ids: Vec<String> = codex_threads(&db).into_iter().map(|t| t.id).collect();
         assert!(ids.contains(&"t5".to_string()), "{ids:?}");
         drop(writer);
+    }
+
+    fn ids(db: &Path) -> Vec<String> {
+        let mut ids: Vec<String> = codex_threads(db).into_iter().map(|t| t.id).collect();
+        ids.sort();
+        ids
+    }
+
+    fn files_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Rows committed to the log but not yet copied into the main file are read even when
+    /// there is no `-shm` file, as after the app stopped without cleaning up.
+    #[test]
+    fn committed_log_rows_are_read_without_a_shm_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = codex_db(dir.path());
+        let writer = Connection::open(&db).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+                 INSERT INTO threads VALUES ('t5', 'C:/work/r5.jsonl', 'C:/work', 'New', \
+                   NULL, 'gpt-demo', 2, 0, 'cli', '', '');",
+            )
+            .unwrap();
+        // The database and its log as they are on disk, without the writer's `-shm`.
+        let copy = tempfile::tempdir().unwrap();
+        let moved = copy.path().join("state_5.sqlite");
+        fs::copy(&db, &moved).unwrap();
+        fs::copy(
+            dir.path().join("state_5.sqlite-wal"),
+            copy.path().join("state_5.sqlite-wal"),
+        )
+        .unwrap();
+        drop(writer);
+        assert_eq!(
+            files_in(copy.path()),
+            ["state_5.sqlite", "state_5.sqlite-wal"]
+        );
+
+        assert_eq!(ids(&moved), ["t1", "t2", "t5"]);
+        // The log was read, not copied into the main file: a reader never checkpoints.
+        assert!(
+            fs::metadata(copy.path().join("state_5.sqlite-wal"))
+                .unwrap()
+                .len()
+                > 0
+        );
+    }
+
+    /// The app closing the database between two scans, and opening it again, never loses
+    /// rows or fails a scan.
+    #[test]
+    fn a_writer_closing_between_scans_is_read_either_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = codex_db(dir.path());
+        let insert = |c: &Connection, id: &str| {
+            c.execute(
+                "INSERT INTO threads VALUES (?1, 'C:/work/r.jsonl', 'C:/work', 'New', NULL, \
+                 'gpt-demo', 2, 0, 'cli', '', '')",
+                [id],
+            )
+            .unwrap();
+        };
+        let writer = Connection::open(&db).unwrap();
+        writer
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        insert(&writer, "t5");
+        assert_eq!(ids(&db), ["t1", "t2", "t5"]);
+
+        // The last writer closes: it copies the log into the main file and removes it.
+        drop(writer);
+        assert_eq!(ids(&db), ["t1", "t2", "t5"]);
+        assert_eq!(ids(&db), ["t1", "t2", "t5"]);
+
+        // The app opens it again, with any `-shm` file the reads left behind.
+        let writer = Connection::open(&db).unwrap();
+        insert(&writer, "t6");
+        assert_eq!(ids(&db), ["t1", "t2", "t5", "t6"]);
+        drop(writer);
+        assert_eq!(ids(&db), ["t1", "t2", "t5", "t6"]);
+        // Nothing but SQLite's own files is beside it.
+        for f in files_in(dir.path()) {
+            assert!(f.starts_with("state_5.sqlite"), "{f}");
+        }
     }
 
     #[test]
