@@ -112,8 +112,8 @@ A narrow terminal drops the least important columns first: mem, sub, claim, mode
 
 **Both.**
 
-- The databases are opened read-only. When no write-ahead log is waiting, SQLite opens the file as immutable: it takes no lock and creates no file. When the app has the database open (its `-wal` and `-shm` files exist), it is opened with `mode=ro`, so the newest writes are seen. A read-only connection never checkpoints.
-- A missing app, file, table or column gives no rows and no error.
+- The databases are opened read-only with `mode=ro`, as any SQLite reader opens them, so a write by the app is seen whole or not at all. A read takes brief shared read locks, never a write lock, and never checkpoints. When the app has closed the database, SQLite may create its own `-shm` file and an empty `-wal` file beside it and leave them there; the app reuses or removes them. The databases are never copied.
+- A missing app, file, table or column, a lock held past 100 ms, or a database that SQLite cannot open read-only gives no rows for that scan and no error. The next scan tries again.
 - A cq watcher started under a Claude session goes to that session's row only, and one started under `agy` to that conversation's row only, even when both run in one folder.
 
 ### State rule
@@ -141,7 +141,7 @@ The rule is `sessions::context`. Only the context cell changes colour. The `--ht
 - A Claude process is a process named `claude`. Helper processes with a `--type=` argument count in the Claude totals but are not sessions. Each other process is matched to a folder by encoding its working folder.
 - A cq watcher is a `cq` process. Its name comes from `cq watch --as NAME` in its arguments, or else from its `heartbeat/NAME.pid` file in the queue root. It belongs to the nearest session process among its parents, up to 10 steps up, because a session often runs `cq watch` from another folder. A watcher with no session above it belongs to its own working folder.
 - An inbox watcher that the Bash tool starts in the background matches the same way. On Windows it runs under three `bash` processes below the session's `claude` process (checked on 28 October 2026).
-- A sleeping name has no `cq` process. Its row is the one that last showed that name while `cq-top` ran, or else the folder in line 3 of its `members/` record (the watcher's working folder). A name that matches neither shows only on the Overview screen.
+- A sleeping name has no `cq` process. Its row is the one that last showed that name while `cq-top` ran. Else, for a Claude Code row only, it is the row for the folder in line 3 of its `members/` record (the watcher's working folder), when the record's key is a Claude Code Desktop session's (`local_...`). A sleeping Codex watcher goes only with the thread it was seen with, and a sleeping name whose owner is unknown or another agent's goes with no row. A name that matches none of these shows only on the Overview screen.
 
 ### Claude and Codex processes
 

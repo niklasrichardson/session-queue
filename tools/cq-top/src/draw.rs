@@ -741,22 +741,30 @@ fn draw_rejected(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
     );
 }
 
-/// The watcher whose process runs in a session's folder, for the cq columns. Without one, a
-/// sleeping name last seen in the folder, or whose `members/` record names the folder. A
-/// session with neither has none. A sleeping `codex` watcher goes with Codex rows only.
+/// The watcher whose process runs beside a session, for the cq columns. Without one, a
+/// sleeping name seen running beside this row while cq-top ran (`cq_last`, kept per row, so
+/// per agent and per Codex thread). Else, for a Claude Code row only, a sleeping name whose
+/// `members/` record is a Claude Code session's and names the row's folder. A sleeping name
+/// whose owner is unknown, or another agent, goes with no row: Codex threads and Antigravity
+/// CLI conversations are never matched by folder alone.
 pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a Watcher> {
     if let Some(name) = row.cq_name.as_deref() {
         return s.watchers.iter().find(|w| w.name == name);
     }
-    let codex = row.agent == sessions::Agent::Codex;
     let asleep = || {
         s.watchers
             .iter()
-            .filter(move |w| w.asleep && (s.mode(w) == Some(Mode::Codex)) == codex)
+            .filter(|w| w.asleep && w.agent.is_none_or(|a| a == row.agent))
     };
     asleep()
         .find(|w| row.cq_last.as_deref() == Some(w.name.as_str()))
-        .or_else(|| asleep().find(|w| w.folder.as_deref() == Some(row.folder_key.as_str())))
+        .or_else(|| {
+            asleep().find(|w| {
+                row.agent == sessions::Agent::Claude
+                    && w.agent == Some(sessions::Agent::Claude)
+                    && w.folder.as_deref() == Some(row.folder_key.as_str())
+            })
+        })
 }
 
 /// The state shown for a session, and whether it is a warning (idle with cq messages).
