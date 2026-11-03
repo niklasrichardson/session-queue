@@ -122,6 +122,10 @@ struct Watcher {
     /// Line 4 of its `members/` record: `inbox` for `cq watch --to-inbox`, else `monitor`.
     /// `None` without a record. `Snapshot::mode` prefers the process's own arguments.
     mode: Option<Mode>,
+    /// The agent its `members/` record shows it belongs to: Codex for a `--to-codex`
+    /// watcher, Claude for a Claude Code Desktop session key (`local_...`). `None` without a
+    /// record, or for another key, such as one from `CQ_SESSION_ID`, which any agent can set.
+    agent: Option<sessions::Agent>,
     pid: String,
     session: String,
     queued: usize,
@@ -746,6 +750,11 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64, limits: &Limits) ->
         let pid = fs::read_to_string(root.pid_file(name))
             .map(|t| t.trim().to_string())
             .unwrap_or_default();
+        let agent = match (modes.get(name), sessions.get(name)) {
+            (Some(Mode::Codex), _) => Some(sessions::Agent::Codex),
+            (_, Some(k)) if k.starts_with("local_") => Some(sessions::Agent::Claude),
+            _ => None,
+        };
         let session = sessions
             .get(name)
             .map(|k| k.trim_start_matches("local_").chars().take(8).collect())
@@ -757,6 +766,7 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64, limits: &Limits) ->
             asleep: asleep.contains(name),
             folder: folders.get(name).cloned(),
             mode: modes.get(name).copied(),
+            agent,
             pid,
             session,
             queued: queued.len(),
@@ -1020,6 +1030,7 @@ mod tests {
                     asleep: false,
                     folder: None,
                     mode: Some(Mode::Monitor),
+                    agent: Some(sessions::Agent::Claude),
                     pid: "42".into(),
                     session: "abcd1234".into(),
                     queued: 1,
@@ -1035,6 +1046,7 @@ mod tests {
                     asleep: true,
                     folder: Some("d--code-nap".into()),
                     mode: None,
+                    agent: Some(sessions::Agent::Claude),
                     pid: String::new(),
                     session: "nap12345".into(),
                     queued: 2,
@@ -1077,7 +1089,7 @@ mod tests {
                         state: sessions::State::Working,
                         model: "opus-5-5".into(),
                         context: Some(135_000),
-                        tokens_today: 66_300_000,
+                        tokens_today: Some(66_300_000),
                         cost_today: Some(12.5),
                         cpu: Some(6.0),
                         mem: Some(900 << 20),
@@ -1521,11 +1533,75 @@ mod tests {
         assert_eq!(mode(&s, "w2"), Some(Mode::Monitor));
         assert_eq!(mode(&s, "w3"), None);
         assert_eq!(mode(&s, "w4"), Some(Mode::Codex));
+        // The owner from the record: a Claude Code Desktop key, a `--to-codex` watcher,
+        // and none for a key any agent could have written.
+        let agent = |n: &str| s.watchers.iter().find(|w| w.name == n).unwrap().agent;
+        assert_eq!(agent("w1"), Some(sessions::Agent::Claude));
+        assert_eq!(agent("w2"), Some(sessions::Agent::Claude));
+        assert_eq!(agent("w4"), Some(sessions::Agent::Codex));
+        assert_eq!(agent("w3"), None);
 
         s.sessions.modes.insert("w1".into(), Mode::Monitor);
         s.sessions.modes.insert("w3".into(), Mode::Inbox);
         assert_eq!(mode(&s, "w1"), Some(Mode::Monitor));
         assert_eq!(mode(&s, "w3"), Some(Mode::Inbox));
+    }
+
+    /// A sleeping name goes only with a row it is known to belong to: the row it was seen
+    /// beside (`cq_last`), or a Claude Code row in the folder of a Claude Code session's
+    /// record. A shared folder never gives it to another thread or another agent.
+    #[test]
+    fn sleeping_names_keep_their_thread_and_agent() {
+        use sessions::Agent;
+        let mut snap = sample();
+        let sleeper = |name: &str, mode, agent| Watcher {
+            name: name.into(),
+            beat_age: Some(4000),
+            asleep: true,
+            folder: Some("c--work-demo".into()),
+            mode: Some(mode),
+            agent,
+            pid: String::new(),
+            session: String::new(),
+            queued: 1,
+            claimed: 0,
+            done: 0,
+            rejected: 0,
+            dead: 0,
+        };
+        let row = |agent, cq_last: Option<&str>| sessions::Row {
+            agent,
+            cq_last: cq_last.map(str::to_string),
+            folder_key: "c--work-demo".into(),
+            ..Default::default()
+        };
+        let found = |snap: &Snapshot, r: &sessions::Row| {
+            draw::session_watcher(snap, r).map(|w| w.name.clone())
+        };
+
+        // Two Codex threads in one folder; the sleeping watcher was seen with one of them.
+        snap.watchers = vec![sleeper("demo-codex", Mode::Codex, Some(Agent::Codex))];
+        let seen = row(Agent::Codex, Some("demo-codex"));
+        assert_eq!(found(&snap, &seen).as_deref(), Some("demo-codex"));
+        assert_eq!(found(&snap, &row(Agent::Codex, None)), None);
+        assert_eq!(found(&snap, &row(Agent::Claude, None)), None);
+
+        // A sleeping Antigravity CLI watcher (its record names no agent) beside a Claude row.
+        snap.watchers = vec![sleeper("demo-gemini", Mode::Monitor, None)];
+        assert_eq!(found(&snap, &row(Agent::Claude, None)), None);
+        assert_eq!(found(&snap, &row(Agent::Gemini, None)), None);
+        let seen = row(Agent::Gemini, Some("demo-gemini"));
+        assert_eq!(found(&snap, &seen).as_deref(), Some("demo-gemini"));
+
+        // The reverse: a sleeping Claude Code watcher beside an Antigravity CLI row.
+        snap.watchers = vec![sleeper("demo-claude", Mode::Inbox, Some(Agent::Claude))];
+        assert_eq!(found(&snap, &row(Agent::Gemini, None)), None);
+        // Even a stale `cq_last` on another agent's row does not take it.
+        assert_eq!(found(&snap, &row(Agent::Gemini, Some("demo-claude"))), None);
+        assert_eq!(
+            found(&snap, &row(Agent::Claude, None)).as_deref(),
+            Some("demo-claude")
+        );
     }
 
     /// The mode shows on the Overview and Sessions screens and in the dashboard.
@@ -1579,8 +1655,10 @@ mod tests {
             w.folder.as_deref(),
             Some(sessions::folder_key(Path::new("D:\\Code\\nap")).as_str())
         );
+        // A Claude Code Desktop key: the name is a Claude Code session's.
+        assert_eq!(w.agent, Some(sessions::Agent::Claude));
         let w1 = s.watchers.iter().find(|w| w.name == "w1").unwrap();
-        assert!(!w1.asleep && w1.folder.is_none());
+        assert!(!w1.asleep && w1.folder.is_none() && w1.agent.is_none());
     }
 
     /// A sleeping watcher shows `asleep`, not `STALE`, on Overview, on the Sessions screen
@@ -1804,7 +1882,7 @@ mod tests {
             state: sessions::State::Idle,
             model: "opus-5-5".into(),
             context: Some(context),
-            tokens_today: 7_000,
+            tokens_today: Some(7_000),
             active: snap.now - 4000,
             ..Default::default()
         };

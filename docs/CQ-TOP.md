@@ -2,7 +2,7 @@
 
 `cq-top` is a live terminal view of a queue. It shows which watchers are alive, which messages are waiting or being worked on, and what finished recently. Back to the [README](../README.md).
 
-`cq-top` only reads the queue root. It never claims, sends, moves or deletes a message, and it never writes to the queue root. It does not show message bodies until you press `b`. The [Sessions screen](#sessions-screen) also reads Claude Code transcripts, the process list and git, all read-only and with no network calls.
+`cq-top` only reads the queue root. It never claims, sends, moves or deletes a message, and it never writes to the queue root. It does not show message bodies until you press `b`. The [Sessions screen](#sessions-screen) also reads Claude Code transcripts, Codex's and the Antigravity CLI's session databases, Codex rollout files, the process list and git, all read-only and with no network calls.
 
 It is a separate program in `tools/cq-top`. It uses the `cq` library to find the queue root and its folders, so it follows the same `CQ_ROOT` and default root as `cq`.
 
@@ -62,7 +62,7 @@ The state glyphs are `◌` queued, `◐` claimed, `●` done, `✕` rejected and
 
 ## Sessions screen
 
-One row per Claude Code session on this computer, with what it costs today and whether it is working. Codex chats get no row here, because the screen reads Claude Code transcripts only. A Codex chat's watcher shows on the Overview screen with the mode `codex`, and Codex's processes count in the CPU and Memory boxes.
+One row per Claude Code session, Codex thread and Antigravity CLI (Gemini) conversation on this computer, with whether it is working. Claude Code rows also show what they cost today. Codex rows show tokens but no cost, and Antigravity CLI rows show activity only. See [Codex and Antigravity CLI rows](#codex-and-antigravity-cli-rows) for what each shows and its limits.
 
 - **CPU and Memory.** Two boxes at the top. Each has figures on the left and a graph on the right. The graph shows the whole computer, Claude's share of it and Codex's share of it, each in its own theme colour, all 0 to 100 %. Claude's share is drawn from the bottom and Codex's share on top of it. A `■` beside a figure shows its colour.
   - CPU figures: **Total** (0 to 100 % across all cores), **Claude** and **Codex** (all their processes together, as a share of the whole computer, so they fit the same graph), **Busy cores** (cores at 50 % or more of that core) and **Cores**. The table's cpu% column stays in % of one core.
@@ -74,21 +74,47 @@ One row per Claude Code session on this computer, with what it costs today and w
 
 | Column | What it shows |
 | --- | --- |
-| session | The name of the cq watcher running in the session's folder. Else the session's custom title, without a leading `RC: `. Else the folder's last part, or `<repo>/<worktree>` for a worktree under `.claude/worktrees`. |
+| session | The name of the cq watcher running in the session's folder. Else the session's custom title, without a leading `RC: ` (for Codex, the thread's name; for the Antigravity CLI, the conversation's title). Else the folder's last part, or `<repo>/<worktree>` for a worktree under `.claude/worktrees`. |
+| agent | `claude`, `codex` or `gemini` (the Antigravity CLI). |
 | state | `● working`, `◐ recent` or `○ idle`. `▲ idle` (warning colour) is an idle session with cq messages queued or claimed. |
-| model | The model of the newest reply, without `claude-` and the date, for example `opus-5-5`. |
-| context | Tokens in the newest reply's prompt: input plus cache writes plus cache reads. Over 150,000 the cell is orange, and over 250,000 it is in the error colour (red). The rest of the row keeps its colours. |
-| tokens | Tokens since local midnight: input, cache writes, cache reads and output, for the main transcript and its subagents. |
-| est.cost | An estimate of those tokens at API list prices. It is not your plan's bill. `?` means a model has no price in the table. |
+| model | The model of the newest reply, without `claude-` and the date, for example `opus-5-5`. For Codex, the thread's model. `-` for the Antigravity CLI. |
+| context | Tokens in the newest reply's prompt: input plus cache writes plus cache reads. For Codex, `input_tokens` of the newest reply, which already includes cached input. `-` for the Antigravity CLI. Over 150,000 the cell is orange, and over 250,000 it is in the error colour (red). The rest of the row keeps its colours. |
+| tokens | Tokens since local midnight: input, cache writes, cache reads and output, for the main transcript and its subagents. For Codex, how much the thread's running total grew since midnight. `-` for the Antigravity CLI. |
+| est.cost | An estimate of those tokens at API list prices. It is not your plan's bill. `?` means a model has no price in the table. `-` for Codex and the Antigravity CLI, which have no price table. |
 | cpu% | CPU of the session's process and its child processes. 100 is one core. |
 | mem | Memory of the same processes. |
-| sub | Subagent transcripts written in the last 10 minutes. |
+| sub | Subagent transcripts written in the last 10 minutes. `-` for Codex and the Antigravity CLI. |
 | cq, wait, claim | The cq watcher's heartbeat age (`off` without a heartbeat, `STALE` after 90 seconds, `asleep` when its name is asleep, `-` when no watcher runs in the folder), and its queued and claimed messages. |
 | mode | The cq watcher's [mode](#watcher-mode): `inbox`, `codex`, or `mon` for monitor. `-` when it is not known. |
 | last change | The newest of the last commit on the folder's own `HEAD` and the newest file that `git status` lists in that worktree. Sessions in different worktrees of one repo show their own work. |
 | age | Time since the transcript, or a subagent transcript, was last written. |
 
 A narrow terminal drops the least important columns first: mem, sub, claim, mode, last change, est.cost and tokens.
+
+### Codex and Antigravity CLI rows
+
+**Codex.**
+
+- Threads come from the `threads` table in Codex's state database, `state_N.sqlite` (the highest N) in Codex's SQLite home. That home is found as `cq watch --to-codex` finds it: `sqlite_home` in `config.toml` in `CODEX_HOME` (default `~/.codex`), then `CODEX_SQLITE_HOME`, then `CODEX_HOME`.
+- Archived threads and threads that another thread started (a `source` with a `subagent` key, such as a Guardian review) are skipped.
+- A thread is shown when it was updated in the last 24 hours, when a `cq watch --to-codex` watcher names it, or when it is the newest thread in a folder where a Codex chat runs in a terminal.
+- Context and tokens come from the `token_count` lines of the thread's rollout file, read like a Claude transcript: the tail first, then only the lines added since the last scan. A running total that goes down gives 0 tokens rather than a guess.
+- The cq columns come from a `cq watch --to-codex THREAD` watcher whose THREAD is the thread's ID or its exact name. A `codex` watcher is not matched to other rows by folder.
+- cpu% and mem are those of a `codex` process in the thread's folder that is a chat in a terminal: one without a subcommand such as `app-server`, `exec` or `queue`. They go to the newest thread in that folder only. Codex app threads have no process of their own, so they show `-`.
+
+**Antigravity CLI (Gemini).**
+
+- Conversations come from the `conversation_summaries` table in `~/.gemini/antigravity-cli/conversation_summaries.db`. Conversations with a parent conversation or a nesting depth above 0 are skipped.
+- The state uses `last_modified_time`, and a `step_count` that grew since the last scan counts as activity now. `status`, `not_fully_idle` and `killed` are not used, because their meaning is not documented.
+- The folder is the first entry in `workspace_uris`. It is used for last change, for cpu% and mem (an `agy` process in that folder) and for the cq columns (a watcher started under that `agy` process).
+- A conversation is shown when it changed in the last 24 hours, or when it is the newest in a folder where `agy` or its cq watcher runs.
+- Model, context, tokens and cost show `-`. The Antigravity CLI keeps them in undocumented protobuf data, which `cq-top` does not parse.
+
+**Both.**
+
+- The databases are opened read-only with `mode=ro`, as any SQLite reader opens them, so a write by the app is seen whole or not at all. A read takes brief shared read locks, never a write lock, and never checkpoints. When the app has closed the database, SQLite may create its own `-shm` file and an empty `-wal` file beside it and leave them there; the app reuses or removes them. The databases are never copied.
+- A missing app, file, table or column, a lock held past 100 ms, or a database that SQLite cannot open read-only gives no rows for that scan and no error. The next scan tries again.
+- A cq watcher started under a Claude session goes to that session's row only, and one started under `agy` to that conversation's row only, even when both run in one folder.
 
 ### State rule
 
@@ -115,7 +141,7 @@ The rule is `sessions::context`. Only the context cell changes colour. The `--ht
 - A Claude process is a process named `claude`. Helper processes with a `--type=` argument count in the Claude totals but are not sessions. Each other process is matched to a folder by encoding its working folder.
 - A cq watcher is a `cq` process. Its name comes from `cq watch --as NAME` in its arguments, or else from its `heartbeat/NAME.pid` file in the queue root. It belongs to the nearest session process among its parents, up to 10 steps up, because a session often runs `cq watch` from another folder. A watcher with no session above it belongs to its own working folder.
 - An inbox watcher that the Bash tool starts in the background matches the same way. On Windows it runs under three `bash` processes below the session's `claude` process (checked on 28 October 2026).
-- A sleeping name has no `cq` process. Its row is the one that last showed that name while `cq-top` ran, or else the folder in line 3 of its `members/` record (the watcher's working folder). A name that matches neither shows only on the Overview screen.
+- A sleeping name has no `cq` process. Its row is the one that last showed that name while `cq-top` ran. Else, for a Claude Code row only, it is the row for the folder in line 3 of its `members/` record (the watcher's working folder), when the record's key is a Claude Code Desktop session's (`local_...`). A sleeping Codex watcher goes only with the thread it was seen with, and a sleeping name whose owner is unknown or another agent's goes with no row. A name that matches none of these shows only on the Overview screen.
 
 ### Claude and Codex processes
 
@@ -144,7 +170,7 @@ The rule is `own_owner` and `owners` in `tools/cq-top/src/sessions.rs`. The Code
 
 ### Privacy
 
-The screen and the exports never show message text. They show only counts, times, model names and session titles. `cq-top` uses only the `type`, `cwd`, `customTitle`, `timestamp`, message and request IDs, model and token counts from each transcript line.
+The screen and the exports never show message text. They show only counts, times, model names and session titles. `cq-top` uses only the `type`, `cwd`, `customTitle`, `timestamp`, message and request IDs, model and token counts from each transcript line. From Codex it reads thread IDs, names, folders, models, times and the token counts of `token_count` lines, never `title` (often the start of the first message), `first_user_message`, `preview` or message lines. From the Antigravity CLI it reads conversation IDs, titles, step counts, times and folders, never `preview` or `raw_summary`.
 
 ### Without process data
 
@@ -230,11 +256,12 @@ A theme is one entry in `THEMES` in `tools/cq-top/src/draw.rs`.
 - The Sessions screen shows only the newest transcript in each project folder. Two sessions in one folder show as one row, and its CPU and memory are those of all Claude processes in that folder.
 - The folder encoding loses information: `a-b` and `a.b` encode the same. Claude Code may shorten a very long folder name, and `cq-top` then cannot match its process.
 - Session cost is an estimate from list prices. It does not know about plan limits, discounts or fast mode.
+- Codex and Antigravity CLI rows read app databases whose layout is not documented. A new version of either app can change it, and its rows then disappear until `cq-top` is updated. The table and column names were checked on Windows on 3 November 2026.
 - At 140 columns, the header line is too long for all four tabs and the key help, so its end is cut.
 
 ## Dependencies
 
-`cq-top` uses `ratatui` for the terminal, `serde` and `serde_json` for heartbeats and transcripts, `jiff` for local midnight, and `sysinfo` (system feature only) for process CPU, memory and working folders.
+`cq-top` uses `ratatui` for the terminal, `serde` and `serde_json` for heartbeats and transcripts, `jiff` for local midnight, `sysinfo` (system feature only) for process CPU, memory and working folders, and `rusqlite` (bundled SQLite, the same version and features as `cq`) for the Codex and Antigravity CLI databases.
 
 ## Build and test
 

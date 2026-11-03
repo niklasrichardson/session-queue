@@ -741,17 +741,30 @@ fn draw_rejected(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
     );
 }
 
-/// The watcher whose process runs in a session's folder, for the cq columns. Without one, a
-/// sleeping name last seen in the folder, or whose `members/` record names the folder. A
-/// session with neither has none.
+/// The watcher whose process runs beside a session, for the cq columns. Without one, a
+/// sleeping name seen running beside this row while cq-top ran (`cq_last`, kept per row, so
+/// per agent and per Codex thread). Else, for a Claude Code row only, a sleeping name whose
+/// `members/` record is a Claude Code session's and names the row's folder. A sleeping name
+/// whose owner is unknown, or another agent, goes with no row: Codex threads and Antigravity
+/// CLI conversations are never matched by folder alone.
 pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a Watcher> {
     if let Some(name) = row.cq_name.as_deref() {
         return s.watchers.iter().find(|w| w.name == name);
     }
-    let asleep = || s.watchers.iter().filter(|w| w.asleep);
+    let asleep = || {
+        s.watchers
+            .iter()
+            .filter(|w| w.asleep && w.agent.is_none_or(|a| a == row.agent))
+    };
     asleep()
         .find(|w| row.cq_last.as_deref() == Some(w.name.as_str()))
-        .or_else(|| asleep().find(|w| w.folder.as_deref() == Some(row.folder_key.as_str())))
+        .or_else(|| {
+            asleep().find(|w| {
+                row.agent == sessions::Agent::Claude
+                    && w.agent == Some(sessions::Agent::Claude)
+                    && w.folder.as_deref() == Some(row.folder_key.as_str())
+            })
+        })
 }
 
 /// The state shown for a session, and whether it is a warning (idle with cq messages).
@@ -955,7 +968,8 @@ fn machine_box(
 }
 
 /// The Sessions screen: CPU and Memory boxes for the whole computer, then one row per Claude
-/// Code session. Only counts, times, model names and titles are shown, never message text.
+/// Code session, Codex thread and Antigravity CLI conversation. Only counts, times, model
+/// names and titles are shown, never message text.
 fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
     use sessions::{Context, State, bytes, count, usd};
     let [head, strip, table] = Layout::vertical([
@@ -970,8 +984,10 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
 
     // Columns: header, width, priority. A narrow terminal drops the highest numbers first.
     let name_w = name_width("session", r.rows.iter().map(|w| w.name.as_str()));
-    let cols: [(&str, u16, u8); 15] = [
+    let cols: [(&str, u16, u8); 16] = [
         ("session", name_w, 0),
+        // `claude`, `codex` or `gemini`.
+        ("agent", 6, 4),
         ("state", 9, 1),
         ("model", 10, 4),
         ("context", 7, 3),
@@ -1013,8 +1029,11 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 None => ("-".into(), t.dim),
             };
             let opt = |v: Option<String>| v.map_or_else(dash, Cell::from);
+            // Cost and subagents are known for Claude Code sessions only.
+            let claude = row.agent == sessions::Agent::Claude;
             Row::new(pick(vec![
                 Cell::from(row.name.clone()).style(if warned { t.warn } else { t.accent }),
+                Cell::from(row.agent.label()).style(if claude { t.dim } else { t.info }),
                 Cell::from(format!("{glyph} {}", state.label())).style(style),
                 if row.model.is_empty() {
                     dash()
@@ -1030,15 +1049,23 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                     }),
                     None => dash(),
                 },
-                Cell::from(count(row.tokens_today)),
-                Cell::from(usd(row.cost_today)),
+                opt(row.tokens_today.map(count)),
+                if claude {
+                    Cell::from(usd(row.cost_today))
+                } else {
+                    dash()
+                },
                 opt(row.cpu.map(|c| format!("{c:.1}"))),
                 opt(row.mem.map(bytes)),
-                Cell::from(row.subagents.to_string()).style(if row.subagents > 0 {
-                    t.info
+                if !claude {
+                    dash()
                 } else {
-                    t.dim
-                }),
+                    Cell::from(row.subagents.to_string()).style(if row.subagents > 0 {
+                        t.info
+                    } else {
+                        t.dim
+                    })
+                },
                 Cell::from(beat).style(beat_style),
                 match w.and_then(|w| s.mode(w)) {
                     Some(Mode::Inbox) => Cell::from("inbox").style(t.info),
