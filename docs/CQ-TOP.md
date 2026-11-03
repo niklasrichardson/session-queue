@@ -74,7 +74,7 @@ One row per Claude Code session, Codex thread and Antigravity CLI (Gemini) conve
 
 | Column | What it shows |
 | --- | --- |
-| session | The name of the cq watcher running in the session's folder. Else the session's custom title, without a leading `RC: ` (for Codex, the thread's name, else its title; for the Antigravity CLI, the conversation's title). Else the folder's last part, or `<repo>/<worktree>` for a worktree under `.claude/worktrees`. |
+| session | The name of the cq watcher running in the session's folder. Else the session's custom title, without a leading `RC: ` (for Codex, the thread's name; for the Antigravity CLI, the conversation's title). Else the folder's last part, or `<repo>/<worktree>` for a worktree under `.claude/worktrees`. |
 | agent | `claude`, `codex` or `gemini` (the Antigravity CLI). |
 | state | `● working`, `◐ recent` or `○ idle`. `▲ idle` (warning colour) is an idle session with cq messages queued or claimed. |
 | model | The model of the newest reply, without `claude-` and the date, for example `opus-5-5`. For Codex, the thread's model. `-` for the Antigravity CLI. |
@@ -170,7 +170,7 @@ The rule is `own_owner` and `owners` in `tools/cq-top/src/sessions.rs`. The Code
 
 ### Privacy
 
-The screen and the exports never show message text. They show only counts, times, model names and session titles. `cq-top` uses only the `type`, `cwd`, `customTitle`, `timestamp`, message and request IDs, model and token counts from each transcript line. From Codex it reads thread IDs, names, titles, folders, models, times and the token counts of `token_count` lines, never `first_user_message`, `preview` or message lines. From the Antigravity CLI it reads conversation IDs, titles, step counts, times and folders, never `preview` or `raw_summary`.
+The screen and the exports never show message text. They show only counts, times, model names and session titles. `cq-top` uses only the `type`, `cwd`, `customTitle`, `timestamp`, message and request IDs, model and token counts from each transcript line. From Codex it reads thread IDs, names, folders, models, times and the token counts of `token_count` lines, never `title` (often the start of the first message), `first_user_message`, `preview` or message lines. From the Antigravity CLI it reads conversation IDs, titles, step counts, times and folders, never `preview` or `raw_summary`.
 
 ### Without process data
 

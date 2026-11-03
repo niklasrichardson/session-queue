@@ -129,7 +129,8 @@ pub struct CodexThread {
     /// The thread's rollout file (`.jsonl`).
     pub rollout: PathBuf,
     pub folder: Option<PathBuf>,
-    /// The name given to the thread, else Codex's title for it.
+    /// The name given to the thread. Codex's own `title` is not read: for an unnamed thread it
+    /// is often the start of the first message.
     pub title: Option<String>,
     /// The thread's name alone, which `cq watch --to-codex` also accepts.
     pub name: Option<String>,
@@ -169,10 +170,10 @@ fn is_subagent(source: Option<&str>) -> bool {
 
 /// The threads in Codex's state database that are not archived and not subagents.
 pub fn codex_threads(db: &Path) -> Vec<CodexThread> {
-    const SQL: &str = "SELECT id, rollout_path, cwd, name, title, model, updated_at_ms, source \
+    const SQL: &str = "SELECT id, rollout_path, cwd, name, model, updated_at_ms, source \
                        FROM threads WHERE archived = 0";
     rows(db, SQL, |row| {
-        if is_subagent(text(row, 7).as_deref()) {
+        if is_subagent(text(row, 6).as_deref()) {
             return None;
         }
         let name = text(row, 3);
@@ -180,10 +181,10 @@ pub fn codex_threads(db: &Path) -> Vec<CodexThread> {
             id: text(row, 0)?,
             rollout: plain_path(&text(row, 1)?),
             folder: text(row, 2).map(|c| plain_path(&c)),
-            title: name.clone().or_else(|| text(row, 4)),
+            title: name.clone(),
             name,
-            model: text(row, 5).unwrap_or_default(),
-            updated: int(row, 6).map_or(0, |ms| ms.div_euclid(1000)),
+            model: text(row, 4).unwrap_or_default(),
+            updated: int(row, 5).map_or(0, |ms| ms.div_euclid(1000)),
         })
     })
 }
@@ -520,7 +521,7 @@ mod tests {
                 updated: 1_793_729_060,
             }
         );
-        assert_eq!(threads[1].title.as_deref(), Some("Only a title"));
+        assert_eq!(threads[1].title, None);
         assert_eq!((threads[1].folder.as_ref(), threads[1].updated), (None, 0));
         assert!(!format!("{threads:?}").contains("SECRET"));
     }
