@@ -1,9 +1,12 @@
 //! The Sessions screen's data: Claude Code sessions found from their transcripts in
 //! `~/.claude/projects`, matched to running Claude processes and cq watchers by folder.
+//! Codex chats and Antigravity CLI (Gemini) conversations get rows too; see `agents`.
 //!
 //! Read-only, like the rest of cq-top. Only counts, times, model names and session titles
 //! are kept; message text is parsed past and never stored or shown. `git` runs with
 //! optional locks off, so it never writes the index.
+
+mod agents;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -272,31 +275,9 @@ impl Tally {
             self.offset = len;
             return;
         }
-        if len == self.offset {
-            return;
-        }
-        let Ok(mut file) = fs::File::open(path) else {
-            return;
-        };
-        if file.seek(SeekFrom::Start(self.offset)).is_err() {
-            return;
-        }
-        let mut reader = BufReader::new(file.take(len - self.offset));
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf) {
-                Ok(0) | Err(_) => break,
-                // A line still being written is read next time, whole.
-                Ok(_) if buf.last() != Some(&b'\n') => break,
-                Ok(n) => {
-                    self.offset += n as u64;
-                    if let Ok(line) = std::str::from_utf8(&buf) {
-                        self.add(line);
-                    }
-                }
-            }
-        }
+        let mut offset = self.offset;
+        read_lines(path, &mut offset, len, |line| self.add(line));
+        self.offset = offset;
     }
 
     fn add(&mut self, line: &str) {
@@ -323,8 +304,48 @@ impl Tally {
     }
 }
 
+/// Reads the whole lines of `path` from `offset` up to `len`, and moves `offset` past them.
+fn read_lines(path: &Path, offset: &mut u64, len: u64, mut each: impl FnMut(&str)) {
+    if len <= *offset {
+        return;
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return;
+    };
+    if file.seek(SeekFrom::Start(*offset)).is_err() {
+        return;
+    }
+    let mut reader = BufReader::new(file.take(len - *offset));
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            // A line still being written is read next time, whole.
+            Ok(_) if buf.last() != Some(&b'\n') => break,
+            Ok(n) => {
+                *offset += n as u64;
+                if let Ok(line) = std::str::from_utf8(&buf) {
+                    each(line);
+                }
+            }
+        }
+    }
+}
+
 /// The newest assistant line in the last part of a file, reading more of it when needed.
 fn tail_latest(path: &Path, len: u64) -> Option<Latest> {
+    tail_find(path, len, |l| {
+        assistant(l).map(|(_, _, model, usage)| Latest {
+            model,
+            context: usage.prompt(),
+        })
+    })
+}
+
+/// The newest line in the last part of a file for which `find` gives a value, reading more
+/// of the file when needed, up to `TAIL_MAX`.
+fn tail_find<T>(path: &Path, len: u64, find: impl Fn(&str) -> Option<T>) -> Option<T> {
     let mut file = fs::File::open(path).ok()?;
     let mut size = TAIL_FIRST;
     loop {
@@ -338,12 +359,8 @@ fn tail_latest(path: &Path, len: u64) -> Option<Latest> {
             // The first piece is the end of a line that began before `start`.
             lines.remove(0);
         }
-        let found = lines.iter().rev().find_map(|l| assistant(l));
-        if let Some((_, _, model, usage)) = found {
-            return Some(Latest {
-                model,
-                context: usage.prompt(),
-            });
+        if let Some(found) = lines.iter().rev().find_map(|l| find(l)) {
+            return Some(found);
         }
         if start == 0 || size >= TAIL_MAX {
             return None;
@@ -782,11 +799,14 @@ impl History {
 #[derive(Default)]
 struct Procs {
     machine: Machine,
-    /// Folder -> (real folder, CPU % of one core, memory) of its Claude processes and their
-    /// descendants.
-    sessions: HashMap<String, (PathBuf, f32, u64)>,
-    /// Session folder -> cq name of its watcher.
-    watchers: HashMap<String, String>,
+    /// (agent, folder) -> (real folder, CPU % of one core, memory) of the agent's session
+    /// processes in that folder and their descendants.
+    sessions: HashMap<(Agent, String), (PathBuf, f32, u64)>,
+    /// (agent, session folder) -> cq name of its watcher; see `match_watchers`.
+    /// `--to-codex` watchers are not here.
+    watchers: HashMap<(Option<Agent>, String), String>,
+    /// The thread in `cq watch --to-codex THREAD` (an ID or a thread name) -> cq name.
+    codex_threads: HashMap<String, String>,
     /// cq name -> mode, from the arguments of its `cq watch` process.
     modes: HashMap<String, cq::members::Mode>,
 }
@@ -794,21 +814,67 @@ struct Procs {
 /// One process, as far as watcher matching needs it.
 struct ProcInfo {
     parent: Option<sysinfo::Pid>,
-    /// A Claude Code session process (named `claude`, not a `--type=` helper).
-    session: bool,
+    /// A session process: Claude Code (named `claude`, not a `--type=` helper), a Codex chat
+    /// in a terminal (see `codex_chat`) or the Antigravity CLI (`agy`). `None` for any
+    /// other process.
+    session: Option<Agent>,
     cwd: Option<PathBuf>,
+}
+
+/// `codex` subcommands that are not a chat in a terminal: the app's servers, one-shot runs
+/// (`cq watch --to-codex` runs `codex queue`) and tools.
+const CODEX_NOT_CHAT: &[&str] = &[
+    "app-server",
+    "exec-server",
+    "mcp-server",
+    "exec",
+    "e",
+    "queue",
+    "login",
+    "logout",
+    "mcp",
+    "apply",
+    "a",
+    "sandbox",
+    "debug",
+    "completion",
+    "cloud",
+];
+
+/// A `codex` process that is a chat in a terminal, from its arguments (the program first).
+fn codex_chat(args: &[String]) -> bool {
+    !args
+        .iter()
+        .skip(1)
+        .any(|a| CODEX_NOT_CHAT.contains(&a.as_str()))
+}
+
+/// The thread in `cq watch --to-codex THREAD` (or `--to-codex=THREAD`).
+fn codex_thread(args: &[String]) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--to-codex" {
+            return it.next().cloned();
+        }
+        if let Some(t) = a.strip_prefix("--to-codex=") {
+            return Some(t.to_string());
+        }
+    }
+    None
 }
 
 /// How far up a watcher's parents to look for its session: `cq` runs under a few shells.
 const ANCESTRY_STEPS: usize = 10;
 
-/// Folder key -> cq name, for watchers given as (watcher pid, name), first name wins. A watcher
-/// belongs to the nearest session process among its parents, because `cq watch` often runs in
-/// another folder than its session. Without one, it belongs to its own working folder.
+/// (agent, folder key) -> cq name, for watchers given as (watcher pid, name), first name wins.
+/// A watcher belongs to the nearest session process among its parents, because `cq watch`
+/// often runs in another folder than its session, and the agent is that session's. Without
+/// one, it belongs to its own working folder, with no agent. The agent keeps a Claude
+/// session's watcher off an Antigravity CLI row in the same folder, and the other way round.
 fn match_watchers(
     table: &HashMap<sysinfo::Pid, ProcInfo>,
     watchers: impl IntoIterator<Item = (sysinfo::Pid, String)>,
-) -> HashMap<String, String> {
+) -> HashMap<(Option<Agent>, String), String> {
     let mut out = HashMap::new();
     for (pid, name) in watchers {
         let mut up = table.get(&pid).and_then(|p| p.parent);
@@ -817,14 +883,15 @@ fn match_watchers(
             let Some(p) = up.and_then(|u| table.get(&u)) else {
                 break;
             };
-            if p.session && p.cwd.is_some() {
-                owner = p.cwd.as_deref();
+            if let (Some(agent), Some(cwd)) = (p.session, p.cwd.as_deref()) {
+                owner = Some((Some(agent), cwd));
                 break;
             }
             up = p.parent;
         }
-        if let Some(dir) = owner.or_else(|| table.get(&pid)?.cwd.as_deref()) {
-            out.entry(key(&encode(dir))).or_insert(name);
+        if let Some((agent, dir)) = owner.or_else(|| Some((None, table.get(&pid)?.cwd.as_deref()?)))
+        {
+            out.entry((agent, key(&encode(dir)))).or_insert(name);
         }
     }
     out
@@ -954,7 +1021,7 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
         ..Procs::default()
     };
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
-    let mut roots: HashMap<String, (PathBuf, Vec<Pid>)> = HashMap::new();
+    let mut roots: HashMap<(Agent, String), (PathBuf, Vec<Pid>)> = HashMap::new();
     let mut table = HashMap::new();
     let mut watchers = Vec::new();
     let mut own = HashMap::new();
@@ -965,31 +1032,41 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
         if let Some(o) = own_owner(&stem(p), p.exe()) {
             own.insert(*pid, o);
         }
-        let mut session = false;
-        match stem(p).as_str() {
+        let agent = match stem(p).as_str() {
+            // Electron helpers (`--type=renderer` and so on) are not sessions.
             "claude" => {
-                // Electron helpers (`--type=renderer` and so on) are not sessions.
-                session = !args(p).iter().any(|a| a.starts_with("--type="));
-                if session && let Some(dir) = cwd(p) {
-                    roots
-                        .entry(key(&encode(dir)))
-                        .or_insert_with(|| (dir.to_path_buf(), Vec::new()))
-                        .1
-                        .push(*pid);
-                }
+                (!args(p).iter().any(|a| a.starts_with("--type="))).then_some(Agent::Claude)
             }
+            "codex" => codex_chat(&args(p)).then_some(Agent::Codex),
+            "agy" => Some(Agent::Gemini),
             "cq" => {
                 let a = args(p);
                 if let Some(name) = watch_name(&a) {
                     out.modes.entry(name.clone()).or_insert(watch_mode(&a));
-                    watchers.push((*pid, name));
+                    // A `--to-codex` watcher names its thread, so it is matched by that.
+                    match codex_thread(&a) {
+                        Some(thread) => {
+                            out.codex_threads.entry(thread).or_insert(name);
+                        }
+                        None => watchers.push((*pid, name)),
+                    }
                 }
+                None
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(agent) = agent
+            && let Some(dir) = cwd(p)
+        {
+            roots
+                .entry((agent, key(&encode(dir))))
+                .or_insert_with(|| (dir.to_path_buf(), Vec::new()))
+                .1
+                .push(*pid);
         }
         let info = ProcInfo {
             parent: p.parent(),
-            session,
+            session: agent,
             cwd: cwd(p).map(Path::to_path_buf),
         };
         table.insert(*pid, info);
@@ -1000,6 +1077,9 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
         let Some(name) = file.strip_suffix(".pid") else {
             continue;
         };
+        if out.modes.get(name) == Some(&cq::members::Mode::Codex) {
+            continue;
+        }
         let pid = fs::read_to_string(e.path())
             .ok()
             .and_then(|t| t.trim().parse::<u32>().ok())
@@ -1018,7 +1098,7 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
                 (cpu + p.cpu_usage(), mem + p.memory())
             })
     };
-    // Each session's CPU and memory: its Claude processes and everything below them.
+    // Each session's CPU and memory: its session processes and everything below them.
     for (k, (dir, pids)) in roots {
         let (cpu, mem) = usage(&tree(pids, &children, |_| false));
         out.sessions.insert(k, (dir, cpu, mem));
@@ -1034,9 +1114,31 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
 
 // ---------- the scan ----------
 
-/// One session: the newest transcript in a project folder.
+/// Which program a row is for.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub enum Agent {
+    #[default]
+    Claude,
+    Codex,
+    /// The Antigravity CLI.
+    Gemini,
+}
+
+impl Agent {
+    pub fn label(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::Gemini => "gemini",
+        }
+    }
+}
+
+/// One session: the newest transcript in a project folder, a Codex thread or an
+/// Antigravity CLI conversation.
 #[derive(Clone, Debug, Default)]
 pub struct Row {
+    pub agent: Agent,
     pub name: String,
     /// The cq name whose watcher runs in this folder; the cq columns come from the queue.
     pub cq_name: Option<String>,
@@ -1046,17 +1148,21 @@ pub struct Row {
     /// The folder key (see `folder_key`), to match a sleeping name's `members/` record.
     pub folder_key: String,
     pub state: State,
-    /// Short form, such as `opus-5-5`; empty when no assistant line was found.
+    /// Short form, such as `opus-5-5`; empty when no assistant line was found, and for
+    /// Gemini rows.
     pub model: String,
+    /// `None` when unknown, and for Gemini rows.
     pub context: Option<u64>,
     /// Today (since local midnight), the transcript and its subagent transcripts together.
-    pub tokens_today: u64,
-    /// `None` when a model used today has no price.
+    /// For Codex, the growth of the thread's running total; `None` for Gemini rows.
+    pub tokens_today: Option<u64>,
+    /// `None` when a model used today has no price. Claude rows only: the screen shows a
+    /// dash for Codex and Gemini rows, which have no price table.
     pub cost_today: Option<f64>,
     /// % of one core, and bytes; `None` without a matching process.
     pub cpu: Option<f32>,
     pub mem: Option<u64>,
-    /// Subagent transcripts written in the last 10 minutes.
+    /// Subagent transcripts written in the last 10 minutes. Claude rows only.
     pub subagents: usize,
     pub last_change: Option<(Change, i64)>,
     /// The newest write to the transcript or a subagent transcript.
@@ -1085,6 +1191,10 @@ pub struct Sources {
     pub projects: PathBuf,
     /// The queue root's heartbeat folder, for `NAME.pid`.
     pub heartbeat: PathBuf,
+    /// Codex's SQLite home, which holds its `state_N.sqlite`.
+    pub codex_home: Option<PathBuf>,
+    /// The Antigravity CLI's `conversation_summaries.db`.
+    pub gemini_db: Option<PathBuf>,
     /// Read the process list. Off in tests.
     pub processes: bool,
 }
@@ -1097,10 +1207,20 @@ impl Sources {
         } else {
             var("HOME")
         };
-        let config = var("CLAUDE_CONFIG_DIR").or_else(|| home.map(|h| h.join(".claude")));
+        let config = var("CLAUDE_CONFIG_DIR").or_else(|| home.as_ref().map(|h| h.join(".claude")));
+        // Found as Codex finds it: `CODEX_HOME` (default `~/.codex`), then its SQLite home.
+        let codex_home = var("CODEX_HOME")
+            .or_else(|| home.as_ref().map(|h| h.join(".codex")))
+            .and_then(|c| {
+                let sqlite = env::var_os("CODEX_SQLITE_HOME");
+                cq::codex::sqlite_home_in(&c, sqlite.as_deref()).ok()
+            })
+            .map(|(dir, _)| dir);
         Sources {
             projects: config.map(|c| c.join("projects")).unwrap_or_default(),
             heartbeat: root.path().join("heartbeat"),
+            codex_home,
+            gemini_db: home.as_deref().map(agents::gemini_db),
             processes: true,
         }
     }
@@ -1123,7 +1243,11 @@ pub struct Scanner {
     sys: Option<sysinfo::System>,
     git: Git,
     tallies: HashMap<PathBuf, Tally>,
+    /// Folder key, or `codex:ID` / `gemini:ID` for the other agents' rows.
     folders: HashMap<String, Folder>,
+    rollouts: HashMap<PathBuf, agents::RolloutTally>,
+    /// Gemini conversation ID -> (step count, when it was last seen to change).
+    steps: HashMap<String, (i64, i64)>,
 }
 
 fn mtime_of(meta: &fs::Metadata) -> i64 {
@@ -1151,6 +1275,23 @@ fn jsonl_files(dir: &Path, prefix: &str) -> Vec<(PathBuf, i64)> {
         .collect()
 }
 
+/// Folder key -> the ID of the newest item in that folder, from (folder, time, ID).
+fn newest_by_folder<'a>(
+    items: impl Iterator<Item = (Option<&'a Path>, i64, &'a str)>,
+) -> HashMap<String, &'a str> {
+    let mut out: HashMap<String, (i64, &str)> = HashMap::new();
+    for (folder, at, id) in items {
+        let Some(folder) = folder else {
+            continue;
+        };
+        let e = out.entry(folder_key(folder)).or_insert((at, id));
+        if at > e.0 {
+            *e = (at, id);
+        }
+    }
+    out.into_iter().map(|(k, (_, id))| (k, id)).collect()
+}
+
 /// Local midnight at the start of the day that holds `now`.
 pub fn local_midnight(now: i64) -> i64 {
     jiff::Timestamp::from_second(now)
@@ -1168,6 +1309,8 @@ impl Scanner {
             git,
             tallies: HashMap::new(),
             folders: HashMap::new(),
+            rollouts: HashMap::new(),
+            steps: HashMap::new(),
         }
     }
 
@@ -1193,7 +1336,9 @@ impl Scanner {
             }
             let encoded = e.file_name().to_string_lossy().into_owned();
             let k = key(&encoded);
-            let proc = procs.as_ref().and_then(|p| p.sessions.get(&k));
+            let proc = procs
+                .as_ref()
+                .and_then(|p| p.sessions.get(&(Agent::Claude, k.clone())));
             let Some((main, written)) = jsonl_files(&e.path(), "").into_iter().max_by_key(|f| f.1)
             else {
                 continue;
@@ -1212,6 +1357,8 @@ impl Scanner {
                 &mut used,
             ));
         }
+        self.codex_rows(now, today, procs.as_ref(), &mut rows);
+        self.gemini_rows(now, procs.as_ref(), &mut rows);
         // Forget files that are no longer read, so the cache does not grow for ever.
         self.tallies.retain(|p, _| used.contains(p));
         rows.sort_by_key(|r| (r.state, std::cmp::Reverse(r.active)));
@@ -1239,7 +1386,7 @@ impl Scanner {
         used: &mut HashSet<PathBuf>,
     ) -> Row {
         let k = key(encoded);
-        let proc = procs.and_then(|p| p.sessions.get(&k));
+        let proc = procs.and_then(|p| p.sessions.get(&(Agent::Claude, k.clone())));
         let session_dir = dir.join(main.file_stem().unwrap_or_default());
 
         // The real folder: a matching process's working folder, else the transcript's own.
@@ -1283,7 +1430,13 @@ impl Scanner {
         let active = subs.iter().map(|s| s.1).fold(written, i64::max);
         let cpu = proc.map(|p| p.1);
 
-        let watcher = procs.and_then(|p| p.watchers.get(&k)).cloned();
+        // A watcher under this folder's Claude session, else one started in the folder.
+        let watcher = procs
+            .and_then(|p| {
+                let w = |agent| p.watchers.get(&(agent, k.clone()));
+                w(Some(Agent::Claude)).or_else(|| w(None))
+            })
+            .cloned();
         let seen = &mut self.folders.entry(k.clone()).or_default().cq_last;
         if watcher.is_some() {
             seen.clone_from(&watcher);
@@ -1295,6 +1448,7 @@ impl Scanner {
             .unwrap_or_else(|| encoded.to_string());
         let last_change = path.and_then(|p| self.last_change(p));
         Row {
+            agent: Agent::Claude,
             name: display_name(watcher.as_deref(), title.as_deref(), &label),
             cq_name: watcher,
             cq_last,
@@ -1305,13 +1459,172 @@ impl Scanner {
                 .map(|l| short_model(&l.model))
                 .unwrap_or_default(),
             context: latest.map(|l| l.context),
-            tokens_today: tokens,
+            tokens_today: Some(tokens),
             cost_today: (!unpriced).then_some(cost),
             cpu,
             mem: proc.map(|p| p.2),
             subagents: subs.iter().filter(|s| now - s.1 <= SUB_RECENT_SECS).count(),
             last_change,
             active,
+        }
+    }
+
+    /// One row per Codex thread written in the last 24 hours, named by a running
+    /// `cq watch --to-codex` watcher, or newest in a folder where a Codex chat runs in a
+    /// terminal. That chat's process counts for the newest thread in its folder only.
+    fn codex_rows(&mut self, now: i64, today: i64, procs: Option<&Procs>, rows: &mut Vec<Row>) {
+        let threads = self
+            .src
+            .codex_home
+            .as_deref()
+            .and_then(agents::codex_state_db)
+            .map(|db| agents::codex_threads(&db))
+            .unwrap_or_default();
+        let newest = newest_by_folder(
+            threads
+                .iter()
+                .map(|t| (t.folder.as_deref(), t.updated, t.id.as_str())),
+        );
+        // A watcher names its thread by ID or by exact name.
+        let watcher_of = |t: &agents::CodexThread| {
+            let named = &procs?.codex_threads;
+            [Some(&t.id), t.name.as_ref(), t.title.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|n| named.get(n))
+                .cloned()
+        };
+        let mut used = HashSet::new();
+        for t in &threads {
+            let k = t.folder.as_deref().map(folder_key).unwrap_or_default();
+            let proc = procs
+                .and_then(|p| p.sessions.get(&(Agent::Codex, k.clone())))
+                .filter(|_| newest.get(&k) == Some(&t.id.as_str()));
+            let watcher = watcher_of(t);
+            if proc.is_none() && watcher.is_none() && now - t.updated > SHOW_SECS {
+                continue;
+            }
+            let written = fs::metadata(&t.rollout).map_or(0, |m| mtime_of(&m));
+            let tally = self.rollouts.entry(t.rollout.clone()).or_default();
+            tally.update(&t.rollout, today);
+            used.insert(t.rollout.clone());
+            let (context, tokens) = (tally.context, tally.tokens());
+            let row = self.agent_row(
+                Agent::Codex,
+                &t.id,
+                t.folder.clone(),
+                t.title.as_deref(),
+                watcher,
+                proc,
+                now,
+                written.max(t.updated),
+            );
+            rows.push(Row {
+                model: t.model.clone(),
+                context,
+                tokens_today: Some(tokens),
+                ..row
+            });
+        }
+        self.rollouts.retain(|p, _| used.contains(p));
+    }
+
+    /// One row per Antigravity CLI conversation changed in the last 24 hours, or newest in
+    /// a folder where `agy` or a cq watcher runs. Activity only: model, context, tokens and
+    /// cost are dashes (see `agents`).
+    fn gemini_rows(&mut self, now: i64, procs: Option<&Procs>, rows: &mut Vec<Row>) {
+        let convs = self
+            .src
+            .gemini_db
+            .as_deref()
+            .map(agents::gemini_conversations)
+            .unwrap_or_default();
+        let newest = newest_by_folder(
+            convs
+                .iter()
+                .map(|c| (c.folder.as_deref(), c.modified, c.id.as_str())),
+        );
+        let mut seen = HashSet::new();
+        for c in &convs {
+            // A step count that grew since the last scan is activity now, even if the
+            // modified time has not caught up.
+            let steps = self
+                .steps
+                .entry(c.id.clone())
+                .or_insert((c.steps, c.modified));
+            if steps.0 != c.steps {
+                *steps = (c.steps, now);
+            }
+            let active = c.modified.max(steps.1);
+            seen.insert(c.id.clone());
+            let k = c.folder.as_deref().map(folder_key).unwrap_or_default();
+            let is_newest = newest.get(&k) == Some(&c.id.as_str());
+            let proc = procs
+                .and_then(|p| p.sessions.get(&(Agent::Gemini, k.clone())))
+                .filter(|_| is_newest);
+            let watcher = procs
+                .and_then(|p| p.watchers.get(&(Some(Agent::Gemini), k.clone())))
+                .filter(|_| is_newest && !k.is_empty())
+                .cloned();
+            if proc.is_none() && watcher.is_none() && now - active > SHOW_SECS {
+                continue;
+            }
+            let row = self.agent_row(
+                Agent::Gemini,
+                &c.id,
+                c.folder.clone(),
+                c.title.as_deref(),
+                watcher,
+                proc,
+                now,
+                active,
+            );
+            rows.push(row);
+        }
+        self.steps.retain(|id, _| seen.contains(id));
+    }
+
+    /// The cells a Codex or Gemini row shares with a Claude row. `id` keys the cq name last
+    /// seen beside the row.
+    #[allow(clippy::too_many_arguments)]
+    fn agent_row(
+        &mut self,
+        agent: Agent,
+        id: &str,
+        folder: Option<PathBuf>,
+        title: Option<&str>,
+        watcher: Option<String>,
+        proc: Option<&(PathBuf, f32, u64)>,
+        now: i64,
+        active: i64,
+    ) -> Row {
+        let seen = &mut self
+            .folders
+            .entry(format!("{}:{id}", agent.label()))
+            .or_default()
+            .cq_last;
+        if watcher.is_some() {
+            seen.clone_from(&watcher);
+        }
+        let cq_last = seen.clone();
+        // Without a folder, the start of the ID.
+        let label = folder
+            .as_deref()
+            .map(folder_label)
+            .unwrap_or_else(|| id.chars().take(8).collect());
+        let cpu = proc.map(|p| p.1);
+        Row {
+            agent,
+            name: display_name(watcher.as_deref(), title, &label),
+            cq_name: watcher,
+            cq_last,
+            folder_key: folder.as_deref().map(folder_key).unwrap_or_default(),
+            state: state(now, active, cpu),
+            cpu,
+            mem: proc.map(|p| p.2),
+            last_change: folder.and_then(|f| self.last_change(f)),
+            active,
+            ..Row::default()
         }
     }
 
@@ -1389,6 +1702,8 @@ pub fn test_scanner(projects: &Path) -> Scanner {
         Sources {
             projects: projects.to_path_buf(),
             heartbeat: PathBuf::new(),
+            codex_home: None,
+            gemini_db: None,
             processes: false,
         },
         Git::Off,
@@ -1559,7 +1874,7 @@ mod tests {
         let mut add = |pid: u32, parent: Option<u32>, session: bool, cwd: Option<&str>| {
             let info = ProcInfo {
                 parent: parent.map(Pid::from_u32),
-                session,
+                session: session.then_some(Agent::Claude),
                 cwd: cwd.map(PathBuf::from),
             };
             table.insert(Pid::from_u32(pid), info);
@@ -1609,6 +1924,7 @@ mod tests {
                 .map(|(p, n)| (Pid::from_u32(*p), n.to_string())),
         )
         .into_iter()
+        .map(|((agent, k), n)| (k, n, agent))
         .collect::<Vec<_>>();
         got.sort();
         let want = [
@@ -1620,10 +1936,37 @@ mod tests {
         ];
         let mut want = want
             .iter()
-            .map(|(d, n)| (key(&encode(Path::new(d))), n.to_string()))
+            .map(|(d, n)| {
+                // Found under a session, or else in the watcher's own folder.
+                let agent = ["w1", "queue-admin"].contains(n).then_some(Agent::Claude);
+                (key(&encode(Path::new(d))), n.to_string(), agent)
+            })
             .collect::<Vec<_>>();
         want.sort();
         assert_eq!(got, want);
+
+        // Under an Antigravity CLI process: that agent's, apart from a Claude session's.
+        table.insert(
+            Pid::from_u32(90),
+            ProcInfo {
+                parent: None,
+                session: Some(Agent::Gemini),
+                cwd: Some(PathBuf::from("D:/Code/app")),
+            },
+        );
+        table.insert(
+            Pid::from_u32(91),
+            ProcInfo {
+                parent: Some(Pid::from_u32(90)),
+                session: None,
+                cwd: None,
+            },
+        );
+        let both = [(22, "w1"), (91, "gem")];
+        let got = match_watchers(&table, both.map(|(p, n)| (Pid::from_u32(p), n.to_string())));
+        let app = key(&encode(Path::new("D:/Code/app")));
+        assert_eq!(got[&(Some(Agent::Claude), app.clone())], "w1");
+        assert_eq!(got[&(Some(Agent::Gemini), app)], "gem");
 
         // The first name for a folder wins: the arguments come before heartbeat files.
         let two = [(10, "from-args"), (10, "from-heartbeat")];
@@ -1942,6 +2285,148 @@ mod tests {
     }
 
     #[test]
+    fn codex_and_gemini_rows_come_from_their_databases() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = now_epoch();
+        let codex = dir.path().join("codex");
+        let work = dir.path().join("demo");
+        fs::create_dir_all(&codex).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        let rollout = codex.join("rollout-1.jsonl");
+        append(
+            &rollout,
+            r#"{"timestamp":"2026-11-02T09:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5000,"total_tokens":5100},"last_token_usage":{"input_tokens":4000,"cached_input_tokens":3900,"total_tokens":4050}}}}"#,
+        );
+        append(&rollout, "\n");
+        let conn = rusqlite::Connection::open(codex.join("state_5.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, title TEXT, name TEXT, \
+             model TEXT, updated_at_ms INTEGER, archived INTEGER, source TEXT)",
+        )
+        .unwrap();
+        let add = |id: &str, rollout: &Path, name: Option<&str>, at: i64, source: &str| {
+            conn.execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, 'Codex title', ?4, 'gpt-demo', ?5, 0, ?6)",
+                rusqlite::params![
+                    id,
+                    rollout.to_string_lossy(),
+                    work.to_string_lossy(),
+                    name,
+                    at * 1000,
+                    source
+                ],
+            )
+            .unwrap();
+        };
+        add("t-new", &rollout, Some("demo-codex"), now - 60, "vscode");
+        add(
+            "t-old",
+            &codex.join("none.jsonl"),
+            None,
+            now - 3 * 86_400,
+            "cli",
+        );
+        add(
+            "t-sub",
+            &rollout,
+            None,
+            now - 60,
+            r#"{"subagent":{"other":"review"}}"#,
+        );
+        drop(conn);
+
+        let gemini = dir.path().join("conversation_summaries.db");
+        let conn = rusqlite::Connection::open(&gemini).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT, preview TEXT, \
+             step_count INTEGER, last_modified_time datetime, workspace_uris TEXT, \
+             parent_conversation_id TEXT, nesting_depth INTEGER)",
+        )
+        .unwrap();
+        let at = |secs: i64| {
+            jiff::Timestamp::from_second(secs)
+                .unwrap()
+                .strftime("%Y-%m-%d %H:%M:%S%.f+00:00")
+                .to_string()
+        };
+        for (id, title, modified) in [("g-new", "Demo chat", now - 600), ("g-old", "Old", 0)] {
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?1, ?2, 'SECRET-TEXT', 3, ?3, \
+                 '[\"file:///C:/work/demo\"]', '', 0)",
+                rusqlite::params![id, title, at(modified)],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let mut sc = Scanner::new(
+            Sources {
+                projects: dir.path().join("projects"),
+                heartbeat: PathBuf::new(),
+                codex_home: Some(codex),
+                gemini_db: Some(gemini.clone()),
+                processes: false,
+            },
+            Git::Off,
+        );
+        // "Today" from the epoch: every line counts.
+        let r = sc.scan_at(now, 0);
+        let names: Vec<(&str, Agent)> = r.rows.iter().map(|r| (r.name.as_str(), r.agent)).collect();
+        assert_eq!(
+            names,
+            [("demo-codex", Agent::Codex), ("Demo chat", Agent::Gemini)]
+        );
+        let c = &r.rows[0];
+        assert_eq!(c.state, State::Working);
+        assert_eq!(c.model, "gpt-demo");
+        // Cached input is part of `input_tokens`, so it is not added again.
+        assert_eq!((c.context, c.tokens_today), (Some(4_000), Some(5_100)));
+        assert_eq!(c.cost_today, None);
+        assert_eq!(c.folder_key, folder_key(&work));
+        let g = &r.rows[1];
+        assert_eq!(g.state, State::Recent);
+        assert_eq!(
+            (g.model.as_str(), g.context, g.tokens_today),
+            ("", None, None)
+        );
+        assert!(!format!("{r:?}").contains("SECRET"));
+
+        // A step count that grows is activity now, before the modified time moves.
+        let conn = rusqlite::Connection::open(&gemini).unwrap();
+        conn.execute(
+            "UPDATE conversation_summaries SET step_count = 4 WHERE conversation_id = 'g-new'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let r = sc.scan_at(now + 5, 0);
+        assert_eq!(r.rows[1].state, State::Working);
+    }
+
+    #[test]
+    fn codex_chats_and_watched_threads_are_read_from_arguments() {
+        let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert!(codex_chat(&args("codex")));
+        assert!(codex_chat(&args("codex resume --last")));
+        assert!(!codex_chat(&args("codex -c x=1 app-server --listen stdio")));
+        assert!(!codex_chat(&args("codex queue --thread t1 --message hi")));
+        assert_eq!(
+            codex_thread(&args("cq watch --as demo-codex --to-codex t1")),
+            Some("t1".into())
+        );
+        assert_eq!(
+            codex_thread(&args("cq watch --as demo-codex --to-codex=t2")),
+            Some("t2".into())
+        );
+        assert_eq!(codex_thread(&args("cq watch --as demo --to-inbox")), None);
+        let a = Path::new("/work/a");
+        let newest =
+            newest_by_folder([(Some(a), 5, "x"), (Some(a), 9, "y"), (None, 99, "z")].into_iter());
+        assert_eq!(newest.get(&folder_key(a)), Some(&"y"));
+        assert_eq!(newest.len(), 1);
+    }
+
+    #[test]
     fn a_scan_sums_the_session_and_its_subagents() {
         let (dir, proj) = fixture();
         let now = now_epoch();
@@ -1956,7 +2441,7 @@ mod tests {
         assert_eq!(row.state, State::Working);
         assert_eq!(row.model, "opus-5-5");
         assert_eq!(row.context, Some(100));
-        assert_eq!(row.tokens_today, 110 + 200);
+        assert_eq!(row.tokens_today, Some(110 + 200));
         assert_eq!(row.subagents, 1);
         assert_eq!((row.cpu, row.mem), (None, None));
         let want = (4.0 + 99.0 * 0.2 + 10.0 * 20.0 + 100.0 * 1.0 + 100.0 * 5.0) / 1e6;

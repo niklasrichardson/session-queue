@@ -1077,7 +1077,7 @@ mod tests {
                         state: sessions::State::Working,
                         model: "opus-5-5".into(),
                         context: Some(135_000),
-                        tokens_today: 66_300_000,
+                        tokens_today: Some(66_300_000),
                         cost_today: Some(12.5),
                         cpu: Some(6.0),
                         mem: Some(900 << 20),
@@ -1804,7 +1804,7 @@ mod tests {
             state: sessions::State::Idle,
             model: "opus-5-5".into(),
             context: Some(context),
-            tokens_today: 7_000,
+            tokens_today: Some(7_000),
             active: snap.now - 4000,
             ..Default::default()
         };

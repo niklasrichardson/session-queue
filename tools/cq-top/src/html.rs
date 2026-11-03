@@ -676,8 +676,10 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
         "<section class=\"card\"><h2>Sessions <span class=\"count\">{}</span></h2>\
          <p class=\"sub\">{machine} Tokens and cost count from local midnight, the session \
          and its subagents together. The cost is an estimate at API list prices, not the \
-         plan's bill. In the table, CPU 100% is one core.</p><div class=\"scroll\"><table><thead><tr>\
-         <th>Session</th><th>State</th><th>Model</th><th class=\"n\">Context</th>\
+         plan's bill, and is shown for Claude Code sessions only. Codex rows show tokens \
+         without a cost, and Antigravity CLI (Gemini) rows show activity only. In the table, \
+         CPU 100% is one core.</p><div class=\"scroll\"><table><thead><tr>\
+         <th>Session</th><th>Agent</th><th>State</th><th>Model</th><th class=\"n\">Context</th>\
          <th class=\"n\">Tokens today</th><th class=\"n\">Est. cost today</th>\
          <th class=\"n\">CPU %</th><th class=\"n\">Memory</th><th class=\"n\">Sub</th>\
          <th>cq</th><th>Mode</th><th class=\"n\">Waiting</th><th class=\"n\">Claimed</th>\
@@ -699,21 +701,32 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
             None => dash(),
         };
         let opt = |v: Option<String>| v.map_or_else(dash, |v| esc(&v));
+        // Cost and subagents are known for Claude Code sessions only.
+        let claude = row.agent == sessions::Agent::Claude;
         let _ = write!(
             b,
-            "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\">{state_chip}</td>\
+            "<tr><td class=\"nowrap\"><strong>{}</strong></td><td>{}</td><td class=\"nowrap\">{state_chip}</td>\
              <td class=\"nowrap\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
              <td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
              <td class=\"n\">{}</td><td class=\"nowrap\">{beat}</td><td>{}</td><td class=\"n\">{}</td>\
              <td class=\"n\">{}</td><td class=\"nowrap\">{}</td><td class=\"n\">{}</td></tr>",
             esc(&row.name),
+            row.agent.label(),
             opt(Some(row.model.clone()).filter(|m| !m.is_empty())),
             row.context.map_or_else(dash, context_cell),
-            count(row.tokens_today),
-            esc(&usd(row.cost_today)),
+            opt(row.tokens_today.map(count)),
+            if claude {
+                esc(&usd(row.cost_today))
+            } else {
+                dash()
+            },
             opt(row.cpu.map(|c| format!("{c:.1}"))),
             opt(row.mem.map(bytes)),
-            row.subagents,
+            if claude {
+                row.subagents.to_string()
+            } else {
+                dash()
+            },
             w.map_or_else(dash, |w| mode_cell(s, w)),
             opt(w.map(|w| w.queued.to_string())),
             opt(w.map(|w| w.claimed.to_string())),
@@ -725,7 +738,7 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
     }
     if r.rows.is_empty() {
         b.push_str(
-            "<tr><td colspan=\"15\" class=\"dim\">No sessions in the last 24 hours.</td></tr>",
+            "<tr><td colspan=\"16\" class=\"dim\">No sessions in the last 24 hours.</td></tr>",
         );
     }
     b.push_str("</tbody></table></div></section>");
