@@ -20,6 +20,7 @@
 //! idle/<name>.turn-end      the last turn end, written by `cq turn-end`
 //! idle/<name>.turn-end.lock held while the turn end is written, checked or removed
 //! PAUSE                     while it exists, watchers emit nothing
+//! watch-exits.log           one line per watcher exit (see `exitlog`)
 //! ```
 
 use std::fs;
@@ -214,6 +215,11 @@ impl Root {
 
     pub fn pause(&self) -> PathBuf {
         self.path.join("PAUSE")
+    }
+
+    /// One line per watcher exit, created on demand (see `exitlog`).
+    pub fn watch_exits(&self) -> PathBuf {
+        self.path.join("watch-exits.log")
     }
 }
 

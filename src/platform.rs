@@ -520,42 +520,67 @@ pub fn stop_agent(agent: &mut Agent) -> Result<()> {
 }
 
 static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// True once Ctrl+C (Windows console) or SIGINT, SIGTERM or SIGHUP (Unix)
-/// arrived after `install_interrupt_handler`. Used by `dispatch` and by
-/// `watch --to-inbox` and `--to-codex`.
+/// The signal number (Unix) or console event (Windows) seen last, or -1.
+static SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+/// Windows: Ctrl+C and Ctrl+Break set `INTERRUPTED` instead of ending the
+/// process (`install_interrupt_handler`).
+#[cfg(windows)]
+static CATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True once Ctrl+C or Ctrl+Break (Windows console) or SIGINT, SIGTERM or
+/// SIGHUP (Unix) arrived after `install_interrupt_handler`. Used by
+/// `dispatch` and by `watch --to-inbox` and `--to-codex`.
 pub fn interrupted() -> bool {
     INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The name of the signal or console event that arrived last, such as
+/// `SIGTERM` or `CTRL_C_EVENT`.
+pub fn signal_name() -> Option<&'static str> {
+    let n = SIGNAL.load(std::sync::atomic::Ordering::Relaxed);
+    (n >= 0).then(|| name_of(n))
+}
+
+#[cfg(windows)]
+fn name_of(n: i32) -> &'static str {
+    match n {
+        0 => "CTRL_C_EVENT",
+        1 => "CTRL_BREAK_EVENT",
+        2 => "CTRL_CLOSE_EVENT",
+        5 => "CTRL_LOGOFF_EVENT",
+        6 => "CTRL_SHUTDOWN_EVENT",
+        _ => "CTRL_UNKNOWN_EVENT",
+    }
+}
+
+#[cfg(unix)]
+fn name_of(n: i32) -> &'static str {
+    match n {
+        libc::SIGINT => "SIGINT",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGHUP => "SIGHUP",
+        _ => "SIGNAL",
+    }
+}
+
+/// Catch Ctrl+C and Ctrl+Break (Windows console) or SIGINT, SIGTERM and
+/// SIGHUP (Unix): `interrupted` turns true and the caller stops in its own
+/// time. On Windows, a console close, logoff or shutdown still ends the
+/// process; the watcher's exit line is written first (`exitlog`).
 pub fn install_interrupt_handler() -> Result<()> {
     INTERRUPTED.store(false, std::sync::atomic::Ordering::Relaxed);
     #[cfg(windows)]
     {
-        unsafe extern "system" fn on_interrupt(kind: u32) -> i32 {
-            if kind <= 2 {
-                INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
-                1
-            } else {
-                0
-            }
-        }
-        // SAFETY: static handler only writes an atomic flag; no borrowed state.
-        if unsafe {
-            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_interrupt), 1)
-        } == 0
-        {
-            return Err(CqError::io(
-                "install interrupt handler",
-                std::io::Error::last_os_error(),
-            ));
-        }
+        CATCH.store(true, std::sync::atomic::Ordering::Relaxed);
+        install_console_handler()?;
     }
     #[cfg(unix)]
     {
-        extern "C" fn on_interrupt(_: libc::c_int) {
+        extern "C" fn on_interrupt(sig: libc::c_int) {
+            SIGNAL.store(sig, std::sync::atomic::Ordering::Relaxed);
             INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        // SAFETY: static signal handler only writes an atomic flag.
+        // SAFETY: static signal handler only writes atomics.
         unsafe {
             if libc::signal(
                 libc::SIGINT,
@@ -576,6 +601,47 @@ pub fn install_interrupt_handler() -> Result<()> {
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// For a watcher under a Monitor, which keeps the default handling: on
+/// Windows, each console event (Ctrl+C, Ctrl+Break, close, logoff,
+/// shutdown) writes the watcher's exit line, then ends the process as
+/// before. Nothing on Unix, where a handler that writes a file is not
+/// async-signal-safe; the next watcher logs the exit instead.
+pub fn install_exit_log_handler() -> Result<()> {
+    #[cfg(windows)]
+    {
+        CATCH.store(false, std::sync::atomic::Ordering::Relaxed);
+        install_console_handler()?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn install_console_handler() -> Result<()> {
+    /// Windows runs this on a new thread. Returning 0 passes the event to
+    /// the default handler, which ends the process.
+    unsafe extern "system" fn on_console(kind: u32) -> i32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let n = i32::try_from(kind).unwrap_or(i32::MAX);
+        SIGNAL.store(n, Relaxed);
+        if kind <= 1 && CATCH.load(Relaxed) {
+            INTERRUPTED.store(true, Relaxed);
+            return 1;
+        }
+        crate::exitlog::signalled(name_of(n));
+        0
+    }
+    // SAFETY: a static handler that touches only atomics and the exit log.
+    if unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console), 1) }
+        == 0
+    {
+        return Err(CqError::io(
+            "install interrupt handler",
+            std::io::Error::last_os_error(),
+        ));
     }
     Ok(())
 }

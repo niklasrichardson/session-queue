@@ -16,8 +16,8 @@ use cq::done::{self, DoneRequest};
 use cq::error::{CqError, Result, exit};
 use cq::inbox::Inbox;
 use cq::message::{
-    DoneInput, MAX_BODY_BYTES, MAX_HOPS, MsgType, RATE_LIMIT, RATE_WINDOW, RECIPIENT_LIMIT,
-    SENDER_LIMIT, SendInput, Status,
+    DoneInput, EVENT_SUBJECT_MAX, MAX_BODY_BYTES, MAX_HOPS, MsgType, RATE_LIMIT, RATE_WINDOW,
+    RECIPIENT_LIMIT, SENDER_LIMIT, SendInput, Status, event_text,
 };
 use cq::send::{self, Hops, Outgoing};
 use cq::watch::{
@@ -36,9 +36,10 @@ Exit codes:
       running, sleeping another name without being a coordinator)
   6   done: the message is not claimed by this session; requeue: the
       message is not in this session's rejected/
-  7   watch: the name is asleep; do not re-arm
+  7   watch: the name is asleep; do not re-arm. status: the name is asleep
   8   watch --to-inbox: the session's inbox cannot be reached (session gone)
   9   watch --to-codex: codex queue failed 4 times; the Codex chat is not woken
+  10  status: no watcher runs for the name
   64  bad arguments or bad JSON input
   70  any other error (I/O, CQ_ROOT missing or not initialised)";
 
@@ -369,6 +370,18 @@ enum Cmd {
         name: String,
     },
 
+    /// Print one line saying whether NAME's watcher runs: "running" (exit
+    /// 0), "stopped" with why (exit 10), or "asleep" (exit 7), with the
+    /// heartbeat age, the process ID and the recorded mode. The rule is
+    /// the one `cq session-start` uses: a pid file and a heartbeat under
+    /// 90 s old. Reads only; any session or the user may check any name.
+    #[command(after_help = exit_help())]
+    Status {
+        /// The name to check.
+        #[arg(long = "as", value_name = "NAME")]
+        name: String,
+    },
+
     /// For a Claude Code SessionStart hook (clear|compact|resume). If this
     /// session owns a queue name, print a reminder to rejoin as it; else
     /// print nothing. Always exits 0.
@@ -579,6 +592,9 @@ fn run(cmd: Cmd) -> Result<i32> {
                 watch_to_inbox(&opts)?
             } else {
                 let root = Root::open()?;
+                // Silent on failure: under a Monitor, each stderr line wakes
+                // the session.
+                let _ = platform::install_exit_log_handler();
                 watch::watch(&root, &opts, &mut Lines(io::stdout().lock()))?
             };
             if ended == Ended::Asleep {
@@ -754,6 +770,7 @@ fn run(cmd: Cmd) -> Result<i32> {
                 println!("{name} was not asleep");
             }
         }
+        Cmd::Status { name } => return status(&name),
         Cmd::SessionStart { debug } => session_start(debug),
         Cmd::IdleAlert {
             every,
@@ -763,6 +780,46 @@ fn run(cmd: Cmd) -> Result<i32> {
         Cmd::TurnEnd { debug } => turn_end(debug),
     }
     Ok(exit::OK)
+}
+
+/// `cq status`: one line, and the exit code for the state. Asleep wins over
+/// running: a sleeping name's watcher is about to stop, and the session
+/// must not start one.
+fn status(name: &str) -> Result<i32> {
+    cq::names::check_name("--as", name)?;
+    let root = Root::open()?;
+    let live = watch::Liveness::read(&root, name);
+    let why = live.why_stopped();
+    let mut facts = String::new();
+    if let Some(why) = &why {
+        facts.push_str(&format!(" why={}", event_text(why, EVENT_SUBJECT_MAX)));
+    }
+    if let Some(pid) = live.pid {
+        facts.push_str(&format!(" pid={pid}"));
+    }
+    if let Some(age) = live.beat_age() {
+        facts.push_str(&format!(" heartbeat={age}s"));
+    }
+    let mode = members::mode_of_name(&root, name).map_or("unknown", members::Mode::as_str);
+    let (line, code) = match sleep::read(&root, name) {
+        Some(rec) => {
+            let watcher = if why.is_none() { "running" } else { "stopped" };
+            (
+                format!(
+                    "asleep name={name} {} watcher={watcher}{facts} mode={mode}",
+                    rec.describe()
+                ),
+                exit::ASLEEP,
+            )
+        }
+        None if why.is_none() => (format!("running name={name}{facts} mode={mode}"), exit::OK),
+        None => (
+            format!("stopped name={name}{facts} mode={mode}"),
+            exit::NOT_RUNNING,
+        ),
+    };
+    println!("{line}");
+    Ok(code)
 }
 
 /// The SessionStart hook. Never fails, never blocks and, without

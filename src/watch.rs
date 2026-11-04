@@ -29,6 +29,10 @@
 //! default time limit. `--to-codex` instead wakes a Codex chat with
 //! `codex queue` (see `codex`).
 //!
+//! Each run that takes the lock writes one line to `watch-exits.log` when
+//! it ends, and one for a predecessor that ended without writing its own
+//! (see `exitlog`).
+//!
 //! There is no parent-process check. Under Git Bash the parent of `cq.exe`
 //! is a forked bash whose lifetime Cygwin controls, not the Monitor, and the
 //! check was the only path that could end a watcher with exit 0 and no
@@ -44,7 +48,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::error::{CqError, Result};
+use crate::error::{CqError, Result, exit};
+use crate::exitlog::{self, Exit};
 use crate::fsutil;
 use crate::idle;
 use crate::members;
@@ -80,6 +85,8 @@ pub const WAKE_AFTER: Duration = Duration::from_secs(120);
 const OVERDUE_SCAN_EVERY: Duration = Duration::from_secs(30);
 /// How often the watcher checks the turn end recorded by `cq turn-end`.
 const IDLE_CHECK_EVERY: Duration = Duration::from_secs(5);
+/// The reason a caught signal gives. The signal's name follows it.
+const SIGNAL_REASON: &str = "stopped by a signal";
 
 /// How a watcher run ended without an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,11 +205,16 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     let started = Instant::now();
     let deadline = opts.max_seconds.map(|s| started + Duration::from_secs(s));
 
-    let _lock = take_lock(root, name, opts.takeover)?;
+    let (_lock, took_over) = take_lock(root, name, opts.takeover)?;
     let pid = std::process::id();
+    let exits = exitlog::Guard::arm(root, name, opts.mode);
+    log_predecessor(root, name, pid, took_over);
     let pid_file = root.pid_file(name);
-    fsutil::write_atomic(&root.tmp(), &pid_file, format!("{pid}\n").as_bytes())
-        .map_err(|e| CqError::io(format!("write {}", pid_file.display()), e))?;
+    if let Err(e) = fsutil::write_atomic(&root.tmp(), &pid_file, format!("{pid}\n").as_bytes()) {
+        let e = CqError::io(format!("write {}", pid_file.display()), e);
+        exits.finish(e.code, None, &format!("error: {e}"));
+        return Err(e);
+    }
     if let Some(key) = &opts.member_key {
         // The queue still works without the record; only a rejoin after
         // `/clear` needs it.
@@ -260,7 +272,11 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
             break Ok((format!("--max-seconds {s} reached"), Ended::Normal));
         }
         if platform::interrupted() {
-            break Ok(("stopped by a signal".to_owned(), Ended::Normal));
+            let reason = match platform::signal_name() {
+                Some(sig) => format!("{SIGNAL_REASON} ({sig})"),
+                None => SIGNAL_REASON.to_owned(),
+            };
+            break Ok((reason, Ended::Normal));
         }
         if let Some(rec) = sleep::read(root, name) {
             say_asleep(out, &rec);
@@ -355,7 +371,23 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     if fs::read_to_string(&pid_file).is_ok_and(|s| s.trim() == pid.to_string()) {
         let _ = fs::remove_file(&pid_file);
     }
-    let (reason, ended) = end?;
+    let (reason, ended) = match end {
+        Ok(v) => v,
+        Err(e) => {
+            exits.finish(e.code, None, &format!("error: {e}"));
+            return Err(e);
+        }
+    };
+    let code = match ended {
+        Ended::Normal => exit::OK,
+        Ended::Asleep => exit::ASLEEP,
+    };
+    let signal = reason
+        .starts_with(SIGNAL_REASON)
+        .then(platform::signal_name)
+        .flatten();
+    // Before `stopped`, which can take seconds of retries.
+    exits.finish(code, signal, &reason);
     // The last lines go out only now; save them once they are delivered.
     if out.stopped(&reason, ended) && reported != saved {
         save_reported(root, name, &reported);
@@ -414,22 +446,21 @@ fn say_asleep(out: &mut impl Sink, rec: &sleep::Sleep) {
 }
 
 /// Take the exclusive lock on `heartbeat/<name>.lock`. The OS releases it
-/// when the process exits, however it exits.
-pub(crate) fn take_lock(root: &Root, name: &str, takeover: bool) -> Result<File> {
+/// when the process exits, however it exits. The flag is true when the lock
+/// was held and `takeover` stopped its holder.
+pub(crate) fn take_lock(root: &Root, name: &str, takeover: bool) -> Result<(File, bool)> {
     let path = root.lock_file(name);
     let file = fsutil::open_lock_file(&path)
         .map_err(|e| CqError::io(format!("open {}", path.display()), e))?;
     match file.try_lock() {
-        Ok(()) => return Ok(file),
+        Ok(()) => return Ok((file, false)),
         Err(TryLockError::WouldBlock) => {}
         Err(TryLockError::Error(e)) => {
             return Err(CqError::io(format!("lock {}", path.display()), e));
         }
     }
 
-    let old = fs::read_to_string(root.pid_file(name))
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok());
+    let old = read_pid(root, name);
     let old_text = old.map_or_else(|| "unknown process".to_owned(), |p| format!("process {p}"));
     if !takeover {
         return Err(CqError::refused(format!(
@@ -442,7 +473,7 @@ pub(crate) fn take_lock(root: &Root, name: &str, takeover: bool) -> Result<File>
     let until = Instant::now() + TAKEOVER_WAIT;
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok((file, true)),
             Err(TryLockError::WouldBlock) if Instant::now() < until => {
                 sleep(Duration::from_millis(100));
             }
@@ -465,17 +496,96 @@ pub(crate) fn take_lock(root: &Root, name: &str, takeover: bool) -> Result<File>
 /// starting. A clean exit removes the pid file, so it reads as stopped at
 /// once; a killed watcher still looks alive until its heartbeat is too old.
 pub fn is_running(root: &Root, name: &str) -> bool {
-    if !root.pid_file(name).is_file() {
-        return false;
+    Liveness::read(root, name).running()
+}
+
+/// What the files of a name's watcher or dispatcher say, read only: the
+/// facts behind `is_running`, for `cq status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Liveness {
+    /// `heartbeat/<name>.pid` exists.
+    pub pid_file: bool,
+    /// The process ID in it, when it holds one.
+    pub pid: Option<u32>,
+    /// The time of the last heartbeat, if any.
+    pub beat: Option<jiff::Timestamp>,
+}
+
+impl Liveness {
+    pub fn read(root: &Root, name: &str) -> Self {
+        Self {
+            pid_file: root.pid_file(name).is_file(),
+            pid: read_pid(root, name),
+            beat: last_beat(root, name),
+        }
     }
+
+    /// Seconds since the last heartbeat; 0 for one in the future.
+    pub fn beat_age(&self) -> Option<i64> {
+        self.beat
+            .map(|t| (timefmt::now().as_second() - t.as_second()).max(0))
+    }
+
+    pub fn running(&self) -> bool {
+        self.why_stopped().is_none()
+    }
+
+    /// Why it does not count as running, or `None` when it does.
+    pub fn why_stopped(&self) -> Option<String> {
+        match (self.pid_file, self.beat_age()) {
+            (false, _) => Some("no pid file".to_owned()),
+            (true, None) => Some("no heartbeat".to_owned()),
+            (true, Some(age)) if age >= ALIVE_SECS => Some(format!("heartbeat {age}s old")),
+            (true, Some(_)) => None,
+        }
+    }
+}
+
+/// The process ID in `heartbeat/<name>.pid`, if it holds one.
+fn read_pid(root: &Root, name: &str) -> Option<u32> {
+    fs::read_to_string(root.pid_file(name))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+}
+
+/// The time of the last heartbeat. `heartbeat` rewrites the file in place,
+/// so a read can catch it half written; the modified time is then the beat.
+fn last_beat(root: &Root, name: &str) -> Option<jiff::Timestamp> {
     let path = root.heartbeat(name);
-    // `heartbeat` rewrites the file in place, so a read can catch it half
-    // written; the modified time is then the beat.
-    let beat = fs::read_to_string(&path)
+    fs::read_to_string(&path)
         .ok()
         .and_then(|t| timefmt::parse_rfc3339_z(t.trim()))
-        .or_else(|| fsutil::modified(&path).and_then(timefmt::from_system_time));
-    beat.is_some_and(|t| timefmt::now().as_second() - t.as_second() < ALIVE_SECS)
+        .or_else(|| fsutil::modified(&path).and_then(timefmt::from_system_time))
+}
+
+/// Called once the lock is held, before the pid file is written. A clean
+/// exit removes the pid file, so one that still names another process
+/// belongs to a holder that never wrote its exit line: write the line for
+/// it. Holding the lock proves that the holder is gone.
+fn log_predecessor(root: &Root, name: &str, pid: u32, took_over: bool) {
+    let Some(old) = read_pid(root, name).filter(|p| *p != pid) else {
+        return;
+    };
+    let reason = if took_over {
+        format!("stopped by --takeover from PID {pid}")
+    } else {
+        let beat = last_beat(root, name).map_or_else(|| "none".to_owned(), rfc3339);
+        format!(
+            "previous watcher ended without logging (last heartbeat {beat}); found by PID {pid}"
+        )
+    };
+    exitlog::write(
+        root,
+        &Exit {
+            name,
+            pid: old,
+            // Read before this watcher records its own session.
+            mode: members::mode_of_name(root, name),
+            code: None,
+            signal: None,
+            reason: &reason,
+        },
+    );
 }
 
 /// Any change in the inbox triggers a scan; the scan decides what is new.
