@@ -34,7 +34,7 @@ Inbox mode is the default for Claude Code sessions. The session runs `cq watch -
 5. If the watcher exits 5 at start, an old watcher still holds the name: start it again with `--takeover`. The stopped message reports this error too.
 6. Exit 8 means the watcher could not reach the inbox. Only a session that has ended should see it.
 
-Known risk: a watcher that is killed without warning posts nothing, so the session does not know that it stopped. Messages then wait in the inbox. Monitor mode does not have this problem, because the session re-arms the Monitor at least every 30 minutes. To find a stopped inbox watcher, check its heartbeat in [cq-top](CQ-TOP.md): it shows `STALE` after 90 seconds. Then run `/cq-start` in that session. See [Known risks](DESIGN.md#known-risks).
+Known risk: a watcher that is killed without warning posts nothing, so the session does not know that it stopped. Messages then wait in the inbox. Monitor mode does not have this problem, because the session re-arms the Monitor at least every 30 minutes. To find a stopped inbox watcher, run `cq status --as NAME` (exit 10 when it has stopped), or check its heartbeat in [cq-top](CQ-TOP.md): it shows `STALE` after 90 seconds. Do not trust a process ID remembered from before a `/clear`. Then run `/cq-start` in that session. `CQ_ROOT/watch-exits.log` records why each watcher ended (see [Watcher status and exit log](COMMANDS.md#watcher-status-and-exit-log)). See [Known risks](DESIGN.md#known-risks).
 
 ## Monitor mode (fallback)
 
@@ -58,7 +58,7 @@ After `/clear` or a compaction, a session forgets its queue name and rules, so i
   - `codex`, and nothing for NAME is alive: the Codex watcher has stopped. Do not start a watcher for NAME in this session; tell the user, who restarts it outside the chat.
   - `monitor`: start the watcher Monitor, with `--takeover` if it exits 5. The Monitor ended with the old conversation.
 
-  `cq session-start` uses the same rule as [cq-top](CQ-TOP.md#limits): NAME is alive when `heartbeat/NAME.pid` exists and the heartbeat is less than 90 seconds old. It never opens the lock file, so it cannot stop a watcher that is starting. A watcher that exits cleanly removes its pid file, so it counts as stopped at once. A watcher that was killed leaves its pid file, so it counts as alive until its heartbeat is 90 seconds old.
+  `cq session-start` and `cq status` use the same rule as [cq-top](CQ-TOP.md#limits): NAME is alive when `heartbeat/NAME.pid` exists and the heartbeat is less than 90 seconds old. It never opens the lock file, so it cannot stop a watcher that is starting. A watcher that exits cleanly removes its pid file, so it counts as stopped at once. A watcher that was killed leaves its pid file, so it counts as alive until its heartbeat is 90 seconds old.
 - Otherwise `cq session-start` prints nothing.
 - `cq session-start` always exits 0 and writes nothing to stderr (except with `--debug`). It finds the key from the environment only. It drains the hook's JSON from stdin without using it, and waits at most 100 ms for an empty open pipe and 100 ms more for a pipe that holds bytes but never closes. It needs no `cq init`: an uninitialised root gives no output.
 - A session that leaves the queue runs `cq leave --as NAME`.

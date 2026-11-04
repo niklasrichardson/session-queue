@@ -22,6 +22,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | `cq members` | Print one `<session key> -> <name>` line per record, with ` (asleep)` after a sleeping name. A sleeping name with no record prints as `- -> <name> (asleep)`. |
 | `cq sleep --as A B [--reason TEXT]` | Put `B` to sleep: write `sleep/B`. `A` may be `B` itself or a coordinator. |
 | `cq wake --as A B` | Wake `B`: remove `sleep/B`. Any name may wake any name. Exit 0 when `B` was not asleep. |
+| `cq status --as B` | Print one line saying whether `B`'s watcher runs: `running` (exit 0), `stopped` with the reason (exit 10), or `asleep` (exit 7). Reads only, and needs no session key: any session or the user may check any name. See [Watcher status and exit log](#watcher-status-and-exit-log). |
 | `cq session-start [--debug]` | For the Claude Code SessionStart hook. Prints the rejoin reminder when this session owns a name, a "you are asleep" note when that name is asleep, else nothing. The text ends with a note that a subagent ignores it, because subagents share the host session ID. Always exits 0. |
 | `cq turn-end [--debug]` | For the Claude Code Stop hook. When this session owns a name listed in `CQ_ROOT/idle-alerts`, record the turn end in `idle/<name>.turn-end` for the name's watcher. Records nothing when the hook input lists other running background work. Prints nothing and always exits 0. See [Idle alerts](#idle-alerts). |
 | `cq idle-alert [--every 1h] [--debug]` | For the Claude Code Notification hook (matcher `idle_prompt`), or manual use. When this session owns a name listed in `CQ_ROOT/idle-alerts`, send its lead one fixed `info` message at once, at most once per `--every`. The desktop app does not send `idle_prompt`: use `cq turn-end` there. Prints nothing and exits 0. A bad `--every` value is a configuration error and exits 64. See [Idle alerts](#idle-alerts). |
@@ -186,8 +187,8 @@ A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 
   cq watch (B) stopped: B is asleep. Do not re-arm; run /cq-start only when asked to wake.
   ```
 
-  The reason is `--max-seconds N reached`, `stopped by a signal`, or `error: <the cq: message>` (for example exit 5, another watcher is running). The lock, pid file, heartbeat, `PAUSE` and `--takeover` work as without `--to-inbox`.
-- **Signals.** In this mode the watcher catches SIGINT, SIGTERM and SIGHUP (macOS and Linux) and Ctrl+C (Windows console), and posts the stopped message. So on macOS and Linux, a watcher replaced by `--takeover` (SIGTERM) says so. On Windows, `--takeover` ends the old watcher at once, and it posts nothing.
+  The reason is `--max-seconds N reached`, `stopped by a signal (<signal>)` (for example `SIGTERM` or `CTRL_C_EVENT`), or `error: <the cq: message>` (for example exit 5, another watcher is running). The lock, pid file, heartbeat, `PAUSE` and `--takeover` work as without `--to-inbox`.
+- **Signals.** In this mode the watcher catches SIGINT, SIGTERM and SIGHUP (macOS and Linux) and Ctrl+C and Ctrl+Break (Windows console), and posts the stopped message. So on macOS and Linux, a watcher replaced by `--takeover` (SIGTERM) says so. On Windows, `--takeover` ends the old watcher at once, and it posts nothing; the new watcher writes its line in the [exit log](#watcher-status-and-exit-log).
 - **Unreachable inbox.** Each post is tried 4 times, 1, 2 and 4 seconds apart. If every try fails, the session has probably ended: the watcher exits 8 with a `cq:` line on stderr, and posts nothing more.
 
 ## Wake a Codex chat
@@ -206,6 +207,37 @@ A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 
 - **Session record.** The watcher records `codex` as the mode in `members/<key>`. The key is `CQ_SESSION_ID` if set, else `codex-B`. It never uses the Claude Code session IDs, because the watcher usually runs outside the Codex chat, and the session that started it must keep its own record.
 - `--to-codex` and `--to-inbox` cannot be used together (exit 64). `--codex-bin`, `--codex-prompt`, `--codex-check-seconds`, `--codex-queue-db` and `--debug` need `--to-codex`.
 
+## Watcher status and exit log
+
+`cq status --as B` prints one line from the files of `B`'s watcher or dispatcher. It uses the rule that `cq session-start` and cq-top use: the watcher runs when `heartbeat/B.pid` exists and the heartbeat is less than 90 seconds old. A watcher that was killed counts as running until its heartbeat is 90 seconds old. It never opens the lock file and writes nothing.
+
+```text
+running name=B pid=4242 heartbeat=12s mode=inbox
+stopped name=B why="no pid file" heartbeat=340s mode=inbox
+stopped name=B why="heartbeat 340s old" pid=4242 heartbeat=340s mode=inbox
+asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" heartbeat=900s mode=inbox
+```
+
+- The first word is the state; the exit code says the same: 0 `running`, 10 `stopped`, 7 `asleep`. A sleeping name is `asleep` even while its watcher still runs (it stops within 250 ms).
+- `why` is `no pid file`, `no heartbeat` or `heartbeat Ns old`. `pid` is the process ID in the pid file, and `heartbeat` the age of the last heartbeat, when there is one. `mode` is the mode in the `members/` record that names `B` (`monitor`, `inbox` or `codex`), or `unknown` without one.
+- A bad name exits 5; a root that is not initialised exits 70.
+
+`cq watch` appends one line to `CQ_ROOT/watch-exits.log` when a watcher that held the lock ends. A start refused with exit 5, and a start while the name is asleep, write nothing. The line never holds message text:
+
+```text
+2026-11-04T09:15:02Z name=B pid=4242 mode=inbox exit=0 reason="--max-seconds 60 reached"
+2026-11-04T09:20:11Z name=B pid=4300 mode=inbox exit=0 signal=SIGTERM reason="stopped by a signal (SIGTERM)"
+2026-11-04T09:25:30Z name=B pid=4350 mode=inbox exit=7 reason="asleep"
+2026-11-04T09:31:40Z name=B pid=4400 mode=monitor signal=CTRL_CLOSE_EVENT reason="console event CTRL_CLOSE_EVENT"
+2026-11-04T09:40:00Z name=B pid=4500 mode=inbox reason="stopped by --takeover from PID 4600"
+2026-11-04T09:52:13Z name=B pid=4600 mode=inbox reason="previous watcher ended without logging (last heartbeat 2026-11-04T09:51:50Z); found by PID 4700"
+```
+
+- The fields are the UTC time, the name, the process ID and mode of the watcher that ended, the exit code when the watcher knows it, the signal or console event when there was one, and the reason. An error gives `exit=<code> reason="error: <the cq: message>"`.
+- **Caught.** Every normal exit (`--max-seconds`, asleep, stdout closed, an error after the lock). With `--to-inbox` or `--to-codex`: Ctrl+C and Ctrl+Break on Windows, SIGINT, SIGTERM and SIGHUP on macOS and Linux. On Windows in every mode: a console close, logoff or shutdown, and, under a Monitor, Ctrl+C and Ctrl+Break; the line is written, then the process ends as before.
+- **Not caught.** A watcher that is killed outright cannot write its line: `TerminateProcess` on Windows (Task Manager, a stopped Monitor, `--takeover`), SIGKILL, and under a Monitor on macOS and Linux any signal. Its pid file stays. The next watcher for the name finds it and writes the line for it: `stopped by --takeover from PID N` after `--takeover`, else `previous watcher ended without logging (last heartbeat T)`. Holding the lock proves that the old process is gone. The `mode` of such a line is read from the `members/` record before the new watcher writes its own.
+- **Size.** When the log is over 1 MiB, the next watcher exit renames it to `watch-exits.log.old`, replacing the last one, and starts a new file.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -217,9 +249,10 @@ A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 
 | 4 | `done` or `dispatch` completion: the message is finished, but the reply was not sent. |
 | 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. |
 | 6 | `done`: the message is not claimed by this session. `requeue`: the message is not in this session's `rejected/` folder. |
-| 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. |
+| 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. `status`: the name is asleep. |
 | 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. |
 | 9 | `watch --to-codex`: `codex queue` failed 4 times in a row. Nothing wakes the Codex chat until the watcher is started again. |
+| 10 | `status`: no watcher runs for the name, and it is not asleep. |
 | 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value for `list --overdue`, a coordinator's `watch` or `cq-top`. |
 | 70 | Dispatch timeout/interruption (task stays claimed), or any other error (I/O, `CQ_ROOT` missing or not initialised). |
 
@@ -249,6 +282,8 @@ CQ_ROOT/
   idle/<name>.turn-end       the last turn end, written by cq turn-end and removed by the name's watcher
   idle/<name>.turn-end.lock  locked while the turn end is written, checked or removed
   PAUSE                      while it exists, watchers print nothing and cq send refuses
+  watch-exits.log            one line per watcher exit (see Watcher status and exit log)
+  watch-exits.log.old        the previous log, once it passed 1 MiB
 ```
 
 Message format: [`schema/message.v1.json`](../schema/message.v1.json). One file per message, `<id>.json`, UTF-8 without BOM. IDs are `<UTC yyyymmddThhmmssZ>-<from>-<4 hex>`. Readers ignore unknown fields.
