@@ -558,10 +558,11 @@ fn last_beat(root: &Root, name: &str) -> Option<jiff::Timestamp> {
         .or_else(|| fsutil::modified(&path).and_then(timefmt::from_system_time))
 }
 
-/// Called once the lock is held, before the pid file is written. A clean
-/// exit removes the pid file, so one that still names another process
-/// belongs to a holder that never wrote its exit line: write the line for
-/// it. Holding the lock proves that the holder is gone.
+/// Called once the lock is held, before the pid file is written. Every exit
+/// that writes its line removes the pid file (see `exitlog`), so one that
+/// still names another process belongs to a holder that never wrote its
+/// exit line: write the line for it. Holding the lock proves that the holder
+/// is gone.
 fn log_predecessor(root: &Root, name: &str, pid: u32, took_over: bool) {
     let Some(old) = read_pid(root, name).filter(|p| *p != pid) else {
         return;
@@ -888,5 +889,48 @@ mod tests {
             deliver_and_check(&root, &input, hold, false);
             assert!(!root.turn_end_marker("worker-a").exists(), "hold={hold}");
         }
+    }
+
+    /// A watcher that wrote its own line from a console event or a panic
+    /// leaves no pid file, so the next start does not log it again as one
+    /// that ended without logging. The only unit test that arms the
+    /// process-wide `exitlog::Guard`.
+    #[test]
+    fn a_logged_console_or_panic_exit_is_not_logged_again_on_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Root::at(dir.path().to_owned());
+        root.init().unwrap();
+        root.ensure_session_dirs("worker-a").unwrap();
+        let pid = std::process::id();
+        let start = |root: &Root| {
+            fs::write(root.pid_file("worker-a"), format!("{pid}\n")).unwrap();
+            exitlog::Guard::arm(root, "worker-a", members::Mode::Inbox)
+        };
+        let restart = |root: &Root| log_predecessor(root, "worker-a", pid + 1, false);
+
+        let guard = start(&root);
+        exitlog::signalled("CTRL_CLOSE_EVENT");
+        assert!(!root.pid_file("worker-a").exists());
+        drop(guard);
+        restart(&root);
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = start(&root);
+            panic!("test panic");
+        }));
+        assert!(panicked.is_err());
+        assert!(!root.pid_file("worker-a").exists());
+        restart(&root);
+
+        let log = fs::read_to_string(root.watch_exits()).unwrap();
+        let reasons: Vec<&str> = log
+            .lines()
+            .map(|l| l.split_once(" reason=").unwrap().1)
+            .collect();
+        assert_eq!(
+            reasons,
+            [r#""console event CTRL_CLOSE_EVENT""#, r#""panicked""#],
+            "{log}"
+        );
     }
 }

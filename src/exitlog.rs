@@ -16,19 +16,28 @@
 //!
 //! A watcher killed outright (`TerminateProcess` on Windows, which is how
 //! `--takeover` stops one there, or SIGKILL) cannot write its line. The next
-//! watcher for the name then finds the old pid file, which a clean exit
-//! removes, and writes the line for it: after `--takeover` it says so, else
-//! the old watcher ended without logging. Holding the lock proves that the
-//! old process is gone, so no process check is needed.
+//! watcher for the name then finds the old pid file, which every exit that
+//! wrote its line removes, and writes the line for it: after `--takeover` it
+//! says so, else the old watcher ended without logging. Holding the lock
+//! proves that the old process is gone, so no process check is needed.
 //!
 //! The file only grows by appends. When it is over `MAX_BYTES`, it is
 //! renamed to `watch-exits.log.old`, replacing the last one, before the next
-//! line. A failed write goes to stderr; the watcher's exit does not change.
+//! line. Watchers hold `watch-exits.log.lock` around the size check, the
+//! rename and the append, so two exits at once neither rotate twice nor
+//! lose a line. The wait for it is short (`LOCK_WAIT`), because a console
+//! event leaves the process only a few seconds; after it the line is
+//! appended without the lock and without a rename. A failed write goes to
+//! stderr; the watcher's exit does not change.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
+use crate::fsutil;
 
 use crate::members::Mode;
 use crate::message::event_text;
@@ -37,6 +46,8 @@ use crate::timefmt::{self, rfc3339};
 
 /// The log is renamed to `.old` once it is larger than this.
 pub const MAX_BYTES: u64 = 1024 * 1024;
+/// The longest wait for the log's lock before a line is appended without it.
+const LOCK_WAIT: Duration = Duration::from_millis(500);
 /// The longest reason kept, in characters.
 const REASON_MAX: usize = 300;
 
@@ -78,33 +89,71 @@ pub fn write(root: &Root, exit: &Exit) {
     write_to(&root.watch_exits(), exit);
 }
 
-fn write_to(path: &Path, exit: &Exit) {
-    if let Err(e) = append(path, &exit.line()) {
-        let _ = writeln!(
-            io::stderr(),
-            "cq watch: could not write {}: {e}",
-            path.display()
-        );
+/// True when the line was written.
+fn write_to(path: &Path, exit: &Exit) -> bool {
+    match append(path, &exit.line()) {
+        Ok(()) => true,
+        Err(e) => {
+            let _ = writeln!(
+                io::stderr(),
+                "cq watch: could not write {}: {e}",
+                path.display()
+            );
+            false
+        }
     }
 }
 
 /// Append `line` and a newline, after renaming a log over `MAX_BYTES` to
-/// `<path>.old`. One `write_all` per line, so lines from two watchers do not
-/// mix.
+/// `<path>.old`, holding `<path>.lock` (see the module notes).
 pub fn append(path: &Path, line: &str) -> io::Result<()> {
-    if fs::metadata(path).is_ok_and(|m| m.len() > MAX_BYTES) {
-        // Another watcher may have rotated it first; the append then goes
-        // to the new file either way.
+    append_with(path, line, MAX_BYTES, LOCK_WAIT)
+}
+
+fn append_with(path: &Path, line: &str, max_bytes: u64, wait: Duration) -> io::Result<()> {
+    // Held until the line is appended.
+    let lock = lock(&lock_path(path), wait);
+    if lock.is_some() && fs::metadata(path).is_ok_and(|m| m.len() > max_bytes) {
+        // A failed rename leaves the log to grow; the line still goes in.
         let _ = fs::rename(path, old_path(path));
     }
+    // One `write_all` per line, so a line appended without the lock does
+    // not mix with another.
     let mut f = OpenOptions::new().create(true).append(true).open(path)?;
-    f.write_all(format!("{line}\n").as_bytes())
+    let result = f.write_all(format!("{line}\n").as_bytes());
+    drop(lock);
+    result
+}
+
+/// The locked file, or `None` when the lock is not free within `wait` or
+/// cannot be taken at all.
+fn lock(path: &Path, wait: Duration) -> Option<fs::File> {
+    let file = fsutil::open_lock_file(path).ok()?;
+    let until = Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Some(file),
+            Err(TryLockError::WouldBlock) if Instant::now() < until => {
+                sleep(Duration::from_millis(5));
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 /// `<path>.old`
 pub fn old_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".old")
+}
+
+/// `<path>.lock`
+pub fn lock_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".lock")
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
-    s.push(".old");
+    s.push(suffix);
     PathBuf::from(s)
 }
 
@@ -112,6 +161,8 @@ pub fn old_path(path: &Path) -> PathBuf {
 /// handler reads it from another thread (see `signalled`).
 struct Running {
     path: PathBuf,
+    /// `heartbeat/<name>.pid`, removed once the line is written.
+    pid_file: PathBuf,
     name: String,
     pid: u32,
     mode: Mode,
@@ -133,6 +184,7 @@ impl Guard {
     pub fn arm(root: &Root, name: &str, mode: Mode) -> Guard {
         *running() = Some(Running {
             path: root.watch_exits(),
+            pid_file: root.pid_file(name),
             name: name.to_owned(),
             pid: std::process::id(),
             mode,
@@ -165,11 +217,16 @@ pub fn signalled(signal: &str) {
     log_once(None, Some(signal), &format!("console event {signal}"));
 }
 
+/// Once the line is written, remove the pid file if it still names this
+/// process, so the next watcher does not log the exit again as one that
+/// ended without logging. The name's lock is still held here: Windows runs
+/// the console handler before it ends the process, and `Guard` is dropped
+/// before the lock.
 fn log_once(code: Option<i32>, signal: Option<&str>, reason: &str) {
     let Some(r) = running().take() else {
         return;
     };
-    write_to(
+    let written = write_to(
         &r.path,
         &Exit {
             name: &r.name,
@@ -180,6 +237,9 @@ fn log_once(code: Option<i32>, signal: Option<&str>, reason: &str) {
             reason,
         },
     );
+    if written && fs::read_to_string(&r.pid_file).is_ok_and(|s| s.trim() == r.pid.to_string()) {
+        let _ = fs::remove_file(&r.pid_file);
+    }
 }
 
 #[cfg(test)]
@@ -228,5 +288,68 @@ mod tests {
         assert_eq!(fs::metadata(old_path(&path)).unwrap().len(), MAX_BYTES + 1);
         append(&path, "next").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "new\nnext\n");
+    }
+
+    /// Writers that all start at once, with a limit that the lines pass
+    /// once but not twice: exactly one rename, and every line kept whole in
+    /// the log or `.old`. Each thread opens the lock file itself, which
+    /// conflicts as a second process would.
+    #[test]
+    fn concurrent_appends_rotate_once_and_keep_every_line() {
+        const ROUNDS: usize = 10;
+        const WRITERS: usize = 64;
+        const LINES: usize = 2;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watch-exits.log");
+        let line = |w: usize, i: usize| format!("writer={w:02} line={i:02} {}", "x".repeat(20));
+        // The writers' lines fit under the limit; the full log is over it.
+        let limit = (WRITERS * LINES * (line(0, 0).len() + 1)) as u64;
+        let full = format!("{}\n", "f".repeat(limit as usize));
+        let start = std::sync::Barrier::new(WRITERS);
+        for round in 0..ROUNDS {
+            let _ = fs::remove_file(old_path(&path));
+            fs::write(&path, &full).unwrap();
+            std::thread::scope(|s| {
+                for w in 0..WRITERS {
+                    let (path, start) = (&path, &start);
+                    s.spawn(move || {
+                        start.wait();
+                        for i in 0..LINES {
+                            append_with(path, &line(w, i), limit, Duration::from_secs(10)).unwrap();
+                        }
+                    });
+                }
+            });
+            let old = fs::read_to_string(old_path(&path)).unwrap();
+            assert_eq!(
+                old.len(),
+                full.len(),
+                "round {round}: .old is not the full log"
+            );
+            let new = fs::read_to_string(&path).unwrap();
+            let mut got: Vec<&str> = new.lines().collect();
+            got.sort_unstable();
+            let mut want: Vec<String> = (0..WRITERS)
+                .flat_map(|w| (0..LINES).map(move |i| line(w, i)))
+                .collect();
+            want.sort_unstable();
+            assert_eq!(got, want, "round {round}");
+        }
+    }
+
+    /// A lock held past the wait: the line still goes in, and the log is
+    /// not renamed without the lock.
+    #[test]
+    fn a_busy_lock_still_gets_the_line_without_a_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watch-exits.log");
+        fs::write(&path, "old\n").unwrap();
+        let held = lock(&lock_path(&path), Duration::ZERO).unwrap();
+        let started = Instant::now();
+        append_with(&path, "new", 1, Duration::from_millis(50)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(held);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old\nnew\n");
+        assert!(!old_path(&path).exists());
     }
 }

@@ -235,8 +235,8 @@ asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" 
 
 - The fields are the UTC time, the name, the process ID and mode of the watcher that ended, the exit code when the watcher knows it, the signal or console event when there was one, and the reason. An error gives `exit=<code> reason="error: <the cq: message>"`.
 - **Caught.** Every normal exit (`--max-seconds`, asleep, stdout closed, an error after the lock). With `--to-inbox` or `--to-codex`: Ctrl+C and Ctrl+Break on Windows, SIGINT, SIGTERM and SIGHUP on macOS and Linux. On Windows in every mode: a console close, logoff or shutdown, and, under a Monitor, Ctrl+C and Ctrl+Break; the line is written, then the process ends as before.
-- **Not caught.** A watcher that is killed outright cannot write its line: `TerminateProcess` on Windows (Task Manager, a stopped Monitor, `--takeover`), SIGKILL, and under a Monitor on macOS and Linux any signal. Its pid file stays. The next watcher for the name finds it and writes the line for it: `stopped by --takeover from PID N` after `--takeover`, else `previous watcher ended without logging (last heartbeat T)`. Holding the lock proves that the old process is gone. The `mode` of such a line is read from the `members/` record before the new watcher writes its own.
-- **Size.** When the log is over 1 MiB, the next watcher exit renames it to `watch-exits.log.old`, replacing the last one, and starts a new file.
+- **Not caught.** A watcher that is killed outright cannot write its line: `TerminateProcess` on Windows (Task Manager, a stopped Monitor, `--takeover`), SIGKILL, and under a Monitor on macOS and Linux any signal. Its pid file stays; every exit that writes its line removes it. The next watcher for the name finds it and writes the line for it: `stopped by --takeover from PID N` after `--takeover`, else `previous watcher ended without logging (last heartbeat T)`. Holding the lock proves that the old process is gone. The `mode` of such a line is read from the `members/` record before the new watcher writes its own.
+- **Size.** When the log is over 1 MiB, the next watcher exit renames it to `watch-exits.log.old`, replacing the last one, and starts a new file. Watchers lock `watch-exits.log.lock` around the size check, the rename and the append, so exits at the same time rename once and keep every line. A watcher waits at most 0.5 seconds for the lock; after that it appends its line without the lock and does not rename.
 
 ## Exit codes
 
@@ -283,6 +283,7 @@ CQ_ROOT/
   idle/<name>.turn-end.lock  locked while the turn end is written, checked or removed
   PAUSE                      while it exists, watchers print nothing and cq send refuses
   watch-exits.log            one line per watcher exit (see Watcher status and exit log)
+  watch-exits.log.lock       locked while a watcher appends its line or renames the log
   watch-exits.log.old        the previous log, once it passed 1 MiB
 ```
 
