@@ -367,10 +367,9 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
         }
     };
 
-    // Leave the pid file to a watcher that took over.
-    if fs::read_to_string(&pid_file).is_ok_and(|s| s.trim() == pid.to_string()) {
-        let _ = fs::remove_file(&pid_file);
-    }
+    // `finish` removes the pid file once the exit line is written, and
+    // leaves it to a watcher that took over. A line it could not write
+    // leaves the pid file, so the next start logs this exit.
     let (reason, ended) = match end {
         Ok(v) => v,
         Err(e) => {
@@ -893,10 +892,12 @@ mod tests {
 
     /// A watcher that wrote its own line from a console event or a panic
     /// leaves no pid file, so the next start does not log it again as one
-    /// that ended without logging. The only unit test that arms the
-    /// process-wide `exitlog::Guard`.
+    /// that ended without logging.
     #[test]
     fn a_logged_console_or_panic_exit_is_not_logged_again_on_restart() {
+        let _serial = exitlog::TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let root = Root::at(dir.path().to_owned());
         root.init().unwrap();
