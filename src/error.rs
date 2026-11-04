@@ -23,7 +23,7 @@ pub mod exit {
     /// the message is not in this session's `rejected/`.
     pub const NOT_FOUND: i32 = 6;
     /// `cq watch`: the name is asleep (`sleep/<name>` exists). The session
-    /// does not re-arm.
+    /// does not re-arm. `cq status`: the name is asleep.
     pub const ASLEEP: i32 = 7;
     /// `cq watch --to-inbox`: the session's inbox could not be reached
     /// after every retry. The session has probably ended.
@@ -31,6 +31,9 @@ pub mod exit {
     /// `cq watch --to-codex`: `codex queue` failed after every retry, so
     /// the Codex chat is not being woken.
     pub const CODEX_QUEUE_FAILED: i32 = 9;
+    /// `cq status`: no watcher or dispatcher runs for the name, and it is
+    /// not asleep.
+    pub const NOT_RUNNING: i32 = 10;
     /// Bad command-line arguments or bad JSON input.
     pub const USAGE: i32 = 64;
     /// Any other error (I/O, `CQ_ROOT` missing).

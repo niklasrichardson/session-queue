@@ -135,6 +135,15 @@ pub fn mode_for(root: &Root, key: &str) -> Mode {
     Mode::parse(text.lines().nth(3))
 }
 
+/// The watcher mode last recorded for `name`, by whichever session owns
+/// it. `None` when no session record names it.
+pub fn mode_of_name(root: &Root, name: &str) -> Option<Mode> {
+    members(root)
+        .into_iter()
+        .find(|(_, n)| n == name)
+        .map(|(key, _)| mode_for(root, &key))
+}
+
 /// Remove every record of `name`. Returns the keys removed.
 pub fn leave(root: &Root, name: &str) -> Result<Vec<String>> {
     let dir = root.members();

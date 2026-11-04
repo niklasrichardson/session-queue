@@ -69,7 +69,8 @@ Implementation choices that the specification left open, and what `cq` does. The
 
 - **A watcher that dies silently.** An inbox watcher posts a stopped message when its name is put to sleep, when it reaches `--max-seconds`, on an error, or (on macOS and Linux) on a signal. A watcher that is killed without warning posts nothing: for example, if the desktop app stops the session's processes. The session is not told, so it does not restart the watcher, and messages wait in its inbox. `cq send` does not warn the sender.
 - **Monitor mode heals itself.** The Monitor expires at least every 30 minutes, and the session re-arms it. So a dead Monitor-mode watcher is replaced within 30 minutes. Inbox mode has no such timer.
-- **How to spot it.** The watcher's heartbeat stops. [cq-top](CQ-TOP.md) shows it as `STALE` after 90 seconds. After a `/clear`, `cq session-start` also tells the session that its inbox watcher has stopped. To restart it, run `/cq-start` in that session.
+- **How to spot it.** The watcher's heartbeat stops. [cq-top](CQ-TOP.md) shows it as `STALE` after 90 seconds, and `cq status --as NAME` exits 10. After a `/clear`, `cq session-start` also tells the session that its inbox watcher has stopped. To restart it, run `/cq-start` in that session.
+- **Exit log.** Each watcher that held the lock appends one line to `watch-exits.log` when it ends, with its reason. A watcher killed outright cannot, so the next watcher for the name writes the line for it when it finds the old pid file: a clean exit removes that file, and holding the lock proves the old process is gone, so no process check is needed. This turns a silent death into evidence after the fact. Under a Monitor on macOS and Linux no signal handler is installed: one that writes a file is not async-signal-safe, and catching the signal would change the exit status the Monitor sees (see [Watcher status and exit log](COMMANDS.md#watcher-status-and-exit-log)).
 
 ## Codex wake
 

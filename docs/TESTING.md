@@ -14,6 +14,17 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Watcher status and exit log on Windows, 4 November 2026
+
+`cq status` and `CQ_ROOT/watch-exits.log` (see [Watcher status and exit log](COMMANDS.md#watcher-status-and-exit-log)). Checked on Windows 11 with `cargo test --workspace` (286 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`. All passed.
+
+- `tests/status.rs` (7 tests) runs the real `cq` against temporary queue roots, with no session key for `cq status`. It covers: `stopped` (exit 10) with no pid file; `running` (exit 0) with the watcher's process ID and the mode from its `members/` record; `asleep` (exit 7) after `cq sleep`, then `stopped` after `cq wake`; a pid file with no heartbeat and with a 300-second-old heartbeat; a bad name (exit 5).
+- The same file covers the log: one line on `--max-seconds` (exit 0) and on sleep (exit 7); no line for a start refused with exit 5 or asleep at start; after `--takeover`, a line for the old watcher written by the new one; after a kill, a `previous watcher ended without logging` line with the old watcher's last heartbeat; a log over 1 MiB renamed to `.old`.
+- Unit tests in `src/exitlog.rs` cover the line format and quoting, and the rename. `concurrent_appends_rotate_once_and_keep_every_line` starts 64 writers at once on a full log, 10 times: each time the log is renamed once and every line is kept whole. Without the lock it failed in the first round. `an_exit_that_cannot_lock_writes_nothing_and_keeps_its_pid_file` holds the lock past the wait and rotates the log meanwhile: the waiting exit writes nothing to either file and keeps its pid file.
+- `watch::tests::a_logged_console_or_panic_exit_is_not_logged_again_on_restart` writes the exit line from a console event and from a panic, then runs the start-up check: no `previous watcher ended without logging` line follows.
+
+Not verified: the Windows console events (Ctrl+C, Ctrl+Break, close, logoff, shutdown) were not sent to a watcher; the signal lines on macOS and Linux; the Unix code was not compiled, because the bundled SQLite needs a C cross-compiler.
+
 ## macOS, 29 October 2026
 
 Reported in [#1](https://github.com/niklasrichardson/session-queue/issues/1). Machine: macOS 26.7.1, Apple silicon, Rust 1.99.1, at commit 8565c92. Setup followed [Setup](SETUP.md).

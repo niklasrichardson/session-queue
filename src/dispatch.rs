@@ -123,7 +123,7 @@ pub fn dispatch(root: &Root, opts: &Options) -> Result<()> {
     }
     platform::install_interrupt_handler()?;
     root.ensure_session_dirs(&opts.name)?;
-    let _lock = watch::take_lock(root, &opts.name, false)?;
+    let (_lock, _) = watch::take_lock(root, &opts.name, false)?;
     let pid_file = PidFile {
         path: root.pid_file(&opts.name),
         pid: std::process::id().to_string(),
