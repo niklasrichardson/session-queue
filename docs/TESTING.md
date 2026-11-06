@@ -19,13 +19,14 @@ Tested live in the desktop app on Windows: re-arming after each 30-minute watche
 A finding from live use on Windows 11, not a test of a cq change. See [Check that agents write the root for real](SETUP.md#check-that-agents-write-the-root-for-real).
 
 - Claude Code's Bash tool ran in a sandbox that redirected writes under `%LOCALAPPDATA%` (`C:\Users\<user>\AppData\Local`) into a private overlay.
-- Later Bash commands in that session saw the files. PowerShell, other programs and other sessions did not.
+- Later Bash commands in that session saw the files. PowerShell and other programs did not. Whether other sandboxed sessions shared that copy was not checked.
 - Writes under the project's working folders were real.
 - A queue root at the default `%LOCALAPPDATA%\cq` therefore split into separate copies. Agents that ran `cq` through such a sandbox saw one queue. Real programs (watchers started elsewhere, Codex, `cq-top`) saw another.
 
 Not checked:
 
 - Whether this happens on every Claude Code install, or only with some sandbox settings.
+- Whether two sandboxed sessions share one private copy.
 - macOS and Linux.
 
 ## Root config.toml and the watcher script on Windows, 6 November 2026

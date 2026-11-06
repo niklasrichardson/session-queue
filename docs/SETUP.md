@@ -149,11 +149,11 @@ Put your own cq files in the queue root too. `cq` and `cq-top` ignore files and 
 
 ### Check that agents write the root for real
 
-Some agent sandboxes do not write every folder for real. On Windows on 6 November 2026, Claude Code's Bash tool redirected writes under `%LOCALAPPDATA%` into a private copy. Later Bash commands in that session saw the files. PowerShell, other programs and other sessions did not. With the default root, the queue then split into separate copies: sessions that ran `cq` through the sandbox saw one queue, and watchers, Codex and `cq-top` saw another. Details are in [Test status](TESTING.md#sandbox-writes-to-the-default-root-on-windows-6-november-2026).
+Some agent sandboxes do not write every folder for real. On Windows on 6 November 2026, Claude Code's Bash tool redirected writes under `%LOCALAPPDATA%` into a private copy. Later Bash commands in that session saw the files. PowerShell and other programs did not. Whether other sandboxed sessions shared that copy was not checked. With the default root, the queue then split into separate copies: sessions that ran `cq` through the sandbox saw one queue, and watchers, Codex and `cq-top` saw another. Details are in [Test status](TESTING.md#sandbox-writes-to-the-default-root-on-windows-6-november-2026).
 
 Before you use the default root, check each agent:
 
-1. From the agent's own shell (the tool that it uses to run `cq`), create a test file in the root. For example, in Git Bash: `touch "$LOCALAPPDATA/cq/sandbox-check.txt"`.
+1. Make sure the root exists (run `cq init` from a normal terminal). Then, from the agent's own shell (the tool that it uses to run `cq`), create a test file in the root. For example, in Git Bash: `touch "$LOCALAPPDATA/cq/sandbox-check.txt"`.
 2. From a normal terminal, check that the file is there. In PowerShell: `Test-Path "$env:LOCALAPPDATA\cq\sandbox-check.txt"`. Expected result: `True`.
 3. Delete the test file.
 
