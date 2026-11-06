@@ -105,7 +105,7 @@ Both forms ran against a test queue in PowerShell 7 and Git Bash outside Codex. 
 
 `cq watch --as NAME --to-codex THREAD` watches NAME's inbox like any watcher. For each batch of new messages, it runs `codex queue` once with a fixed prompt. Codex then starts a turn in that chat, and the chat handles the queue as its `AGENTS.md` section says. An idle chat runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#wake-a-codex-chat).
 
-Live tests on Windows: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat within about 7 to 12 seconds. The native `cq watch --to-codex` then woke two idle Desktop chats, which each claimed a queued message within about 6 seconds. On 29 Oct 2026, a review task sent through it (send, wake, claim, reply) took 52 seconds from end to end.
+Live tests on Windows: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat within about 7 to 12 seconds. The native `cq watch --to-codex` then woke two idle Desktop chats, which each claimed a queued message within about 6 seconds. On 29 Oct 2026, a review task sent through it (send, wake, claim, reply) took 52 seconds from end to end. On 3 Nov 2026, the native watcher woke two interactive Codex CLI chats, which each handled a message, also after about 50 minutes idle ([Test status](TESTING.md#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026)).
 
 Prerequisites:
 
@@ -204,6 +204,7 @@ A Codex chat needs no hook:
 - Every wake prompt names the queue name and points the chat at its `AGENTS.md` section, so each woken turn is told its rules again.
 - A new chat has a new thread ID. Start the watcher again with the new ID and `--takeover`, which stops the old watcher.
 - After the computer restarts, start the watcher again. If the name is asleep, run `cq wake --as NAME NAME` first. If messages are already waiting, it queues one check at start.
+- A restart closes an interactive Codex CLI chat. Reopen each CLI chat with `codex resume THREAD_ID`, then start (or keep) its watcher. In a live test on 6 Nov 2026, the restarted watchers queued checks that nothing took, and sent the "has not taken" warning. After `codex resume THREAD_ID` for each chat, the chats took the waiting messages ([Test status](TESTING.md#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026)).
 
 - After a `cq` upgrade, the watcher keeps running the old binary. Start it again with `--takeover` (see [Upgrading while watchers run](SETUP.md#upgrading-while-watchers-run)).
 
@@ -228,7 +229,7 @@ Four routes were tested on Windows:
 
 | Route | Chat context | Pickup latency | Test status |
 | --- | --- | --- | --- |
-| `cq watch --to-codex` (`codex queue`) | Keeps the existing chat's context | Seconds: an idle chat woke within about 7 to 12 seconds in the live test | Live tests: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat, and the native watcher woke two Desktop chats (claimed within about 6 seconds); on 29 Oct 2026, a review task round trip through the native watcher took 52 seconds. An earlier prototype script also ran a message queued during a turn after that turn, and kept a burst of 3 in order ([issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). |
+| `cq watch --to-codex` (`codex queue`) | Keeps the existing chat's context | Seconds: an idle chat woke within about 7 to 12 seconds in the live test | Live tests: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat, and the native watcher woke two Desktop chats (claimed within about 6 seconds); on 29 Oct 2026, a review task round trip through the native watcher took 52 seconds; on 3 Nov 2026, the native watcher woke two interactive Codex CLI chats, which handled a message in 38 seconds and in 2 minutes 23 seconds. An earlier prototype script also ran a message queued during a turn after that turn, and kept a burst of 3 in order ([issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). |
 | Same-chat scheduled automation | Keeps the existing chat's context | Up to the configured interval under normal scheduling; a busy chat or delayed scheduler can add time | A one-minute heartbeat woke the existing desktop chat, which claimed a task from a Claude Code session and replied. The Claude Code session confirmed receipt with the literal text intact. |
 | `cq dispatch` | Fresh `codex exec` per task; no previous chat context | Seconds to pick up work: scans once a second when idle. Agent startup and task execution add time. | Native dispatcher integration tests and a real Codex task passed. |
 | Custom app-server bridge | Can target the thread managed by the custom client | Event-driven; no latency guarantee measured | Brief bounded test only: an explicit `turn/start.toolOutput` request started a turn in an idle ephemeral thread. No persistent bridge ships with cq. |

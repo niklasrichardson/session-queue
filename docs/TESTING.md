@@ -38,6 +38,28 @@ Not checked:
 - The build-time defaults (`CQ_RULES_PATH`, `CQ_DEFAULT_TZ`, `CQ_DEFAULT_TZ_LABEL`) are set at compile time, so only the unit test checks their place in the order.
 - The script was parsed with PowerShell 7.6 (0 errors). Its config checks were run against bad configs, and its output against a fake `cq` that echoes its arguments and exits 3. Six watchers were run against a fake `cq` that prints a start line, waits 5 seconds, then prints a done line: all six started within 0.1 seconds. Before the fix, the sixth started only after the first five ended, because `Start-ThreadJob` runs at most 5 jobs by default. It has not been run with real watchers, and closing the window or pressing Ctrl+C was not tested.
 
+## Antigravity CLI live use on Windows, 6 November 2026
+
+Live use of `cq watch --to-agy` with a real `agy` on Windows 11. The automated tests, with a fake `agy`, and the hand tests of the `agy` command are in [Antigravity CLI wake](#antigravity-cli-wake-on-windows-6-november-2026).
+
+- A test name's watcher woke a throwaway conversation. The turn ended with status `SUCCESS` after 22 seconds. That conversation had no queue rules, so it did not claim the message.
+- A worker conversation with the queue rules in its context: one turn started 3 seconds after the message was sent and ended after 58 seconds. The message was claimed and done.
+- A second message was sent while the same conversation was also open in an interactive `agy` window. The print-mode turn claimed and finished it. The open window did not show that turn. About 5 minutes later, the interactive session exited with `Read loop ... context canceled`. After it was reopened, the conversation history included the print-mode turn. The cause of the exit is not known.
+- The `duration_seconds` value that `agy` reported did not match the turn's wall time: for example, 3600 for a 22-second turn. `cq` only logs this value.
+- No way is known to send a prompt into an `agy` session that is already open. Only the CLI help was checked: `remote-control` and `acp` do not offer it.
+
+Not tested: the Antigravity desktop app with `cq`; a long run; macOS and Linux.
+
+## Codex CLI with the native watcher on Windows, 3 and 6 November 2026
+
+Live use with real agents on Windows 11: interactive Codex CLI chats, each woken by its own `cq watch --to-codex` watcher.
+
+- 3 Nov 2026: two interactive Codex CLI chats each had their own native watcher. Each chat woke by itself on a queued message and handled it: one in 38 seconds, one in 2 minutes 23 seconds.
+- 3 Nov 2026, after about 50 minutes idle: both chats marked a message done within 19 to 25 seconds. Neither watcher sent a "has not taken" warning. An idle time of several hours was not tested.
+- 6 Nov 2026: a PC restart closed the CLI chats. The watchers were started again. They queued checks that nothing took, and each sent the `NAME: Codex chat has not taken a queued check` warning, as designed. Then `codex resume THREAD_ID` was run for each chat, and the chats took the waiting messages.
+
+Not tested: macOS and Linux.
+
 ## Antigravity CLI wake on Windows, 6 November 2026
 
 `cq watch --to-agy` (experimental, see [Commands](COMMANDS.md#wake-an-antigravity-cli-conversation)). Checked on Windows 11 with `cargo test --workspace` (315 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check`. All passed.
@@ -56,7 +78,7 @@ Tests, all with a fake `agy`; no test runs the real one:
 - `tests/to_agy.rs` (10 tests) runs the real `cq` against a temporary queue root and a fake `agy` (`tests/support/fake_agy.rs`) that records its arguments. The tests check: two waiting messages give one turn, and a later message a second; the arguments are exactly `--conversation ID -p PROMPT --output-format json`, and no subject, body, sender name or ID reaches them; the `response` text is never printed; the temporary output files are removed; old `cq-agy-*` output files in the temp folder are deleted at start and after each turn, and other files are kept; `cq sleep` stops the watcher with exit 7; a name asleep at start exits 7 with no turn; `--agy-prompt` replaces the prompt; a non-zero exit, a status other than `SUCCESS` and no JSON each give 4 turns, then exit 11; another `conversation_id` gives 1 turn, then exit 11; a slow turn does not block the watcher, messages during it give one more turn, and `cq sleep` stops the watcher within 3 seconds while a turn runs; bad flag combinations exit 64, `--codex-check-seconds` with `--to-agy` among them; the record is `members/agy-NAME` with mode `agy`, `CQ_SESSION_ID` sets the key, and `cq status` shows `mode=agy`; `cq session-start` for an `agy` key says not to start a watcher, both while the watcher runs and after it stops. The fake `agy` fails if `CLAUDE_CODE_MESSAGING_TOKEN` reaches it.
 - cq-top: `--to-agy` in a process's arguments and an `agy` record show the mode `agy` and the agent `gemini`; the conversation ID is read from `--to-agy ID` and `--to-agy=ID`; an `agy -p` turn is not counted as a conversation's process.
 
-Not verified: `cq watch --to-agy` with a real `agy`; a turn while the same conversation is open in an interactive `agy --conversation CONVERSATION_ID`; a long run; macOS and Linux at run time.
+Not verified by these tests: `cq watch --to-agy` with a real `agy`; a turn while the same conversation is open in an interactive `agy --conversation CONVERSATION_ID`. Both were later tried in live use: see [Antigravity CLI live use](#antigravity-cli-live-use-on-windows-6-november-2026). Also not verified: a long run; macOS and Linux at run time.
 
 ## Monitor tasks and the idle alert on Windows, 6 November 2026
 
@@ -132,7 +154,7 @@ Not verified: the keys pressed in a real terminal; the screens at run time on ma
 - `tests/to_codex.rs` (10 tests) runs the real `cq` against a temporary queue root and a fake `codex` (`tests/support/fake_codex_queue.rs`) that records its arguments. The tests check: two waiting messages give one call, and a later message a second; the arguments are exactly `queue --thread THREAD --message PROMPT`, and no subject, body, sender name or ID reaches them; one stdout line per call; `cq sleep` stops the watcher with exit 7 and no call; a name asleep at start exits 7 with no call; `--codex-prompt` replaces the prompt; a non-zero exit, and exit 0 without `Queued message`, each give 4 calls then exit 9; bad flag combinations exit 64; the record is `members/codex-NAME` with mode `codex`, and a Claude Code session's own record is kept; `CQ_SESSION_ID` sets the key; `cq session-start` for a `codex` key says not to start a watcher, both while the watcher runs and after it stops; with `--codex-check-seconds 1`, an item still in a fake `queue_1.sqlite` in `CODEX_HOME` gives one "has not taken" line and a consumed one none; a missing database gives no line, the watcher keeps going, and `--debug` says why once; the database is found in a SQLite home apart from `CODEX_HOME`, through `sqlite_home` in `config.toml` (over a decoy `CODEX_SQLITE_HOME`), through `CODEX_SQLITE_HOME`, and through `--codex-queue-db`. Every test sets `CODEX_HOME` to a temporary folder, so no test reads the real Codex database.
 - cq-top: a `codex` record and `--to-codex` in a process's arguments show the mode `codex`.
 
-Live on Windows 11: on 28 Oct 2026, `cq watch --to-codex` woke two idle Codex Desktop chats, which each claimed a queued message within about 6 seconds; on 29 Oct 2026, a review task round trip (send, wake, claim, reply) took 52 seconds. Not tested with the native watcher: an interactive Codex CLI chat (`codex queue` alone woke one, see [issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). Not verified: a message queued while the Codex app is closed ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)); a long run; macOS and Linux at run time.
+Live on Windows 11: on 28 Oct 2026, `cq watch --to-codex` woke two idle Codex Desktop chats, which each claimed a queued message within about 6 seconds; on 29 Oct 2026, a review task round trip (send, wake, claim, reply) took 52 seconds. When this entry was written, the native watcher was not tested with an interactive Codex CLI chat (`codex queue` alone woke one, see [issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). It was on 3 Nov 2026: see [Codex CLI with the native watcher](#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026). Not verified: a message queued while the Codex app is closed ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)); a long run; macOS and Linux at run time.
 
 ## Inbox mode on Windows, 28 October 2026
 
