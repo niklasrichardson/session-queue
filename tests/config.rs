@@ -1,5 +1,5 @@
 //! `config.toml` in the queue root: its settings, their order against the
-//! environment variables, and the errors for a file that cannot be used.
+//! environment variables, and the warning for a file with problems.
 
 mod common;
 
@@ -88,63 +88,117 @@ fn rules_come_from_the_file_unless_cq_rules_is_set() {
     assert!(text.contains(&format!("re-read {RULES} and")), "{text}");
 }
 
-/// An unknown key stops every command that uses the queue, a watcher
-/// included, with exit 64 and a message that names the file and the key.
-/// `init` and the hooks still run.
+/// The one warning line for the file in `err`, else a failure that shows
+/// `err`.
+fn warning<'a>(env: &Env, err: &'a str) -> &'a str {
+    let want = format!("cq: warning: {}: ", env.path("config.toml").display());
+    let lines: Vec<&str> = err.lines().filter(|l| l.starts_with(&want)).collect();
+    assert_eq!(lines.len(), 1, "{err}");
+    lines[0]
+}
+
+/// An unknown key never stops a command, a watcher included. Each command
+/// prints one warning that names the file and the key, and the other keys
+/// still apply.
 #[test]
-fn an_unknown_key_is_refused_by_name() {
+fn an_unknown_key_warns_by_name_and_the_other_keys_still_apply() {
     let env = Env::new();
     plant_noon(&env);
-    write_config(&env, "tz = 'Europe/Paris'\ntz_lable = 'Paris'\n");
+    write_config(
+        &env,
+        "tz = 'Europe/Paris'\ntz_label = 'Paris'\ntz_lable = 'x'\n",
+    );
 
-    for args in [
-        &["list", "--as", "b"][..],
-        &["watch", "--as", "b", "--max-seconds", "1"],
-        &["status", "--as", "b"],
+    let out = run_without_env(&env, &["list", "--as", "b"]);
+    let line = list_line(&out);
+    assert!(line.contains("(13:00 Paris) "), "{line}");
+    let err = stderr(&out);
+    assert!(
+        warning(&env, &err).contains("unknown key \"tz_lable\""),
+        "{err}"
+    );
+    // `status` gives 10: no watcher runs for b.
+    for (args, want) in [
+        (&["watch", "--as", "b", "--max-seconds", "1"][..], 0),
+        (&["status", "--as", "b"], 10),
+        (&["init"], 0),
     ] {
         let out = env.run(args, None);
-        assert_eq!(code(&out), 64, "{args:?}: {}", stderr(&out));
-        let err = stderr(&out);
-        assert!(err.starts_with("cq: "), "{err}");
-        assert!(
-            err.contains("config.toml: unknown key \"tz_lable\""),
-            "{err}"
-        );
+        assert_eq!(code(&out), want, "{args:?}: {}", stderr(&out));
+        warning(&env, &stderr(&out));
     }
     let out = env.send_raw(&["--from", "a", "--to", "b", "--type", "info"], "s", "b");
-    assert_eq!(code(&out), 64, "{}", stderr(&out));
-    assert!(!env.path("heartbeat/b").exists(), "the watcher started");
-
-    let out = env.run(&["init"], None);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
+    warning(&env, &stderr(&out));
+}
+
+/// A wrong value is ignored with a warning: a `tz` that is not a known zone
+/// gives way to the next source, and the other keys still apply.
+#[test]
+fn a_wrong_value_warns_and_only_that_key_is_ignored() {
+    let env = Env::new();
+    plant_noon(&env);
+    for (text, named) in [
+        ("tz = 'Mars/Olympus'\ntz_label = 'Paris'\n", "Mars/Olympus"),
+        ("tz = 5\ntz_label = 'Paris'\n", "tz must be a string"),
+    ] {
+        write_config(&env, text);
+        let out = run_without_env(&env, &["list", "--as", "b"]);
+        let line = list_line(&out);
+        assert!(line.contains(" Paris) "), "{text:?}: {line}");
+        let err = stderr(&out);
+        assert!(warning(&env, &err).contains(named), "{text:?}: {err}");
+        // With CQ_TZ set, the variable wins as before.
+        let out = env.run(&["list", "--as", "b"], None);
+        assert!(list_line(&out).contains("(12:00 UK) "), "{text:?}");
+    }
+}
+
+/// A file that is not valid TOML is ignored whole, with a warning that
+/// gives the line.
+#[test]
+fn a_malformed_file_warns_and_is_ignored_whole() {
+    let env = Env::new();
+    plant_noon(&env);
+    for text in [
+        "tz_label = 'Paris'\ntz = \n",
+        "tz_label = 'Paris'\n[tz_label]\n",
+    ] {
+        write_config(&env, text);
+        let out = run_without_env(&env, &["list", "--as", "b"]);
+        let line = list_line(&out);
+        assert!(!line.contains("Paris"), "{text:?}: {line}");
+        let err = stderr(&out);
+        let w = warning(&env, &err);
+        assert!(w.contains("line 2"), "{text:?}: {w}");
+        assert!(w.ends_with("the file is ignored"), "{text:?}: {w}");
+    }
+}
+
+/// A hook prints the warning only with `--debug`.
+#[test]
+fn hooks_print_the_warning_only_with_debug() {
+    let env = Env::new();
+    write_config(&env, "tz_lable = 'UK'\n");
     let out = env.run(&["session-start"], None);
     assert_eq!(code(&out), 0);
     assert_eq!(stderr(&out), "");
-}
-
-#[test]
-fn a_malformed_file_or_unknown_zone_is_an_error_naming_the_file() {
-    let env = Env::new();
-    for text in ["tz = \n", "tz = 5\n", "tz = 'Mars/Olympus'\n", "[rules]\n"] {
-        write_config(&env, text);
-        let out = env.run(&["list", "--as", "b"], None);
-        assert_eq!(code(&out), 64, "{text:?}: {}", stderr(&out));
-        let want = format!("cq: {}: ", env.path("config.toml").display());
-        assert!(
-            stderr(&out).starts_with(&want),
-            "{text:?}: {}",
-            stderr(&out)
-        );
-    }
+    let out = env.run(&["session-start", "--debug"], None);
+    assert_eq!(code(&out), 0);
+    let err = stderr(&out);
+    assert!(warning(&env, &err).contains("tz_lable"), "{err}");
 }
 
 #[test]
 fn a_missing_or_empty_file_changes_nothing() {
     let env = Env::new();
     plant_noon(&env);
-    let line = list_line(&env.run(&["list", "--as", "b"], None));
-    assert!(line.contains("(12:00 UK) "), "{line}");
-    write_config(&env, "# no settings\n");
-    let line = list_line(&env.run(&["list", "--as", "b"], None));
-    assert!(line.contains("(12:00 UK) "), "{line}");
+    for text in [None, Some("# no settings\n")] {
+        if let Some(text) = text {
+            write_config(&env, text);
+        }
+        let out = env.run(&["list", "--as", "b"], None);
+        assert!(list_line(&out).contains("(12:00 UK) "), "{text:?}");
+        assert_eq!(stderr(&out), "", "{text:?}");
+    }
 }

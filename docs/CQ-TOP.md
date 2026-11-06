@@ -22,7 +22,7 @@ To build without replacing a `cq-top` that is already installed, use a separate 
 cq-top
 ```
 
-The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#configuration). If the queue root is missing or not set up, `cq-top` prints the reason and exits with code 70. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value exits with code 64 (see [Overdue tasks](#overdue-tasks)). So does a `config.toml` in the queue root that `cq` would refuse.
+The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#configuration). If the queue root is missing or not set up, `cq-top` prints the reason and exits with code 70. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value exits with code 64 (see [Overdue tasks](#overdue-tasks)). A problem in `config.toml` in the queue root prints one warning, as for `cq`, and `cq-top` starts as usual.
 
 | Key | What it does |
 | --- | --- |

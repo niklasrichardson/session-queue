@@ -2,7 +2,7 @@
 
 A `--to-codex` or `--to-agy` watcher runs outside the chat or conversation that it wakes. [`examples/start-watchers.ps1`](../examples/start-watchers.ps1) starts all of them from one PowerShell window, so you do not need an agent session to keep them running.
 
-Tested on Windows 11 with PowerShell 7.6 and a fake `cq` only: the config checks, the output and the exit lines. It has not been tested with real watchers yet.
+Tested on Windows 11 with PowerShell 7.6 and a fake `cq` only: the config checks, the output, the exit lines, and six watchers running at once. It has not been tested with real watchers yet.
 
 ## What the script does
 

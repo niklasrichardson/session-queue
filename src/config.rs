@@ -6,9 +6,13 @@
 //! setting has a command-line flag yet. The file cannot move the root: the
 //! root must be known before the file can be found.
 //!
-//! An unknown key is an error, not a warning, so a typo such as `tz_lable`
-//! stops the command with a clear message instead of being ignored. A
-//! missing file is fine.
+//! A file that cannot be used never stops a command: these are not security
+//! settings, and a typo must not stop the queue for every session. `load`
+//! returns one warning that names the file and each problem. An unknown key,
+//! or a known key with a wrong value, is ignored and the other keys still
+//! apply; a `tz` that is not a known zone is ignored, so the next source
+//! applies. A file that is not valid TOML is ignored whole. A missing file
+//! is fine.
 
 use std::fs;
 use std::io;
@@ -16,9 +20,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use jiff::tz::TimeZone;
-use serde::Deserialize;
 
-use crate::error::{CqError, Result};
 use crate::root::Root;
 
 /// The file name in the queue root.
@@ -38,65 +40,86 @@ pub struct Config {
 /// The keys the file may hold.
 const KEYS: [&str; 3] = ["rules", "tz", "tz_label"];
 
-#[derive(Deserialize)]
-struct Raw {
-    rules: Option<String>,
-    tz: Option<String>,
-    tz_label: Option<String>,
-}
-
 impl Config {
-    /// Read `config.toml` in `root`. A missing file gives no settings. A file
-    /// that is not valid TOML, has an unknown key or a wrong value is an
-    /// error (exit 64) that names the file.
-    pub fn load(root: &Root) -> Result<Config> {
+    /// Read `config.toml` in `root`. A missing file gives no settings and no
+    /// warning. Otherwise the warning, if any, names the file and every
+    /// problem in it; the settings are the ones that could be used.
+    pub fn load(root: &Root) -> (Config, Option<String>) {
         let path = root.path().join(FILE);
-        let text = match fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                return Err(CqError::usage(format!(
-                    "{}: not UTF-8 text",
-                    path.display()
-                )));
-            }
-            Err(e) => return Err(CqError::io(format!("read {}", path.display()), e)),
+        let (config, problems) = match fs::read_to_string(&path) {
+            Ok(text) => parse(&text, root.path()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return (Config::default(), None),
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => (
+                Config::default(),
+                vec!["not UTF-8 text; the file is ignored".to_owned()],
+            ),
+            Err(e) => (
+                Config::default(),
+                vec![format!("cannot read it ({e}); the file is ignored")],
+            ),
         };
-        parse(&text, root.path()).map_err(|m| CqError::usage(format!("{}: {m}", path.display())))
+        let warning =
+            (!problems.is_empty()).then(|| format!("{}: {}", path.display(), problems.join("; ")));
+        (config, warning)
     }
 }
 
-/// The settings in `text`, with a relative `rules` path joined to `root`.
-fn parse(text: &str, root: &Path) -> std::result::Result<Config, String> {
-    // Keys first: serde's unknown-field error points at the whole table, not
-    // at the key.
-    let table: toml::Table = toml::from_str(text).map_err(|e| located(text, &e))?;
-    if let Some(key) = table.keys().find(|k| !KEYS.contains(&k.as_str())) {
-        return Err(format!(
-            "unknown key {key:?}; the keys are rules, tz and tz_label"
+/// The settings in `text`, with a relative `rules` path joined to `root`,
+/// and the problems found. Each problem says what was ignored.
+fn parse(text: &str, root: &Path) -> (Config, Vec<String>) {
+    let table: toml::Table = match toml::from_str(text) {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                Config::default(),
+                vec![format!("{}; the file is ignored", located(text, &e))],
+            );
+        }
+    };
+    let mut problems = Vec::new();
+    for key in table.keys().filter(|k| !KEYS.contains(&k.as_str())) {
+        problems.push(format!(
+            "unknown key {key:?} is ignored; the keys are rules, tz and tz_label"
         ));
     }
-    let raw: Raw = toml::from_str(text).map_err(|e| located(text, &e))?;
-    let tz = non_empty(raw.tz);
-    if let Some(name) = &tz
-        && TimeZone::get(name).is_err()
-    {
-        return Err(format!(
-            "tz {name:?} is not a known time zone; use an IANA name such as Europe/London"
-        ));
-    }
-    let rules = non_empty(raw.rules).map(|r| {
+    let mut string = |key: &str| match table.get(key) {
+        None => None,
+        Some(toml::Value::String(s)) => non_empty(s),
+        Some(other) => {
+            problems.push(format!(
+                "{key} must be a string, not {}; it is ignored",
+                other.type_str()
+            ));
+            None
+        }
+    };
+    let rules = string("rules");
+    let tz = string("tz");
+    let tz_label = string("tz_label");
+    let tz = tz.filter(|name| {
+        let known = TimeZone::get(name).is_ok();
+        if !known {
+            problems.push(format!(
+                "tz {name:?} is not a known time zone and is ignored; use an IANA name such as Europe/London"
+            ));
+        }
+        known
+    });
+    let rules = rules.map(|r| {
         if Path::new(&r).is_relative() {
             root.join(&r).display().to_string()
         } else {
             r
         }
     });
-    Ok(Config {
-        rules,
-        tz,
-        tz_label: non_empty(raw.tz_label),
-    })
+    (
+        Config {
+            rules,
+            tz,
+            tz_label,
+        },
+        problems,
+    )
 }
 
 /// The error's message, with the line it points at.
@@ -110,8 +133,8 @@ fn located(text: &str, e: &toml::de::Error) -> String {
     }
 }
 
-fn non_empty(v: Option<String>) -> Option<String> {
-    v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+fn non_empty(s: &str) -> Option<String> {
+    Some(s.trim().to_owned()).filter(|s| !s.is_empty())
 }
 
 static INSTALLED: OnceLock<Config> = OnceLock::new();
@@ -151,13 +174,16 @@ mod tests {
         Path::new(if cfg!(windows) { r"C:\q" } else { "/q" })
     }
 
+    /// The settings in `text`, which must have no problems.
+    fn clean(text: &str) -> Config {
+        let (c, problems) = parse(text, root());
+        assert!(problems.is_empty(), "{problems:?}");
+        c
+    }
+
     #[test]
     fn reads_every_key() {
-        let c = parse(
-            "rules = 'SESSION-RULES.md'\ntz = 'Europe/Paris'\ntz_label = 'Paris'\n",
-            root(),
-        )
-        .unwrap();
+        let c = clean("rules = 'SESSION-RULES.md'\ntz = 'Europe/Paris'\ntz_label = 'Paris'\n");
         assert_eq!(
             c.rules.as_deref(),
             Some(
@@ -179,32 +205,52 @@ mod tests {
         } else {
             "/rules/R.md"
         };
-        let c = parse(&format!("rules = '{abs}'\n"), root()).unwrap();
+        let c = clean(&format!("rules = '{abs}'\n"));
         assert_eq!(c.rules.as_deref(), Some(abs));
     }
 
     #[test]
     fn empty_text_and_empty_values_give_no_settings() {
-        assert_eq!(parse("", root()).unwrap(), Config::default());
+        assert_eq!(clean(""), Config::default());
         assert_eq!(
-            parse("rules = ''\ntz = ' '\ntz_label = ''\n", root()).unwrap(),
+            clean("rules = ''\ntz = ' '\ntz_label = ''\n"),
             Config::default()
         );
     }
 
     #[test]
-    fn rejects_an_unknown_key_by_name() {
-        let e = parse("tz = 'Europe/London'\ntz_lable = 'UK'\n", root()).unwrap_err();
-        assert!(e.starts_with("unknown key \"tz_lable\""), "{e}");
+    fn an_unknown_key_is_named_and_the_other_keys_still_apply() {
+        let (c, problems) = parse("tz = 'Europe/London'\ntz_lable = 'UK'\n", root());
+        assert_eq!(c.tz.as_deref(), Some("Europe/London"));
+        assert_eq!(c.tz_label, None);
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems[0].starts_with("unknown key \"tz_lable\""),
+            "{problems:?}"
+        );
     }
 
     #[test]
-    fn rejects_bad_toml_wrong_types_and_unknown_zones() {
-        assert!(parse("tz = ", root()).is_err());
-        let e = parse("tz = 5\n", root()).unwrap_err();
-        assert!(e.contains("line 1"), "{e}");
-        let e = parse("tz = 'Mars/Olympus'\n", root()).unwrap_err();
-        assert!(e.contains("Mars/Olympus"), "{e}");
+    fn a_wrong_type_or_unknown_zone_drops_only_that_key() {
+        let (c, problems) = parse("tz = 5\ntz_label = 'UK'\n", root());
+        assert_eq!((c.tz, c.tz_label.as_deref()), (None, Some("UK")));
+        assert!(
+            problems[0].starts_with("tz must be a string"),
+            "{problems:?}"
+        );
+        let (c, problems) = parse("tz = 'Mars/Olympus'\nrules = 'R.md'\n", root());
+        assert_eq!(c.tz, None);
+        assert!(c.rules.is_some());
+        assert!(problems[0].contains("Mars/Olympus"), "{problems:?}");
+    }
+
+    #[test]
+    fn bad_toml_ignores_the_whole_file() {
+        let (c, problems) = parse("tz_label = 'UK'\ntz = \n", root());
+        assert_eq!(c, Config::default());
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("line 2"), "{problems:?}");
+        assert!(problems[0].ends_with("the file is ignored"), "{problems:?}");
     }
 
     #[test]

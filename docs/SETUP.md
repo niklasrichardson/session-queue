@@ -163,7 +163,13 @@ tz_label = 'UK'
 | `tz` | The time zone of the local time in `CQ-NEW` and list lines (an IANA name such as `Europe/London`). `cq-top` also starts "today" at midnight in this zone. | The system time zone. |
 | `tz_label` | The label after that time, such as `UK`. | The zone's abbreviation, such as `GMT` or `CET`. |
 
-A key that `cq` does not know, a value of the wrong type, or a `tz` that is not a known time zone is an error. Every queue command except `cq init` then stops with exit 64 and a message that names the file, and so does `cq-top`. The hooks (`session-start`, `turn-end`, `idle-alert`) never fail: while the file has an error, they run without its settings. A running watcher keeps the settings it read at start, so restart watchers after you change the file.
+A problem in the file never stops a command. `cq` and `cq-top` print one warning on stderr that names the file and each problem, then run as usual:
+
+- An unknown key, such as `tz_lable`, is ignored. The other keys still apply.
+- A value of the wrong type is ignored. A `tz` that is not a known time zone is ignored, so the next source applies (see [Which value cq uses](#which-value-cq-uses)).
+- A file that is not valid TOML is ignored whole.
+
+The hooks (`session-start`, `turn-end`, `idle-alert`) print the warning only with `--debug`. A running watcher keeps the settings it read at start, so restart watchers after you change the file.
 
 ### Environment variables
 
@@ -210,10 +216,26 @@ CQ_DEFAULT_TZ_LABEL = 'UK'
 
 To move a queue root into the default location, or to another drive:
 
-1. Create a file named `PAUSE` in the old root, so that `cq send` refuses. Stop every watcher and dispatcher.
-2. Move the folder's contents to the new root.
-3. Remove `CQ_ROOT`, or set it to the new root. Restart the agent apps and open new terminals.
-4. Delete `PAUSE` in the new root. Start the watchers again, and check each one with `cq status --as NAME`.
+1. Drain the queue. Ask every session to finish or reject each task it has claimed, and to handle every message in its inbox, replies included. Do this before step 2: under `PAUSE`, `cq done` cannot send its reply. The queue is drained when the old root's `inbox` folder holds no files:
+
+   ```powershell
+   $old = 'D:\old-cq-root'   # your old root
+   (Get-ChildItem "$old\inbox" -Recurse -File -Force).Count   # expect 0
+   ```
+
+2. Create a file named `PAUSE` in the old root, so that `cq send` refuses new messages.
+3. Stop every queue writer. `PAUSE` stops new messages only: sessions can still claim, finish and reject tasks, and the hooks still write their files. Stopping the watchers is not enough. Close every session that uses the queue (Claude Code, Codex, Antigravity CLI and any other agent), and stop every watcher and dispatcher. `cq status --as NAME` exits 10 when no watcher runs for `NAME`.
+4. Copy the old root's contents into the new root, which must be empty. Keep the old root until step 7.
+5. Compare the file counts. They must be equal; if not, copy again before you go on:
+
+   ```powershell
+   $new = "$env:LOCALAPPDATA\cq"   # your new root
+   (Get-ChildItem $old -Recurse -File -Force).Count
+   (Get-ChildItem $new -Recurse -File -Force).Count
+   ```
+
+6. Remove `CQ_ROOT`, or set it to the new root. Restart the agent apps and open new terminals.
+7. Delete `PAUSE` in the new root. Start the watchers again, and check each one with `cq status --as NAME`. When the new root works, delete the old one.
 
 To run Codex and Antigravity CLI watchers from one window, see [Watchers](WATCHERS.md).
 

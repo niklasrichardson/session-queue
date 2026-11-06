@@ -89,9 +89,11 @@ foreach ($w in $cfg.watchers) {
 if ($watchers.Count -eq 0) { Stop-WithError "no enabled watchers in $Config" }
 
 # Start each watcher as a thread job, and print its output with its name.
+# The throttle limit is the number of watchers: with the default of 5, a
+# sixth watcher would wait for one of the others to end.
 $Host.UI.RawUI.WindowTitle = 'cq watchers'
 $jobs = foreach ($w in $watchers) {
-    Start-ThreadJob -Name $w.Name -ArgumentList $cq, $w.Name, $w.Args -ScriptBlock {
+    Start-ThreadJob -Name $w.Name -ThrottleLimit $watchers.Count -ArgumentList $cq, $w.Name, $w.Args -ScriptBlock {
         param($cq, $name, $wargs)
         & $cq watch --as $name @wargs --takeover 2>&1 | ForEach-Object { "$_" }
         "exited with code $LASTEXITCODE"

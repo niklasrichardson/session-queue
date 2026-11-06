@@ -4,8 +4,8 @@
 #   Linux:   $XDG_DATA_HOME/cq/config.toml, or ~/.local/share/cq/config.toml
 #
 # Every key is optional. An environment variable with the same meaning wins
-# (CQ_RULES, CQ_TZ, CQ_TZ_LABEL). An unknown key is an error, so cq stops with
-# exit 64 and names the key. Restart running watchers after you change this file.
+# (CQ_RULES, CQ_TZ, CQ_TZ_LABEL). cq warns about an unknown key or a bad value,
+# ignores it, and runs as usual. Restart running watchers after you change this file.
 
 # The rules file that the rejoin reminder tells a session to re-read.
 # A relative path is relative to the queue root.

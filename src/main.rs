@@ -461,7 +461,7 @@ enum ReplyStatus {
 fn main() -> ExitCode {
     // Before parsing: the help text shows the local time zone, which is
     // fixed once it is first read.
-    let config_error = load_config();
+    let config_warning = load_config();
     let cli = match Cli::try_parse() {
         Ok(c) => c,
         Err(e) => {
@@ -475,7 +475,12 @@ fn main() -> ExitCode {
             return ExitCode::from(code as u8);
         }
     };
-    match run(cli.cmd, config_error) {
+    if let Some(w) = config_warning
+        && (!is_hook(&cli.cmd) || hook_debug(&cli.cmd))
+    {
+        eprintln!("cq: warning: {w}");
+    }
+    match run(cli.cmd) {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
             eprintln!("cq: {e}");
@@ -540,38 +545,19 @@ fn watch_to_agy(
 }
 
 /// Read `config.toml` in the queue root and use it for this process.
-/// Returns the error for a file that cannot be used. Without a usable root
-/// there is no file; the command reports the root problem itself.
-fn load_config() -> Option<CqError> {
+/// Returns the warning for a file with problems; the usable settings are
+/// still used. Without a usable root there is no file; the command reports
+/// the root problem itself.
+fn load_config() -> Option<String> {
     let root = Root::from_env().ok()?;
-    match Config::load(&root) {
-        Ok(c) => {
-            config::install(c);
-            None
-        }
-        Err(e) => Some(e),
-    }
+    let (config, warning) = Config::load(&root);
+    config::install(config);
+    warning
 }
 
 /// Run one command. Returns the exit code of a run that did not fail:
 /// 0, or 7 for a watcher that stopped because its name is asleep.
-///
-/// A `config.toml` that cannot be used stops every command except `init`
-/// and the hooks. A hook must never fail, so it runs without the file's
-/// settings.
-fn run(cmd: Cmd, config_error: Option<CqError>) -> Result<i32> {
-    if let Some(e) = config_error {
-        let is_hook = matches!(
-            cmd,
-            Cmd::SessionStart { .. } | Cmd::IdleAlert { .. } | Cmd::TurnEnd { .. }
-        );
-        if !is_hook && !matches!(cmd, Cmd::Init) {
-            return Err(e);
-        }
-        if is_hook && hook_debug(&cmd) {
-            eprintln!("cq: ignoring {}: {e}", config::FILE);
-        }
-    }
+fn run(cmd: Cmd) -> Result<i32> {
     match cmd {
         Cmd::Init => {
             let root = Root::from_env()?;
@@ -1065,6 +1051,15 @@ const GENERIC_RULES: &str = "your cq session rules file (docs/SESSION-RULES.md i
 /// generic wording.
 fn rules_ref(candidates: &[String]) -> &str {
     candidates.first().map_or(GENERIC_RULES, String::as_str)
+}
+
+/// Whether `cmd` is a hook. A hook prints a config warning only with
+/// `--debug`.
+fn is_hook(cmd: &Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::SessionStart { .. } | Cmd::IdleAlert { .. } | Cmd::TurnEnd { .. }
+    )
 }
 
 /// Whether a hook command runs with `--debug`.
