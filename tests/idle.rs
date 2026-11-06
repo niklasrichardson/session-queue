@@ -356,9 +356,9 @@ fn turn_end_with_background_work_records_nothing() {
         "description": "queue watcher", "command": "cq watch --as worker-a --to-inbox"});
     let agent = serde_json::json!({"id": "t-2", "type": "subagent", "status": "running",
         "description": "SECRET review", "agent_type": "coder"});
-    // A watcher through a tool that reports no command: it counts.
+    // A Monitor task: it never counts.
     let monitor = serde_json::json!({"id": "t-3", "type": "monitor", "status": "running",
-        "description": "cq watch --as worker-a"});
+        "description": "live updates (auto-armed)"});
 
     // Only the cq watcher: recorded.
     quiet_turn_end(&env, &stop_input(&tx, Some(serde_json::json!([watcher]))));
@@ -370,13 +370,22 @@ fn turn_end_with_background_work_records_nothing() {
         &stop_input(&tx, Some(serde_json::json!([watcher, agent]))),
     );
     assert!(marker(&env, "worker-a").is_none());
-    quiet_turn_end(&env, &stop_input(&tx, None));
-    quiet_turn_end(&env, &stop_input(&tx, Some(serde_json::json!([monitor]))));
-    assert!(marker(&env, "worker-a").is_none());
 
     // No background_tasks field: unknown, so recorded.
     quiet_turn_end(&env, &stop_input(&tx, None));
     assert!(marker(&env, "worker-a").is_some());
+
+    // A Monitor next to the watcher: recorded. With a subagent: nothing.
+    quiet_turn_end(
+        &env,
+        &stop_input(&tx, Some(serde_json::json!([watcher, monitor]))),
+    );
+    assert!(marker(&env, "worker-a").is_some());
+    quiet_turn_end(
+        &env,
+        &stop_input(&tx, Some(serde_json::json!([monitor, agent]))),
+    );
+    assert!(marker(&env, "worker-a").is_none());
 }
 
 #[test]

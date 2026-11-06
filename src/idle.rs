@@ -219,6 +219,9 @@ pub struct StopInput {
 /// copied anywhere.
 #[derive(Debug, Default, Deserialize)]
 pub struct BackgroundTask {
+    /// `shell`, `subagent`, `monitor` and so on.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
     pub status: Option<String>,
     /// Present only for shell tasks.
     pub command: Option<String>,
@@ -234,16 +237,27 @@ impl StopInput {
     /// True when the hook reports background work other than the cq
     /// watcher, which may wake the session later. Scheduled wakeups
     /// (`session_crons`) do not count: the watcher's transcript check
-    /// catches the wake.
+    /// catches the wake. Monitor tasks do not count either (see
+    /// `is_monitor`).
     pub fn has_other_background_work(&self) -> bool {
         self.background_tasks
             .iter()
             .flatten()
-            .any(|t| !t.is_finished() && !t.is_cq_watcher())
+            .any(|t| !t.is_finished() && !t.is_monitor() && !t.is_cq_watcher())
     }
 }
 
 impl BackgroundTask {
+    /// A Monitor tool task. It reports no command, and it can run for the
+    /// whole session: a Monitor-mode watcher, or one that Claude Code arms
+    /// by itself. So it never blocks the idle alert. The cost: a session
+    /// that waits on a Monitor is reported idle after the idle delay.
+    fn is_monitor(&self) -> bool {
+        self.kind
+            .as_deref()
+            .is_some_and(|k| k.eq_ignore_ascii_case("monitor"))
+    }
+
     fn is_finished(&self) -> bool {
         self.status.as_deref().is_some_and(|s| {
             matches!(
@@ -683,6 +697,7 @@ mod tests {
 
     fn task(status: &str, command: Option<&str>) -> BackgroundTask {
         BackgroundTask {
+            kind: Some("shell".to_owned()),
             status: Some(status.to_owned()),
             command: command.map(str::to_owned),
         }
@@ -735,18 +750,30 @@ mod tests {
         ] {
             assert!(busy(Some(work)), "{work}");
         }
-        // No command: a subagent, or a watcher run through a tool that
-        // reports none. It counts, whatever its description says.
-        let monitor: StopInput = serde_json::from_str(
+        // A Monitor task never counts, with or without a description.
+        for json in [
             r#"{"background_tasks":[{"type":"monitor","status":"running","description":"cq watch --as worker-a"}]}"#,
-        )
-        .unwrap();
-        assert!(monitor.has_other_background_work());
+            r#"{"background_tasks":[{"type":"monitor","status":"running","description":"live updates (auto-armed)"}]}"#,
+            r#"{"background_tasks":[{"type":"monitor","status":"running"}]}"#,
+        ] {
+            let monitor: StopInput = serde_json::from_str(json).unwrap();
+            assert!(!monitor.has_other_background_work(), "{json}");
+        }
+        // No command and not a Monitor: a subagent. It counts, whatever
+        // its description says.
         let agent: StopInput = serde_json::from_str(
             r#"{"background_tasks":[{"type":"subagent","status":"running","description":"review cq watch races"}]}"#,
         )
         .unwrap();
         assert!(agent.has_other_background_work());
+        // Other work next to a Monitor still counts.
+        for json in [
+            r#"{"background_tasks":[{"type":"monitor","status":"running"},{"type":"subagent","status":"running"}]}"#,
+            r#"{"background_tasks":[{"type":"monitor","status":"running"},{"type":"shell","status":"running","command":"cargo build"}]}"#,
+        ] {
+            let busy: StopInput = serde_json::from_str(json).unwrap();
+            assert!(busy.has_other_background_work(), "{json}");
+        }
         assert!(
             !input(Some(vec![task("completed", Some("cargo build"))])).has_other_background_work()
         );

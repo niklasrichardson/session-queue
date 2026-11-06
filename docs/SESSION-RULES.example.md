@@ -20,6 +20,8 @@ When a message from `cq` ends with `cq watch (NAME) stopped: ... Run /cq-start t
 
 The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: follow the SessionStart reminder, which says whether your watcher still runs. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](https://github.com/niklasrichardson/session-queue/blob/main/docs/CLAUDE-CODE.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
 
+To check whether a watcher runs, yours or another session's, run `cq status --as NAME`. Exit 0 prints `running`, exit 10 prints `stopped` and exit 7 prints `asleep`. Never trust a process ID or task ID that you remember, for example from before a /clear. If yours is `stopped`, start it again with --takeover. Each watcher exit is logged in `CQ_ROOT/watch-exits.log`, with the time, name, process ID and reason.
+
 Exception: if a message from `cq` says NAME is asleep, or watch prints CQ-SLEEP and exits 7, your name is asleep. Do not re-arm. Run /cq-stop: it saves a handoff to ~/.claude/cq-handoff/NAME.md and clears the conversation (on Remote Control, it asks the user to type /clear). Run /cq-start when the user or a wake message asks you to rejoin.
 
 ### Fallback: Monitor mode
