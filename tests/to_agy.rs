@@ -306,6 +306,15 @@ fn bad_arguments_exit_64() {
             "codex",
         ],
         &["watch", "--as", "b", "--to-agy", CONVERSATION, "--debug"],
+        &[
+            "watch",
+            "--as",
+            "b",
+            "--to-agy",
+            CONVERSATION,
+            "--codex-check-seconds",
+            "5",
+        ],
         &["watch", "--as", "b", "--to-agy", " "],
         &[
             "watch",

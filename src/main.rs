@@ -192,10 +192,9 @@ enum Cmd {
         codex_prompt: Option<String>,
         /// How long after each queued check --to-codex looks, read-only, in
         /// Codex's queue database whether the chat has taken it. 0 turns the
-        /// look-up off.
-        #[arg(long, value_name = "SECS", requires = "to_codex",
-              default_value_t = CHECK_AFTER.as_secs())]
-        codex_check_seconds: u64,
+        /// look-up off. Default: 60.
+        #[arg(long, value_name = "SECS", requires = "to_codex")]
+        codex_check_seconds: Option<u64>,
         /// Codex's queue database for that look-up, instead of
         /// queue_1.sqlite in Codex's SQLite home.
         #[arg(long, value_name = "PATH", requires = "to_codex")]
@@ -601,11 +600,12 @@ fn run(cmd: Cmd) -> Result<i32> {
             if to_codex.is_none()
                 && (codex_bin.is_some()
                     || codex_prompt.is_some()
+                    || codex_check_seconds.is_some()
                     || codex_queue_db.is_some()
                     || debug)
             {
                 return Err(CqError::usage(
-                    "--codex-bin, --codex-prompt, --codex-queue-db and --debug need --to-codex",
+                    "--codex-bin, --codex-prompt, --codex-check-seconds, --codex-queue-db and --debug need --to-codex",
                 ));
             }
             if to_agy.is_none() && (agy_bin.is_some() || agy_prompt.is_some()) {
@@ -634,7 +634,7 @@ fn run(cmd: Cmd) -> Result<i32> {
                 idle_every,
             };
             let ended = if let Some(thread) = &to_codex {
-                let check_after = Duration::from_secs(codex_check_seconds);
+                let check_after = codex_check_seconds.map_or(CHECK_AFTER, Duration::from_secs);
                 watch_to_codex(
                     &opts,
                     thread,

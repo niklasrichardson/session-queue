@@ -17,12 +17,15 @@
 //! starts `agy` and looks on each tick whether it has exited. One turn runs
 //! at a time. Lines that arrive during a turn give one more turn after it.
 //! `agy` writes to temporary files, not pipes, so a turn that still runs
-//! when the watcher stops can finish and print.
+//! when the watcher stops can finish and print. A watcher that stops while
+//! a turn runs starts no last turn; a new watcher removes output files over
+//! `TURN_TIMEOUT` old.
 //!
 //! A turn fails when `agy` exits non-zero, prints no JSON object, or its
 //! `status` is not `SUCCESS`. It is tried again 1, 2 and 4 s later; after 4
 //! failed turns in a row the watcher exits 11. A turn that ran in another
-//! conversation is not tried again: the watcher exits 11 at once, so that
+//! conversation is not tried again, whatever its exit or status: the
+//! watcher exits 11 at once, so that
 //! it does not start a new conversation on every wake.
 
 use std::ffi::OsString;
@@ -125,6 +128,37 @@ fn output_file(ext: &str) -> io::Result<(File, PathBuf)> {
     }
 }
 
+/// Remove `cq-agy-*.out` and `cq-agy-*.err` files in `dir` last changed
+/// more than `age` ago: the output of turns that still ran when an earlier
+/// watcher stopped. Errors are ignored; on Windows a file that a turn still
+/// writes cannot be removed. Returns how many were removed.
+pub fn remove_old_outputs(dir: &Path, age: Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("cq-agy-") || !(name.ends_with(".out") || name.ends_with(".err")) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|e| e > age);
+        if old
+            && entry.file_type().is_ok_and(|t| t.is_file())
+            && fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 impl Runner for AgyBin {
     fn start(&mut self, conversation: &str, prompt: &str) -> io::Result<()> {
         let (out_file, out) = output_file("out")?;
@@ -201,8 +235,9 @@ fn result_json(out: &str) -> Option<serde_json::Map<String, Value>> {
 }
 
 /// The result of a turn that has exited. The summary and the reasons hold
-/// `status`, the numbers and `agy`'s stderr, never `response`: that is the
-/// model's reply, which can quote queue messages.
+/// `status`, the numbers and `agy`'s stderr, never stdout text: `response`
+/// is the model's reply, which can quote queue messages, and a stdout
+/// without a whole JSON result can hold part of it.
 pub fn outcome(
     status: ExitStatus,
     out: &str,
@@ -210,10 +245,7 @@ pub fn outcome(
     conversation: &str,
 ) -> std::result::Result<String, Failure> {
     let json = result_json(out);
-    let said = || {
-        let out = if json.is_some() { None } else { last_line(out) };
-        last_line(err).or(out).unwrap_or("no output").to_owned()
-    };
+    let said = || last_line(err).unwrap_or("no stderr output").to_owned();
     let Some(json) = &json else {
         if status.success() {
             return Err(Failure::retry(format!(
@@ -224,6 +256,17 @@ pub fn outcome(
         return Err(Failure::retry(format!("agy {status}: {}", said())));
     };
     let text = |key: &str| json.get(key).and_then(Value::as_str);
+    // Checked first: a turn in another conversation is never tried again,
+    // whatever its exit or status, so the watcher cannot start a new
+    // conversation on every try.
+    if let Some(id) = text("conversation_id")
+        && id != conversation
+    {
+        return Err(Failure {
+            why: format!("agy ran the turn in conversation {id}, not {conversation}"),
+            retry: false,
+        });
+    }
     let got = text("status").unwrap_or("none");
     if !status.success() {
         return Err(Failure::retry(format!(
@@ -233,14 +276,6 @@ pub fn outcome(
     }
     if got != SUCCESS {
         return Err(Failure::retry(format!("agy status {got}: {}", said())));
-    }
-    if let Some(id) = text("conversation_id")
-        && id != conversation
-    {
-        return Err(Failure {
-            why: format!("agy ran the turn in conversation {id}, not {conversation}"),
-            retry: false,
-        });
     }
     let mut summary = format!("status={got}");
     for key in ["duration_seconds", "num_turns"] {
@@ -297,6 +332,7 @@ impl AgyTurn<AgyBin, SystemClock> {
                 Path::new(&bin).display()
             )));
         }
+        remove_old_outputs(&std::env::temp_dir(), TURN_TIMEOUT);
         Self::with(
             name,
             conversation,
@@ -469,8 +505,10 @@ impl<R: Runner, C: Clock> Sink for AgyTurn<R, C> {
         self.held > 0
     }
 
-    /// Start a last turn for what is held, unless the name is asleep: then
-    /// the messages wait until it wakes. Never waits for a turn to end.
+    /// Start a last turn for what is held, unless the name is asleep or a
+    /// turn still runs: then the messages wait in the queue. The running
+    /// turn runs `cq list` and may take them anyway; only one turn runs at a
+    /// time. Never waits for a turn to end.
     fn stopped(&mut self, _reason: &str, ended: Ended) -> bool {
         if self.running.is_some() {
             eprintln!("cq watch: an agy turn still runs; it ends on its own");
@@ -479,6 +517,13 @@ impl<R: Runner, C: Clock> Sink for AgyTurn<R, C> {
             return true;
         }
         if ended != Ended::Normal {
+            return false;
+        }
+        if self.running.is_some() {
+            eprintln!(
+                "cq watch: no last agy turn for {} new message(s) while a turn runs; they wait in the queue",
+                self.held
+            );
             return false;
         }
         let lines = std::mem::take(&mut self.held);
@@ -692,6 +737,18 @@ mod tests {
     }
 
     #[test]
+    fn no_last_turn_while_a_turn_runs() {
+        let (mut q, r, c, _log) = sink();
+        q.line(NEW).unwrap();
+        c.advance(BATCH_WINDOW);
+        q.tick().unwrap();
+        assert_eq!(r.calls(), 1);
+        q.line(NEW).unwrap();
+        assert!(!q.stopped("stopped by a signal", Ended::Normal));
+        assert_eq!(r.calls(), 1, "a second turn started beside the first");
+    }
+
+    #[test]
     fn a_failed_turn_is_retried_then_fails_with_exit_11() {
         let (mut q, r, c, _log) = sink();
         q.line(NEW).unwrap();
@@ -892,6 +949,13 @@ mod tests {
         let f = failed(outcome(ok, &other, "", "c1"));
         assert!(!f.retry, "{f:?}");
         assert!(f.why.contains("conversation c2, not c1"), "{}", f.why);
+        // Another conversation is never retried, whatever the exit or status.
+        let other_error = other.replace("\"SUCCESS\"", "\"ERROR\"");
+        for (s, out) in [(bad, &other), (ok, &other_error), (bad, &other_error)] {
+            let f = failed(outcome(s, out, "", "c1"));
+            assert!(!f.retry, "{f:?}");
+            assert!(f.why.contains("conversation c2, not c1"), "{}", f.why);
+        }
     }
 
     /// The model's reply can quote a queue message: it never reaches the
@@ -907,6 +971,44 @@ mod tests {
             };
             assert!(!text.contains("RESPONSE-MARK"), "{text}");
         }
+        // No whole JSON result: stdout's last line can be part of the reply.
+        let cut = &PRETTY[..PRETTY.find("\"duration_seconds\"").unwrap()];
+        for (s, err) in [(ok, ""), (bad, ""), (bad, "Error: boom\n")] {
+            let f = outcome(s, cut, err, "c1").unwrap_err();
+            assert!(!f.why.contains("RESPONSE-MARK"), "{}", f.why);
+        }
+        let f = outcome(ok, "RESPONSE-MARK\n", "", "c1").unwrap_err();
+        assert!(!f.why.contains("RESPONSE-MARK"), "{}", f.why);
+        assert!(f.why.contains("no stderr output"), "{}", f.why);
+    }
+
+    #[test]
+    fn old_output_files_are_removed() {
+        let dir = std::env::temp_dir().join(format!("cq-agy-clean-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let old = std::time::SystemTime::now() - TURN_TIMEOUT - Duration::from_secs(60);
+        for name in [
+            "cq-agy-1-0.out",
+            "cq-agy-1-1.err",
+            "other.out",
+            "cq-agy-1-2.txt",
+            "cq-agy-new.out",
+        ] {
+            let f = File::create(dir.join(name)).unwrap();
+            if name != "cq-agy-new.out" {
+                f.set_modified(old).unwrap();
+            }
+        }
+        assert_eq!(remove_old_outputs(&dir, TURN_TIMEOUT), 2);
+        let mut left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["cq-agy-1-2.txt", "cq-agy-new.out", "other.out"]);
+        assert_eq!(remove_old_outputs(&dir.join("missing"), TURN_TIMEOUT), 0);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
