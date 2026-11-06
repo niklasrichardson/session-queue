@@ -8,11 +8,16 @@ Set up `cq` in three parts, in this order:
 2. [Connect each session](#connect-each-session), on your agent's page: its rules file, approvals, watcher and recovery.
 3. [Send a test message](#send-a-test-message), on this page. The same for every agent.
 
-| Agent | Page | Tested |
-| --- | --- | --- |
-| Claude Code | [Claude Code setup](CLAUDE-CODE.md) | Live on Windows 11: in the Claude desktop app's Code tab, and one Claude Code CLI session (live test L3) |
-| Codex | [Codex setup](CODEX.md) | Live, in the Codex Desktop app on Windows 11 |
-| Any other agent, or a script | [Other agents](OTHER-AGENTS.md) | Not tested |
+| Agent or surface | Setup page |
+| --- | --- |
+| Claude Code desktop app | [Claude Code setup](CLAUDE-CODE.md) |
+| Claude Code CLI | [Claude Code setup](CLAUDE-CODE.md). Start each worker with its own key first: [Claude Code CLI](CLAUDE-CODE.md#claude-code-cli-start-with-a-stable-key) |
+| Codex desktop app or Codex CLI chat | [Set up a Codex chat](CODEX.md#set-up-a-codex-chat) |
+| Codex, a fresh run per task (`cq dispatch`) | [Dispatch worker prerequisites](CODEX.md#dispatch-worker-prerequisites) |
+| Antigravity CLI (experimental) | [Antigravity CLI](OTHER-AGENTS.md#antigravity-cli) |
+| Any other agent, or a script | [Other agents](OTHER-AGENTS.md) |
+
+What has been tested with each, and its limits, is in the README's [support table](../README.md#support-by-agent-and-surface).
 
 ## Requirements
 
@@ -21,6 +26,7 @@ Set up `cq` in three parts, in this order:
 - An agent that can run shell commands. What each agent needs:
   - **Claude Code:** on Windows, Git for Windows, because Claude Code runs Bash commands in Git Bash. See [Claude Code setup](CLAUDE-CODE.md#wake-a-session-with-cq-watch---to-inbox).
   - **Codex:** the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex on Windows ran its commands in PowerShell in the tested setup. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
+  - **Antigravity CLI:** the Antigravity CLI (`agy`), and the ID of the conversation to wake. See [Antigravity CLI](OTHER-AGENTS.md#antigravity-cli).
   - **Other agents:** see [Other agents](OTHER-AGENTS.md).
 
 ## Install
@@ -58,13 +64,7 @@ These facts are the same for every agent:
 - `cq claim`, `cq done` and `cq send` write files in the queue root, so an unattended session must be able to run them without an approval prompt.
 - Each agent page also says how to recover after `/clear`, a new chat or a restart.
 
-The rest differs per agent. Follow the page for your agent, then come back to [Send a test message](#send-a-test-message):
-
-| Agent | Rules file | No prompts | Wake route | Page |
-| --- | --- | --- | --- | --- |
-| Claude Code | `~/.claude/CLAUDE.md`, with the Claude Code block. The queue name goes in the start prompt. | `Bash(cq *)` in `permissions.allow` | `cq watch --to-inbox`, in the session | [Claude Code setup](CLAUDE-CODE.md) |
-| Codex | `~/.codex/AGENTS.md` or the repo's `AGENTS.md`, with the Codex-only block once per queue name | The queue root writable from the chat's sandbox. A setup where Codex never asks for approval is not tested yet. | `cq watch --to-codex`, outside the chat | [Codex setup](CODEX.md) |
-| Other agents | The agent's own instruction file | Depends on the agent | A wake feature, a fresh run per task, or polling | [Other agents](OTHER-AGENTS.md) |
+The rest differs per agent. Follow the page for your agent in the [table at the top](#setting-up-cq), then come back to [Send a test message](#send-a-test-message).
 
 ## Send a test message
 
