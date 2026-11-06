@@ -9,7 +9,8 @@ These were not tested by `cargo test`, or not yet tested live:
 - Most live use on macOS. See [macOS, 29 October 2026](#macos-29-october-2026) for what was checked.
 - The exact cause of the 4 early watcher exits seen on 24 Oct 2026. They were not reproduced (40 runs of the Monitor's command form, 10 at a time, and 4 runs under the Monitor tool). Removing the parent check removes the only silent exit path that fits; a watcher that still ends early now prints its reason to stderr.
 - That an orphaned watcher (one whose Monitor was killed) never delays work. It keeps the lock until `--max-seconds`; the new Monitor's `cq watch` exits 5 and the session re-arms with `--takeover`. In a test on 24 Oct 2026, stopping a Monitor with TaskStop killed the whole process tree, `cq.exe` included.
-- Remote Control. The Claude Code CLI was tested in one bounded run only: on 29 Oct 2026, one CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (test L3 in the [spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked that session's screen for a cap notice. Other live tests used the desktop app's Code tab.
+- Remote Control.
+- The Claude Code CLI beyond one bounded run ([Claude Code CLI with nobody typing](#claude-code-cli-with-nobody-typing-on-windows-29-october-2026)). Other live tests used the desktop app's Code tab.
 - The rejoin hook after a compaction or a resume. It was tested live after `/clear` only.
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
@@ -38,6 +39,15 @@ Not checked:
 - The build-time defaults (`CQ_RULES_PATH`, `CQ_DEFAULT_TZ`, `CQ_DEFAULT_TZ_LABEL`) are set at compile time, so only the unit test checks their place in the order.
 - The script was parsed with PowerShell 7.6 (0 errors). Its config checks were run against bad configs, and its output against a fake `cq` that echoes its arguments and exits 3. Six watchers were run against a fake `cq` that prints a start line, waits 5 seconds, then prints a done line: all six started within 0.1 seconds. Before the fix, the sixth started only after the first five ended, because `Start-ThreadJob` runs at most 5 jobs by default. It has not been run with real watchers, and closing the window or pressing Ctrl+C was not tested.
 
+## Antigravity CLI findings on Windows, 6 November 2026
+
+Found on Windows 11 with a real `agy`. Each finding starts with its scope.
+
+- **Background command, one manual test.** An open interactive `agy` session started a shell command in the background and ended its turn. When the command finished, the session woke by itself and replied. Not yet tried: a long-running `cq watch` as the background command, and the Antigravity desktop app.
+- **`agy agentapi send-message`, tried from outside `agy`.** The command needs the address of a running language server (`ANTIGRAVITY_LS_ADDRESS`) and a CSRF token. `agy` gives that token only to processes that it starts. Called from outside `agy`, it failed. So a watcher outside the session cannot use it.
+- **Conversation stores.** The CLI and the desktop app keep separate conversation stores under `~/.gemini`. The desktop app's summary database also lists CLI conversations. Not known: whether `agy --conversation` can resume a conversation from the desktop app.
+- **Hooks, read in the docs only.** The hooks docs bundled with the CLI describe 6 events, each given JSON on stdin with camelCase field names. No hook was tested with `cq`. What this means for `cq` is in [Antigravity CLI setup](ANTIGRAVITY.md#what-else-is-known).
+
 ## Antigravity CLI live use on Windows, 6 November 2026
 
 Live use of `cq watch --to-agy` with a real `agy` on Windows 11. The automated tests, with a fake `agy`, and the hand tests of the `agy` command are in [Antigravity CLI wake](#antigravity-cli-wake-on-windows-6-november-2026).
@@ -46,7 +56,7 @@ Live use of `cq watch --to-agy` with a real `agy` on Windows 11. The automated t
 - A worker conversation with the queue rules in its context: one turn started 3 seconds after the message was sent and ended after 58 seconds. The message was claimed and done.
 - A second message was sent while the same conversation was also open in an interactive `agy` window. The print-mode turn claimed and finished it. The open window did not show that turn. About 5 minutes later, the interactive session exited with `Read loop ... context canceled`. After it was reopened, the conversation history included the print-mode turn. The cause of the exit is not known.
 - The `duration_seconds` value that `agy` reported did not match the turn's wall time: for example, 3600 for a 22-second turn. `cq` only logs this value.
-- No way is known to send a prompt into an `agy` session that is already open. Only the CLI help was checked: `remote-control` and `acp` do not offer it.
+- No way is known to send a prompt into an `agy` session that is already open. The CLI help was checked: `remote-control` and `acp` do not offer it. `agy agentapi send-message` was tried later: see [Antigravity CLI findings](#antigravity-cli-findings-on-windows-6-november-2026).
 
 Not tested: the Antigravity desktop app with `cq`; a long run; macOS and Linux.
 
@@ -98,6 +108,16 @@ Not verified by these tests: `cq watch --to-agy` with a real `agy`; a turn while
 - `watch::tests::a_logged_console_or_panic_exit_is_not_logged_again_on_restart` writes the exit line from a console event and from a panic, then runs the start-up check: no `previous watcher ended without logging` line follows.
 
 Not verified: the Windows console events (Ctrl+C, Ctrl+Break, close, logoff, shutdown) were not sent to a watcher; the signal lines on macOS and Linux; the Unix code was not compiled, because the bundled SQLite needs a C cross-compiler.
+
+## Claude Code CLI with nobody typing on Windows, 29 October 2026
+
+Live test L3 from the [spec](SPEC.md) ([#4](https://github.com/niklasrichardson/session-queue/issues/4)): send 25 tasks over the queue with no human typing.
+
+- 29 Oct 2026, 11:22 to 12:00 UK: one Claude Code CLI session (2.1.303, Windows, auto mode) in inbox mode answered 25 of 25 tasks. Nobody typed after the folder trust prompt at start.
+- A script sent the tasks from two sender names, about 95 seconds apart. Send to reply took 7 to 15 seconds (average 9.5).
+- Tasks 11 to 25 went past the limit of 10 in a row on Claude Code's own cross-session messages, with no change. None was rejected, and none went to the dead letter queue.
+
+Not checked: the receiving session's screen for a cap notice. A cap would have stopped the replies, and none stopped.
 
 ## macOS, 29 October 2026
 
