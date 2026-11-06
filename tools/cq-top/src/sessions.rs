@@ -1319,11 +1319,13 @@ fn newest_by_folder<'a>(
     out.into_iter().map(|(k, (_, id))| (k, id)).collect()
 }
 
-/// Local midnight at the start of the day that holds `now`.
+/// Local midnight at the start of the day that holds `now`, in cq's local
+/// time zone (`CQ_TZ`, the root's `config.toml`, the build's default, else
+/// the system zone).
 pub fn local_midnight(now: i64) -> i64 {
     jiff::Timestamp::from_second(now)
         .ok()
-        .and_then(|t| t.to_zoned(jiff::tz::TimeZone::system()).start_of_day().ok())
+        .and_then(|t| t.to_zoned(cq::timefmt::local_zone()).start_of_day().ok())
         .map_or(now - now.rem_euclid(86_400), |z| z.timestamp().as_second())
 }
 

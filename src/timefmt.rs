@@ -1,7 +1,8 @@
 //! Time formatting. Files and logs hold UTC; event lines add a local time.
 //!
-//! The local time zone and its label come from `CQ_TZ` and `CQ_TZ_LABEL`
-//! (or the build's `CQ_DEFAULT_TZ` and `CQ_DEFAULT_TZ_LABEL`), not from the
+//! The local time zone and its label come from `CQ_TZ` and `CQ_TZ_LABEL`,
+//! else `tz` and `tz_label` in the root's `config.toml`, else the build's
+//! `CQ_DEFAULT_TZ` and `CQ_DEFAULT_TZ_LABEL` (see `config`), not from the
 //! shell, because Git Bash on Windows can report the local time zone wrongly.
 
 use std::sync::OnceLock;
@@ -9,6 +10,8 @@ use std::time::SystemTime;
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
+
+use crate::config;
 
 pub fn now() -> Timestamp {
     Timestamp::now()
@@ -66,31 +69,27 @@ struct Local {
     label: Option<String>,
 }
 
-/// The first non-empty value of the run-time variable and the build-time
-/// value.
-fn setting(var: &str, build: Option<&str>) -> Option<String> {
-    std::env::var(var)
-        .ok()
-        .into_iter()
-        .chain(build.map(str::to_owned))
-        .map(|v| v.trim().to_owned())
-        .find(|v| !v.is_empty())
-}
-
+/// Read once, so `config::install` must come first.
 fn local() -> &'static Local {
     static LOCAL: OnceLock<Local> = OnceLock::new();
     LOCAL.get_or_init(|| {
-        // An unknown run-time name falls back to the build's zone, then to
-        // the system zone.
-        let tz = std::env::var(ENV_TZ)
-            .ok()
+        let file = config::installed();
+        // An unknown run-time name falls back to the file's zone, then the
+        // build's, then the system zone.
+        let tz = config::candidates(ENV_TZ, file.tz.as_deref(), BUILD_TZ)
             .into_iter()
-            .chain(BUILD_TZ.map(str::to_owned))
-            .find_map(|name| TimeZone::get(name.trim()).ok())
+            .find_map(|name| TimeZone::get(&name).ok())
             .unwrap_or_else(TimeZone::system);
-        let label = setting(ENV_TZ_LABEL, BUILD_TZ_LABEL);
+        let label = config::candidates(ENV_TZ_LABEL, file.tz_label.as_deref(), BUILD_TZ_LABEL)
+            .into_iter()
+            .next();
         Local { tz, label }
     })
+}
+
+/// The local time zone, as for `local_hhmm`.
+pub fn local_zone() -> TimeZone {
+    local().tz.clone()
 }
 
 /// `HH:MM <label>` in the local time zone: `09:55 UK` with the owner's

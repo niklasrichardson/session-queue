@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 
 use cq::agy::AgyTurn;
 use cq::codex::{CHECK_AFTER, CodexQueue};
+use cq::config::{self, Config};
 use cq::done::{self, DoneRequest};
 use cq::error::{CqError, Result, exit};
 use cq::inbox::Inbox;
@@ -60,7 +61,8 @@ The queue root is CQ_ROOT (an absolute path). When it is unset, the root is
 the build's CQ_DEFAULT_ROOT, else cq in the per-user data folder. Default
 here: {root}
 The local time in CQ-NEW and list lines uses CQ_TZ (an IANA time zone name)
-and CQ_TZ_LABEL; here: {}.",
+and CQ_TZ_LABEL, else tz and tz_label in config.toml in the queue root;
+here: {}.",
         timefmt::local_description()
     )
 }
@@ -457,6 +459,9 @@ enum ReplyStatus {
 }
 
 fn main() -> ExitCode {
+    // Before parsing: the help text shows the local time zone, which is
+    // fixed once it is first read.
+    let config_error = load_config();
     let cli = match Cli::try_parse() {
         Ok(c) => c,
         Err(e) => {
@@ -470,7 +475,7 @@ fn main() -> ExitCode {
             return ExitCode::from(code as u8);
         }
     };
-    match run(cli.cmd) {
+    match run(cli.cmd, config_error) {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
             eprintln!("cq: {e}");
@@ -534,9 +539,39 @@ fn watch_to_agy(
     watch::watch(&root, opts, &mut agy)
 }
 
+/// Read `config.toml` in the queue root and use it for this process.
+/// Returns the error for a file that cannot be used. Without a usable root
+/// there is no file; the command reports the root problem itself.
+fn load_config() -> Option<CqError> {
+    let root = Root::from_env().ok()?;
+    match Config::load(&root) {
+        Ok(c) => {
+            config::install(c);
+            None
+        }
+        Err(e) => Some(e),
+    }
+}
+
 /// Run one command. Returns the exit code of a run that did not fail:
 /// 0, or 7 for a watcher that stopped because its name is asleep.
-fn run(cmd: Cmd) -> Result<i32> {
+///
+/// A `config.toml` that cannot be used stops every command except `init`
+/// and the hooks. A hook must never fail, so it runs without the file's
+/// settings.
+fn run(cmd: Cmd, config_error: Option<CqError>) -> Result<i32> {
+    if let Some(e) = config_error {
+        let is_hook = matches!(
+            cmd,
+            Cmd::SessionStart { .. } | Cmd::IdleAlert { .. } | Cmd::TurnEnd { .. }
+        );
+        if !is_hook && !matches!(cmd, Cmd::Init) {
+            return Err(e);
+        }
+        if is_hook && hook_debug(&cmd) {
+            eprintln!("cq: ignoring {}: {e}", config::FILE);
+        }
+    }
     match cmd {
         Cmd::Init => {
             let root = Root::from_env()?;
@@ -900,8 +935,12 @@ fn session_start(debug: bool) {
     let (Some(root), Some(name), Some(mode)) = (root, name, mode) else {
         return;
     };
-    let runtime_rules = std::env::var(ENV_RULES).ok();
-    let rules = rules_ref(runtime_rules.as_deref(), BUILD_RULES_PATH);
+    let candidates = config::candidates(
+        ENV_RULES,
+        config::installed().rules.as_deref(),
+        BUILD_RULES_PATH,
+    );
+    let rules = rules_ref(&candidates);
     let text = if let Some(rec) = sleep::read(&root, &name) {
         format!(
             "You are in the cq session queue as {name}, and {name} is asleep ({}). Do not start a watcher. Messages wait in your inbox. To wake, run /cq-start when the user or a coordinator's message asks you to.",
@@ -1016,19 +1055,26 @@ fn parse_idle_after(s: &str) -> std::result::Result<Duration, String> {
 const SUBAGENT_NOTE: &str = "This reminder is for the main conversation only: a subagent ignores it and does not act as this queue name.";
 
 /// The session rules file named in the `session-start` reminder: `CQ_RULES`
-/// at run time, else the build's `CQ_RULES_PATH`, else a generic pointer.
+/// at run time, else `rules` in the root's `config.toml`, else the build's
+/// `CQ_RULES_PATH`, else a generic pointer.
 const ENV_RULES: &str = "CQ_RULES";
 const BUILD_RULES_PATH: Option<&str> = option_env!("CQ_RULES_PATH");
 const GENERIC_RULES: &str = "your cq session rules file (docs/SESSION-RULES.md in your cq setup)";
 
-/// The first non-empty of the run-time and build-time paths, else the
+/// The first of the candidate paths (see `config::candidates`), else the
 /// generic wording.
-fn rules_ref<'a>(runtime: Option<&'a str>, build: Option<&'a str>) -> &'a str {
-    [runtime, build]
-        .into_iter()
-        .flatten()
-        .find(|p| !p.trim().is_empty())
-        .unwrap_or(GENERIC_RULES)
+fn rules_ref(candidates: &[String]) -> &str {
+    candidates.first().map_or(GENERIC_RULES, String::as_str)
+}
+
+/// Whether a hook command runs with `--debug`.
+fn hook_debug(cmd: &Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::SessionStart { debug: true }
+            | Cmd::IdleAlert { debug: true, .. }
+            | Cmd::TurnEnd { debug: true }
+    )
 }
 
 /// Read and drop the hook's JSON, if any, so the writer never sees a broken
@@ -1091,15 +1137,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rules_ref_prefers_runtime_then_build_then_generic() {
-        assert_eq!(
-            rules_ref(Some("/r/run.md"), Some("/r/build.md")),
-            "/r/run.md"
-        );
-        assert_eq!(rules_ref(Some(""), Some("/r/build.md")), "/r/build.md");
-        assert_eq!(rules_ref(None, Some("/r/build.md")), "/r/build.md");
-        assert_eq!(rules_ref(Some(" "), Some("")), GENERIC_RULES);
-        assert_eq!(rules_ref(None, None), GENERIC_RULES);
+    fn rules_ref_takes_the_first_candidate_else_generic() {
+        let paths = ["/r/run.md".to_owned(), "/r/build.md".to_owned()];
+        assert_eq!(rules_ref(&paths), "/r/run.md");
+        assert_eq!(rules_ref(&[]), GENERIC_RULES);
     }
 
     #[test]
