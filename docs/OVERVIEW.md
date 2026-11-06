@@ -6,7 +6,7 @@ Why `cq` exists, how one task moves through the queue, what each agent supports,
 
 A hand-off between coding sessions usually needs a person: to pass the message on, or to prompt the receiving session. With `cq`, a message wakes the receiving session itself, so hand-offs continue when nobody is at the keyboard. It works across agents: in tests, a Claude Code session sent a task to a Codex chat and got its reply. Built-in messaging can have its own limits; for example, Claude Code's cross-session messages stop for a person after 10 in a row.
 
-Measured on Windows: in an overnight test with the earlier Monitor mode, a session handled 27 queue turns in a row with no limit reached. In its first two days of real use, `cq` carried 361 messages between 10 sessions, and the median time from send to pick-up was 12 seconds.
+Measured on Windows: in an overnight test with the earlier Monitor mode, a session handled 27 queue turns in a row with no limit reached. In its first two days of real use, `cq` carried 361 messages between 10 sessions, and the median time from send to pick-up was 12 seconds. Which wake mode this was measured with is not recorded.
 
 ## Agent support
 
@@ -14,7 +14,7 @@ Measured on Windows: in an overnight test with the earlier Monitor mode, a sessi
 
 | | Claude Code | Codex |
 | --- | --- | --- |
-| Tested in | The Claude desktop app's Code tab, on Windows 11. One Claude Code CLI session on Windows answered 25 of 25 tasks in inbox mode with nobody typing (live test L3); its screen was not checked for a cap notice. Remote Control is not tested. | The Codex Desktop app, on Windows 11. `codex queue` alone also woke an interactive Codex CLI chat; the native watcher was not tested with one. |
+| Tested in | The Claude desktop app's Code tab, on Windows 11. One Claude Code CLI session on Windows answered 25 of 25 tasks in inbox mode with nobody typing (live test L3); its screen was not checked for a cap notice. Remote Control is not tested. | The Codex Desktop app and the interactive Codex CLI, on Windows 11. On 3 Nov 2026, the native watcher woke two interactive Codex CLI chats, also after about 50 minutes idle ([Test status](TESTING.md#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026)). |
 | Rules file | `~/.claude/CLAUDE.md`, with the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md) | `AGENTS.md`, with one section per queue name |
 | Queue name | Given in the start prompt | Named in the `AGENTS.md` section and in every wake prompt |
 | Default wake | `cq watch --to-inbox`, in the session. It posts into the session's Claude Code inbox. | `cq watch --to-codex`, outside the chat. It runs `codex queue` with a fixed prompt. |
@@ -85,8 +85,8 @@ Inbox mode became the default for Claude Code on 28 Oct 2026 ([#24](https://gith
 
 | Platform | `cq` | cq-top |
 | --- | --- | --- |
-| Windows 11 | Tested live with Claude Code (the Claude desktop app's Code tab) and Codex (the Codex Desktop app) | Tested |
+| Windows 11 | Tested live with Claude Code (the Claude desktop app's Code tab) and Codex (the Codex Desktop app and the interactive Codex CLI). A short live use with the Antigravity CLI on 6 Nov 2026 | Tested |
 | macOS | Partly tested on 29 Oct 2026 ([#1](https://github.com/niklasrichardson/session-queue/issues/1)): the build and all test suites except `tests/dispatch.rs` passed, and inbox mode posted into one Claude Code session in the desktop app. `tests/dispatch.rs` fails intermittently. Codex, live hand-offs between sessions and the Monitor fallback are not checked. | An earlier two-screen version ran on a Mac; the current screens are not tested there ([#17](https://github.com/niklasrichardson/session-queue/issues/17)) |
 | Linux | Not built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)) | Not tested |
 
-On 29 Oct 2026, one Claude Code CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (live test L3 in [Spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked the receiving session's screen for a cap notice in that test. Remote Control has not been tested. The native `--to-codex` watcher has not been tested with an interactive Codex CLI chat. Details are in [Test status](TESTING.md).
+On 29 Oct 2026, one Claude Code CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (live test L3 in [Spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked the receiving session's screen for a cap notice in that test. Remote Control has not been tested. On 3 Nov 2026, the native `--to-codex` watcher woke two interactive Codex CLI chats. On 6 Nov 2026, the Antigravity CLI watcher woke a real `agy` conversation, which claimed and finished a message. Details are in [Test status](TESTING.md).

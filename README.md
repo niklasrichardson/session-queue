@@ -40,7 +40,7 @@ flowchart TB
     R -.->|"reads"| TOP
 ```
 
-Either agent can send a task to the other. The receiving agent's own watcher wakes it, and the reply wakes the sender the same way. Only Claude Code and Codex have been tested.
+Either agent can send a task to the other. The receiving agent's own watcher wakes it, and the reply wakes the sender the same way. Claude Code and Codex have been tested live. The Antigravity CLI had a short live use on 6 Nov 2026 ([Test status](docs/TESTING.md#antigravity-cli-live-use-on-windows-6-november-2026)).
 
 - **The `cq` CLI** does every queue action: `send`, `claim`, `done`, `list`, `sleep`, `wake`. Each action reads or writes files; messages move between folders by atomic rename. The full layout is in [Commands](docs/COMMANDS.md#layout). There is no server, database or network.
 - **The watcher** (`cq watch --as NAME`) watches one inbox. Only one watcher runs per name. Each agent has its own way to be woken:

@@ -2,7 +2,7 @@
 
 This page holds only what differs for an agent other than Claude Code and Codex, or for a script. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). Back to the [README](../README.md).
 
-`cq` has been tested with Claude Code and Codex. The [Antigravity CLI](#antigravity-cli) watcher was tested with a fake `agy` only. Nothing else on this page has been tested with another agent. The tested setups are in [Claude Code setup](CLAUDE-CODE.md) and [Codex setup](CODEX.md).
+`cq` has been tested live with Claude Code and Codex. The [Antigravity CLI](#antigravity-cli) watcher had a short live use with a real `agy` on 6 Nov 2026. Nothing else on this page has been tested with another agent. The tested setups are in [Claude Code setup](CLAUDE-CODE.md) and [Codex setup](CODEX.md).
 
 ## Quick path for another agent
 
@@ -51,7 +51,7 @@ With polling, `cq sleep` does not stop the scheduled task. Each run still starts
 
 ## Antigravity CLI
 
-Experimental. `cq watch --as NAME --to-agy CONVERSATION_ID` wakes an Antigravity CLI (`agy`) conversation. For each batch of new messages, it runs one print-mode turn in that conversation: `agy --conversation CONVERSATION_ID -p PROMPT --output-format json`. The watcher was tested with a fake `agy` only. The `agy` command it runs was tested by hand ([Test status](TESTING.md#antigravity-cli-wake-on-windows-6-november-2026)). Options, output and exit codes are in [Commands](COMMANDS.md#wake-an-antigravity-cli-conversation).
+Experimental. `cq watch --as NAME --to-agy CONVERSATION_ID` wakes an Antigravity CLI (`agy`) conversation. For each batch of new messages, it runs one print-mode turn in that conversation: `agy --conversation CONVERSATION_ID -p PROMPT --output-format json`. On 6 Nov 2026, the watcher woke a real `agy` conversation on Windows 11, and the turn claimed and finished a message ([Test status](TESTING.md#antigravity-cli-live-use-on-windows-6-november-2026)). The `agy` command it runs was also tested by hand, and the watcher has automated tests with a fake `agy` ([Test status](TESTING.md#antigravity-cli-wake-on-windows-6-november-2026)). The Antigravity desktop app was not tested with `cq`. Options, output and exit codes are in [Commands](COMMANDS.md#wake-an-antigravity-cli-conversation).
 
 1. Put the queue rules in the conversation's instruction file (`GEMINI.md` or `AGENTS.md`), with a section for NAME. The default prompt tells the turn to follow that section.
 2. Check that a print-mode turn can run `cq` without an approval prompt. In the hand test, a print-mode turn ran `cq --version` without a prompt. The watcher never passes `--dangerously-skip-permissions`.
@@ -63,9 +63,16 @@ Experimental. `cq watch --as NAME --to-agy CONVERSATION_ID` wakes an Antigravity
 
 4. Send NAME a test message and check that a turn claims it. The watcher prints one line when a turn starts and one when it ends.
 
-Each wake is a full model turn. In the hand test, a turn took 4 seconds to about 3.5 minutes.
+Each wake is a full model turn. In the hand test, a turn took 4 seconds to about 3.5 minutes. In live use, a worker's turn started 3 seconds after the message was sent and ended after 58 seconds.
 
-**Not tested:** a turn while the same conversation is open in an interactive `agy --conversation CONVERSATION_ID`.
+**Open conversation.** In one live test, a turn ran while the same conversation was also open in an interactive `agy` window. The turn claimed and finished the message, but the open window did not show the turn. About 5 minutes later, the interactive session exited with `Read loop ... context canceled`. After it was reopened, the conversation history included the turn. The cause of the exit is not known. No way is known to send a prompt into an `agy` session that is already open.
+
+Until this is understood, do not keep the conversation open in an interactive `agy` while its watcher runs. To work in the conversation yourself:
+
+1. Put the name to sleep: `cq sleep --as NAME NAME`. The watcher exits 7.
+2. Open the conversation in `agy` and work in it.
+3. Close `agy`.
+4. Run `cq wake --as NAME NAME`, then start the watcher again.
 
 After a restart, start the watcher again, with `--takeover` if it exits 5. If it exits 11, read its last `cq:` line: a turn failed 4 times in a row, or `agy` answered from another conversation. Check the conversation ID, then start the watcher again.
 
