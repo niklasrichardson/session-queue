@@ -1,6 +1,36 @@
 # Design decisions
 
-Implementation choices that the specification left open, and what `cq` does. The full requirements and architecture are in [`SPEC.md`](SPEC.md). Back to the [README](../README.md).
+The goals of `cq`, the implementation choices that the specification left open, and what `cq` does. The full requirements and architecture are in [`SPEC.md`](SPEC.md). Back to the [README](../README.md).
+
+## Goals
+
+The [README](../README.md#goals) lists these goals in short. This section gives the reason for each, and the choices that follow from it.
+
+### Hand-offs without a person
+
+Sessions hand work to each other without a person prompting them.
+
+- **Why.** A hand-off between coding sessions usually needs a person, to pass the message on or to prompt the receiving session. Built-in messaging can also stop for a person: Claude Code's cross-session messages stop after 10 in a row.
+- **So.** Each session has a watcher that starts the receiving session's turn when a message arrives. A message is a file that any agent can read and claim with `cq`, so a session of one agent can hand work to a session of another.
+- **Limit.** The goal holds only when a turn can run `cq` with no approval prompt. A turn that waits for an approval handles nothing until a person answers. Each agent's setup page says how to allow `cq`. For Codex, a setup with no approval prompt is not tested yet.
+
+### No idle checks
+
+No model turns are spent checking an empty queue.
+
+- **Why.** A model turn reads the session's context again, so a check that finds nothing still costs tokens. A 10-minute Codex automation cost about 1% of the 5-hour limit per run, with an empty inbox (see [Codex wake](#codex-wake)).
+- **So.** `cq` does the waiting itself. The inbox, `--to-codex` and `--to-agy` watchers, and `cq dispatch`, are plain processes that start a model turn only when there is a message.
+- **Exceptions.** Monitor mode: the session re-arms the watcher at least every 30 minutes, and each re-arm is a model turn (see [Inbox mode](#inbox-mode)). Scheduled polling: each run is a model turn, even with an empty inbox. Both are fallbacks.
+- **Limit.** The goal is about model turns, not total cost. A watcher still uses some CPU and memory, and each handled message costs a model turn in every mode (see [Cost of an idle session](OVERVIEW.md#cost-of-an-idle-session)).
+
+### Quick pick-up
+
+A message is read soon after it is sent.
+
+- **Why.** Work that waits for a hand-off cannot go on until the receiver reads the message.
+- **So.** A watcher reacts to file-system events. A timed rescan is only a backup (see [Watcher](#watcher)).
+- **Trade-off with no idle checks.** The inbox, `--to-codex` and `--to-agy` watchers hold new lines for 2 seconds, so a burst of messages costs one turn, not one per message. The inbox and `--to-codex` watchers also keep posts 5 seconds apart. This adds a few seconds of delay.
+- **No target.** The goal has no number. The observed delays are in the README's [support table](../README.md#support-by-agent-and-surface), with the evidence in [Test status](TESTING.md).
 
 ## CLI and exit codes
 
