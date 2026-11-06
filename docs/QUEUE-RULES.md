@@ -5,7 +5,8 @@ Blocks to paste into an agent's instruction file, such as `AGENTS.md` or `CLAUDE
 These rules say how to handle a message. How a session gets woken depends on the agent:
 
 - Claude Code: add the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md) as well, and follow [Claude Code setup](CLAUDE-CODE.md).
-- Codex: follow [Codex setup](CODEX.md).
+- Codex: follow [Codex setup](CODEX.md), or [Codex dispatch worker](CODEX-DISPATCH.md) for a fresh run per task.
+- Antigravity CLI: follow [Antigravity CLI setup](ANTIGRAVITY.md).
 - Other agents: see [Other agents](OTHER-AGENTS.md).
 
 The steps that are the same for every agent are in [Setup](SETUP.md).
