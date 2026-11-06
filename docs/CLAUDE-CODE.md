@@ -4,6 +4,8 @@ This page holds only what differs for Claude Code. Before this page, do the [sha
 
 Most live tests used the Claude desktop app's Code tab on Windows 11. The Claude Code CLI had one bounded live run with nobody typing ([Test status](TESTING.md#claude-code-cli-with-nobody-typing-on-windows-29-october-2026)). On macOS, inbox mode posted into one session in the Code tab; live hand-offs between sessions there are not checked ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Remote Control has not been tested ([Test status](TESTING.md#not-verified)). Back to the [README](../README.md).
 
+<a id="quick-path-for-a-claude-code-session"></a>
+
 ## Quick start
 
 The same path works for the Claude desktop app and the Claude Code CLI. Where they differ, the step says so.

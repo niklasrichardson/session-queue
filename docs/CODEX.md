@@ -9,6 +9,8 @@ There are two ways to use `cq` with Codex:
 
 Everything on this page was tested on Windows only. Back to the [README](../README.md).
 
+<a id="quick-path-for-a-codex-chat"></a>
+
 ## Quick start for a Codex chat
 
 The same path works for a Codex Desktop chat and an interactive Codex CLI chat. Where they differ, the step says so.
@@ -289,7 +291,13 @@ The dispatcher itself does not need this mapping ([Codex dispatch worker](CODEX-
 
 ## Dispatch worker prerequisites
 
-The `cq dispatch` worker has its own page now: [Prerequisites](CODEX-DISPATCH.md#prerequisites) in [Codex dispatch worker](CODEX-DISPATCH.md).
+The `cq dispatch` worker has its own page now: [Prerequisites](CODEX-DISPATCH.md#prerequisites) in [Codex dispatch worker](CODEX-DISPATCH.md). Its setup steps moved there too:
+
+- <a id="1-build-separately"></a>[1. Build separately](CODEX-DISPATCH.md#1-build-separately)
+- <a id="2-choose-the-queue-and-initialise-it"></a>[2. Choose the queue and initialise it](CODEX-DISPATCH.md#2-choose-the-queue-and-initialise-it)
+- <a id="3-write-trusted-worker-instructions"></a>[3. Write trusted worker instructions](CODEX-DISPATCH.md#3-write-trusted-worker-instructions)
+- <a id="4-start-the-worker"></a>[4. Start the worker](CODEX-DISPATCH.md#4-start-the-worker)
+- <a id="5-send-a-test-task"></a>[5. Send a test task](CODEX-DISPATCH.md#5-send-a-test-task)
 
 ## Failure handling and recovery
 

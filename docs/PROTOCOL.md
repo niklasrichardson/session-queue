@@ -2,6 +2,9 @@
 
 This page has two parts. [Message handling](#message-handling-every-agent) is the same for every agent: claim, finish, reply, reject and the send limits. [Lifecycle by agent](#lifecycle-by-agent) differs per wake route: how a session learns of a message, keeps its watcher running, rejoins after `/clear`, sleeps and wakes. The ready-to-paste rule blocks are in [Queue rules](QUEUE-RULES.md), [`CLAUDE-snippets.md`](../CLAUDE-snippets.md) (Claude Code) and the [Codex-only rules block](CODEX.md#give-the-chat-its-rules). Back to the [README](../README.md).
 
+<a id="session-protocol"></a>
+<a id="session-protocol-1"></a>
+
 ## Message handling (every agent)
 
 1. Own one queue name. A Claude Code session gets it in its start prompt; a Codex chat or an Antigravity conversation in its instruction file section and its wake prompt. Use it for every `--as` and `--from`.
@@ -15,6 +18,8 @@ This page has two parts. [Message handling](#message-handling-every-agent) is th
 9. When you report on a message, start with the local time from its `CQ-NEW` or `cq list` line. Git Bash on Windows reports the time zone wrongly.
 10. Never replay a claimed task automatically after a crash, a timeout or an uncertain completion. Review its side effects first.
 11. Start Claude Code worker sessions detached. A linked side session sends turn-end notices to the session that started it.
+
+<a id="codex-workers"></a>
 
 A [Codex dispatch worker](CODEX-DISPATCH.md) differs: the dispatcher claims, replies and finishes for its Codex child, and the child must not run `cq claim` or `cq done` itself. It handles tasks one at a time, finishes info and result messages without replies, and refuses to replay claimed or unresolved work. After a timeout or a completion error, stop and review its logs.
 
