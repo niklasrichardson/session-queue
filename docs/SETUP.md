@@ -224,7 +224,7 @@ To move a queue root into the default location, or to another drive:
    ```
 
 2. Create a file named `PAUSE` in the old root, so that `cq send` refuses new messages.
-3. Stop every queue writer. `PAUSE` stops new messages only: sessions can still claim, finish and reject tasks, and the hooks still write their files. Stopping the watchers is not enough. Close every session that uses the queue (Claude Code, Codex, Antigravity CLI and any other agent), and stop every watcher and dispatcher. `cq status --as NAME` exits 10 when no watcher runs for `NAME`.
+3. Stop every queue writer. `PAUSE` stops new messages only: sessions can still claim, finish and reject tasks, and the hooks still write their files. Stopping the watchers is not enough. Close every session that uses the queue (Claude Code, Codex, Antigravity CLI and any other agent), and stop every watcher and dispatcher. To check that no watcher runs for `NAME`, run `cq status --as NAME`: it exits 10 for an awake name, and 7 with `watcher=stopped` for a sleeping name.
 4. Copy the old root's contents into the new root, which must be empty. Keep the old root until step 7.
 5. Compare the file counts. They must be equal; if not, copy again before you go on:
 
