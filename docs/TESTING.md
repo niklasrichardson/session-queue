@@ -14,6 +14,21 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Sandbox writes to the default root on Windows, 6 November 2026
+
+A finding from live use on Windows 11, not a test of a cq change. See [Check that agents write the root for real](SETUP.md#check-that-agents-write-the-root-for-real).
+
+- Claude Code's Bash tool ran in a sandbox that redirected writes under `%LOCALAPPDATA%` (`C:\Users\<user>\AppData\Local`) into a private overlay.
+- Later Bash commands in that session saw the files. PowerShell and other programs did not. Whether other sandboxed sessions shared that copy was not checked.
+- Writes under the project's working folders were real.
+- A queue root at the default `%LOCALAPPDATA%\cq` therefore split into separate copies. Agents that ran `cq` through such a sandbox saw one queue. Real programs (watchers started elsewhere, Codex, `cq-top`) saw another.
+
+Not checked:
+
+- Whether this happens on every Claude Code install, or only with some sandbox settings.
+- Whether two sandboxed sessions share one private copy.
+- macOS and Linux.
+
 ## Root config.toml and the watcher script on Windows, 6 November 2026
 
 `config.toml` in the queue root (see [Configuration](SETUP.md#configuration)) and `examples/start-watchers.ps1` (see [Watchers](WATCHERS.md)). Checked on Windows 11 with `cargo test --workspace` (330 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`. All passed.
