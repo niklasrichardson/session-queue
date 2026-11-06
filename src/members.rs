@@ -31,6 +31,25 @@ pub const ENV_HOST_SESSION: &str = "CLAUDE_CODE_HOST_SESSION_ID";
 pub const ENV_SESSION: &str = "CLAUDE_CODE_SESSION_ID";
 pub const MAX_KEY_LEN: usize = 64;
 
+/// The session variables a started agent must not get: with them it would
+/// read as the session that started `cq`, to `cq` (`session_key`) and to its
+/// own hooks.
+pub const SESSION_VARS: [&str; 5] = [
+    ENV_GENERIC_SESSION,
+    "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    ENV_HOST_SESSION,
+    ENV_SESSION,
+];
+
+/// Remove `SESSION_VARS` from the environment `command` passes on.
+pub fn remove_session_vars(command: &mut std::process::Command) -> &mut std::process::Command {
+    for name in SESSION_VARS {
+        command.env_remove(name);
+    }
+    command
+}
+
 /// How the name's watcher delivers its lines: line 4 of the record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

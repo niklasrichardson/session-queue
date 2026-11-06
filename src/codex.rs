@@ -39,6 +39,7 @@ use crate::fsutil;
 use crate::inbox::{
     BATCH_WINDOW, Clock, MIN_GAP, POST_TRIES, RETRY_FIRST, SOCKET_VAR, SystemClock, TOKEN_VAR,
 };
+use crate::members;
 use crate::message::MsgType;
 use crate::names::is_valid_id;
 use crate::root::Root;
@@ -80,7 +81,7 @@ pub struct CodexBin(OsString);
 
 impl Runner for CodexBin {
     fn queue(&mut self, thread: &str, message: &str) -> io::Result<String> {
-        let mut child = Command::new(&self.0)
+        let mut child = members::remove_session_vars(&mut Command::new(&self.0))
             .args(["queue", "--thread", thread, "--message", message])
             .env_remove(SOCKET_VAR)
             .env_remove(TOKEN_VAR)
