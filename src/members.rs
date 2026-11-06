@@ -9,7 +9,8 @@
 //! line 2, the watcher's working folder on line 3 (cq-top uses it to show a
 //! sleeping name beside its session), and the watcher's mode on line 4:
 //! `monitor`, `inbox` for `cq watch --to-inbox`, whose watcher outlives
-//! `/clear`, or `codex` for `cq watch --to-codex`, which wakes a Codex chat.
+//! `/clear`, `codex` for `cq watch --to-codex`, which wakes a Codex chat, or
+//! `agy` for `cq watch --to-agy`, which wakes an Antigravity CLI conversation.
 //! Readers of the name use line 1 only, so a record from an older
 //! `cq` still works; a missing or unknown mode reads as `monitor`.
 //! `members/` is created on demand, so an older root without it still works.
@@ -40,6 +41,9 @@ pub enum Mode {
     /// `--to-codex`: a background process, usually outside the Codex chat
     /// it wakes.
     Codex,
+    /// `--to-agy`: a background process outside the Antigravity CLI
+    /// conversation it wakes.
+    Agy,
 }
 
 impl Mode {
@@ -49,6 +53,7 @@ impl Mode {
             Mode::Monitor => "monitor",
             Mode::Inbox => "inbox",
             Mode::Codex => "codex",
+            Mode::Agy => "agy",
         }
     }
 
@@ -57,6 +62,7 @@ impl Mode {
         match line.map(str::trim) {
             Some("inbox") => Mode::Inbox,
             Some("codex") => Mode::Codex,
+            Some("agy") => Mode::Agy,
             _ => Mode::Monitor,
         }
     }
@@ -75,10 +81,21 @@ pub fn session_key() -> Option<String> {
 /// chat, not the Claude Code session that may have started it, and that
 /// session's own record must survive.
 pub fn codex_key(name: &str) -> Option<String> {
+    own_key("codex", name)
+}
+
+/// The key of a `--to-agy` watcher for `name`: CQ_SESSION_ID when set,
+/// else `agy-<name>`, for the same reason as `codex_key`.
+pub fn agy_key(name: &str) -> Option<String> {
+    own_key("agy", name)
+}
+
+/// CQ_SESSION_ID when set, else `<prefix>-<name>`.
+fn own_key(prefix: &str, name: &str) -> Option<String> {
     std::env::var(ENV_GENERIC_SESSION)
         .ok()
         .and_then(|v| sanitise_key(&v))
-        .or_else(|| sanitise_key(&format!("codex-{name}")))
+        .or_else(|| sanitise_key(&format!("{prefix}-{name}")))
 }
 
 /// Keep `[A-Za-z0-9_-]` (any other character becomes `_`), at most 64
@@ -205,7 +222,7 @@ mod tests {
 
     #[test]
     fn modes_round_trip_and_unknown_reads_as_monitor() {
-        for m in [Mode::Monitor, Mode::Inbox, Mode::Codex] {
+        for m in [Mode::Monitor, Mode::Inbox, Mode::Codex, Mode::Agy] {
             assert_eq!(Mode::parse(Some(m.as_str())), m);
         }
         assert_eq!(Mode::parse(Some(" codex ")), Mode::Codex);

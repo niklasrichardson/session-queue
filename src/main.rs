@@ -11,6 +11,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::de::DeserializeOwned;
 
+use cq::agy::AgyTurn;
 use cq::codex::{CHECK_AFTER, CodexQueue};
 use cq::done::{self, DoneRequest};
 use cq::error::{CqError, Result, exit};
@@ -40,6 +41,8 @@ Exit codes:
   8   watch --to-inbox: the session's inbox cannot be reached (session gone)
   9   watch --to-codex: codex queue failed 4 times; the Codex chat is not woken
   10  status: no watcher runs for the name
+  11  watch --to-agy: an agy turn failed 4 times in a row, or ran in another
+      conversation; the conversation is not woken
   64  bad arguments or bad JSON input
   70  any other error (I/O, CQ_ROOT missing or not initialised)";
 
@@ -150,7 +153,8 @@ enum Cmd {
     /// prints CQ-SLEEP and exits 7. A coordinator's watcher also prints one
     /// CQ-WAKE line per message that has waited 2 minutes for a sleeping
     /// name. Experimental: --to-inbox posts the lines into this Claude Code
-    /// session's inbox instead, and --to-codex wakes a Codex chat. When your
+    /// session's inbox instead, --to-codex wakes a Codex chat, and --to-agy
+    /// wakes an Antigravity CLI conversation. When your
     /// name is listed in CQ_ROOT/idle-alerts, it also sends the idle alert
     /// after a turn end recorded by `cq turn-end`, if the session stays idle.
     #[command(after_help = exit_help())]
@@ -162,7 +166,8 @@ enum Cmd {
         #[arg(long)]
         takeover: bool,
         /// Exit after this many seconds. Default 1790, just under the
-        /// Monitor's 1800 s cap; no limit with --to-inbox or --to-codex.
+        /// Monitor's 1800 s cap; no limit with --to-inbox, --to-codex or
+        /// --to-agy.
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         max_seconds: Option<u64>,
         /// Experimental. Post the lines into this Claude Code session's own
@@ -199,6 +204,20 @@ enum Cmd {
         /// queue database was skipped.
         #[arg(long, requires = "to_codex")]
         debug: bool,
+        /// Experimental. Wake this Antigravity CLI conversation (its ID) when
+        /// messages arrive: run one `agy --conversation ID -p PROMPT` turn per
+        /// batch with a fixed prompt, never message text. Run it in the
+        /// background, outside the conversation.
+        #[arg(long, value_name = "CONVERSATION_ID",
+              conflicts_with_all = ["to_inbox", "to_codex"])]
+        to_agy: Option<String>,
+        /// The Antigravity CLI executable for --to-agy. Default: agy on PATH.
+        #[arg(long, value_name = "PATH", requires = "to_agy")]
+        agy_bin: Option<OsString>,
+        /// The prompt each --to-agy turn runs, instead of the default queue
+        /// check prompt. It must not contain anything a queue message wrote.
+        #[arg(long, value_name = "TEXT", requires = "to_agy")]
+        agy_prompt: Option<String>,
         /// Send the idle alert this long after a turn end recorded by
         /// `cq turn-end`, when no activity is observed since: no transcript
         /// write after the first 30 s, and no line from this watcher. For
@@ -498,6 +517,24 @@ fn watch_to_codex(
     watch::watch(&root, opts, &mut codex)
 }
 
+/// `cq watch --to-agy`. Errors go to stderr only: the conversation is not
+/// told that its watcher stopped.
+fn watch_to_agy(
+    opts: &WatchOptions,
+    conversation: &str,
+    bin: Option<OsString>,
+    prompt: Option<String>,
+) -> Result<Ended> {
+    let mut agy = AgyTurn::start(&opts.name, conversation, bin, prompt)?;
+    if let Err(e) = platform::install_interrupt_handler() {
+        eprintln!(
+            "cq watch: a signal will stop the watcher before it starts a turn for held messages ({e})"
+        );
+    }
+    let root = Root::open()?;
+    watch::watch(&root, opts, &mut agy)
+}
+
 /// Run one command. Returns the exit code of a run that did not fail:
 /// 0, or 7 for a watcher that stopped because its name is asleep.
 fn run(cmd: Cmd) -> Result<i32> {
@@ -553,19 +590,38 @@ fn run(cmd: Cmd) -> Result<i32> {
             codex_check_seconds,
             codex_queue_db,
             debug,
+            to_agy,
+            agy_bin,
+            agy_prompt,
             idle_after,
             idle_every,
         } => {
-            let mode = match (&to_codex, to_inbox) {
-                (Some(_), _) => members::Mode::Codex,
-                (None, true) => members::Mode::Inbox,
-                (None, false) => members::Mode::Monitor,
+            // clap does not enforce `requires` once a conflicting mode flag
+            // is given, so check that each mode's options come with it.
+            if to_codex.is_none()
+                && (codex_bin.is_some()
+                    || codex_prompt.is_some()
+                    || codex_queue_db.is_some()
+                    || debug)
+            {
+                return Err(CqError::usage(
+                    "--codex-bin, --codex-prompt, --codex-queue-db and --debug need --to-codex",
+                ));
+            }
+            if to_agy.is_none() && (agy_bin.is_some() || agy_prompt.is_some()) {
+                return Err(CqError::usage("--agy-bin and --agy-prompt need --to-agy"));
+            }
+            let mode = match (&to_codex, &to_agy, to_inbox) {
+                (Some(_), _, _) => members::Mode::Codex,
+                (None, Some(_), _) => members::Mode::Agy,
+                (None, None, true) => members::Mode::Inbox,
+                (None, None, false) => members::Mode::Monitor,
             };
             let opts = WatchOptions {
-                member_key: if to_codex.is_some() {
-                    members::codex_key(&name)
-                } else {
-                    members::session_key()
+                member_key: match mode {
+                    members::Mode::Codex => members::codex_key(&name),
+                    members::Mode::Agy => members::agy_key(&name),
+                    _ => members::session_key(),
                 },
                 name,
                 takeover,
@@ -588,6 +644,8 @@ fn run(cmd: Cmd) -> Result<i32> {
                     codex_queue_db,
                     debug,
                 )?
+            } else if let Some(conversation) = &to_agy {
+                watch_to_agy(&opts, conversation, agy_bin, agy_prompt)?
             } else if to_inbox {
                 watch_to_inbox(&opts)?
             } else {
@@ -864,6 +922,14 @@ fn session_start(debug: bool) {
     } else if mode == members::Mode::Codex {
         format!(
             "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Codex watcher for {name} (cq watch --as {name} --to-codex) has stopped, so nothing wakes the Codex chat for {name}. Do not start a watcher for {name} here: tell the user, who restarts it outside the chat (see docs/CODEX.md). Run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else if mode == members::Mode::Agy && watch::is_running(&root, &name) {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). An Antigravity CLI watcher (cq watch --as {name} --to-agy) still runs and wakes the conversation for {name} with agy turns: do not start a watcher for {name} here and do not use --takeover. Run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else if mode == members::Mode::Agy {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Antigravity CLI watcher for {name} (cq watch --as {name} --to-agy) has stopped, so nothing wakes the conversation for {name}. Do not start a watcher for {name} here: tell the user, who restarts it outside the conversation (see docs/OTHER-AGENTS.md). Run cq list --as {name} and handle any UNCLAIMED messages."
         )
     } else {
         format!(

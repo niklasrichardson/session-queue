@@ -56,6 +56,8 @@ After `/clear` or a compaction, a session forgets its queue name and rules, so i
   - `inbox`, and nothing for NAME is alive: the inbox watcher has stopped. Start `cq watch --as NAME --to-inbox` again in the background with the Bash tool, with `--takeover` if it exits 5.
   - `codex`, and a watcher for NAME is alive: a `cq watch --to-codex` watcher wakes the Codex chat for NAME. Do not start a watcher for NAME and do not use `--takeover`.
   - `codex`, and nothing for NAME is alive: the Codex watcher has stopped. Do not start a watcher for NAME in this session; tell the user, who restarts it outside the chat.
+  - `agy`, and a watcher for NAME is alive: a `cq watch --to-agy` watcher wakes the Antigravity CLI conversation for NAME. Do not start a watcher for NAME and do not use `--takeover`.
+  - `agy`, and nothing for NAME is alive: the Antigravity CLI watcher has stopped. Do not start a watcher for NAME in this session; tell the user, who restarts it outside the conversation.
   - `monitor`: start the watcher Monitor, with `--takeover` if it exits 5. The Monitor ended with the old conversation.
 
   `cq session-start` and `cq status` use the same rule as [cq-top](CQ-TOP.md#limits): NAME is alive when `heartbeat/NAME.pid` exists and the heartbeat is less than 90 seconds old. It never opens the lock file, so it cannot stop a watcher that is starting. A watcher that exits cleanly removes its pid file, so it counts as stopped at once. A watcher that was killed leaves its pid file, so it counts as alive until its heartbeat is 90 seconds old.

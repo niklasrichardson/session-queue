@@ -1070,6 +1070,7 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 match w.and_then(|w| s.mode(w)) {
                     Some(Mode::Inbox) => Cell::from("inbox").style(t.info),
                     Some(Mode::Codex) => Cell::from("codex").style(t.info),
+                    Some(Mode::Agy) => Cell::from("agy").style(t.info),
                     Some(Mode::Monitor) => Cell::from("mon"),
                     None => dash(),
                 },

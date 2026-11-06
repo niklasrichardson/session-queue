@@ -106,8 +106,9 @@ A narrow terminal drops the least important columns first: mem, sub, claim, mode
 
 - Conversations come from the `conversation_summaries` table in `~/.gemini/antigravity-cli/conversation_summaries.db`. Conversations with a parent conversation or a nesting depth above 0 are skipped.
 - The state uses `last_modified_time`, and a `step_count` that grew since the last scan counts as activity now. `status`, `not_fully_idle` and `killed` are not used, because their meaning is not documented.
-- The folder is the first entry in `workspace_uris`. It is used for last change, for cpu% and mem (an `agy` process in that folder) and for the cq columns (a watcher started under that `agy` process).
-- A conversation is shown when it changed in the last 24 hours, or when it is the newest in a folder where `agy` or its cq watcher runs.
+- The folder is the first entry in `workspace_uris`. It is used for last change, for cpu% and mem (an `agy` process in that folder; an `agy -p` turn, such as a `--to-agy` watcher starts, does not count) and for the cq columns (a watcher started under that `agy` process).
+- A conversation is shown when it changed in the last 24 hours, when a `cq watch --to-agy` watcher names its ID, or when it is the newest in a folder where `agy` or its cq watcher runs.
+- The cq columns come first from a `cq watch --to-agy CONVERSATION_ID` watcher that names the conversation's ID. A `--to-agy` watcher is not matched to other rows by folder.
 - Model, context, tokens and cost show `-`. The Antigravity CLI keeps them in undocumented protobuf data, which `cq-top` does not parse.
 
 **Both.**
@@ -219,15 +220,16 @@ A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 
 
 ## Watcher mode
 
-A watcher runs in one of three modes (see [Commands](COMMANDS.md#watch-into-the-inbox)):
+A watcher runs in one of four modes (see [Commands](COMMANDS.md#watch-into-the-inbox)):
 
 - **inbox** (the default): `cq watch --to-inbox`, a background process that posts into the session's inbox. It has no time limit and keeps one process ID until it stops. It survives `/clear`.
 - **codex**: `cq watch --to-codex`, a background process that wakes a Codex chat with `codex queue` (see [Commands](COMMANDS.md#wake-a-codex-chat)). It has no time limit. It usually runs outside the chat it wakes, and its `members/` key is `codex-<name>` unless `CQ_SESSION_ID` was set.
+- **agy**: `cq watch --to-agy`, a background process that wakes an Antigravity CLI conversation with `agy` print-mode turns (see [Commands](COMMANDS.md#wake-an-antigravity-cli-conversation)). It has no time limit. It runs outside the conversation it wakes, and its `members/` key is `agy-<name>` unless `CQ_SESSION_ID` was set. Its row's agent is `gemini`.
 - **monitor** (the fallback): `cq watch` under a Claude Code Monitor. It stops after 1790 seconds and the session re-arms it, so it gets a new process ID about every 30 minutes.
 
 An inbox watcher that is killed without warning does not tell its session. Its heartbeat then shows `STALE` after 90 seconds, so the Watchers box is where you see that an inbox watcher has stopped.
 
-`cq-top` takes the mode from `--to-inbox` or `--to-codex` in the watcher process's arguments while it can see the process. Otherwise it reads line 4 of the name's `members/` record. A record without line 4 (from an older `cq`) means monitor. A name with neither shows `-`.
+`cq-top` takes the mode from `--to-inbox`, `--to-codex` or `--to-agy` in the watcher process's arguments while it can see the process. Otherwise it reads line 4 of the name's `members/` record. A record without line 4 (from an older `cq`) means monitor. A name with neither shows `-`.
 
 Nothing else in `cq-top` depends on the mode. Liveness is the heartbeat age in both modes, and `cq-top` shows only the current process ID, so it counts no restarts.
 

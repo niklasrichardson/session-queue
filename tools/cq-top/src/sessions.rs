@@ -486,13 +486,17 @@ fn watch_name(args: &[String]) -> Option<String> {
 }
 
 /// The mode of a `cq watch` process, from its arguments: `--to-inbox` posts into the
-/// session's inbox, `--to-codex` wakes a Codex chat, else the watcher prints for a Monitor.
+/// session's inbox, `--to-codex` wakes a Codex chat, `--to-agy` an Antigravity CLI
+/// conversation, else the watcher prints for a Monitor.
 fn watch_mode(args: &[String]) -> cq::members::Mode {
-    if args
-        .iter()
-        .any(|a| a == "--to-codex" || a.starts_with("--to-codex="))
-    {
+    let has = |flag: &str| {
+        args.iter()
+            .any(|a| a == flag || a.strip_prefix(flag).is_some_and(|v| v.starts_with('=')))
+    };
+    if has("--to-codex") {
         cq::members::Mode::Codex
+    } else if has("--to-agy") {
+        cq::members::Mode::Agy
     } else if args.iter().any(|a| a == "--to-inbox") {
         cq::members::Mode::Inbox
     } else {
@@ -803,10 +807,12 @@ struct Procs {
     /// processes in that folder and their descendants.
     sessions: HashMap<(Agent, String), (PathBuf, f32, u64)>,
     /// (agent, session folder) -> cq name of its watcher; see `match_watchers`.
-    /// `--to-codex` watchers are not here.
+    /// `--to-codex` and `--to-agy` watchers are not here.
     watchers: HashMap<(Option<Agent>, String), String>,
     /// The thread in `cq watch --to-codex THREAD` (an ID or a thread name) -> cq name.
     codex_threads: HashMap<String, String>,
+    /// The conversation ID in `cq watch --to-agy ID` -> cq name.
+    agy_conversations: HashMap<String, String>,
     /// cq name -> mode, from the arguments of its `cq watch` process.
     modes: HashMap<String, cq::members::Mode>,
 }
@@ -815,8 +821,8 @@ struct Procs {
 struct ProcInfo {
     parent: Option<sysinfo::Pid>,
     /// A session process: Claude Code (named `claude`, not a `--type=` helper), a Codex chat
-    /// in a terminal (see `codex_chat`) or the Antigravity CLI (`agy`). `None` for any
-    /// other process.
+    /// in a terminal (see `codex_chat`) or the Antigravity CLI (`agy`, not a `-p` turn).
+    /// `None` for any other process.
     session: Option<Agent>,
     cwd: Option<PathBuf>,
 }
@@ -849,18 +855,34 @@ fn codex_chat(args: &[String]) -> bool {
         .any(|a| CODEX_NOT_CHAT.contains(&a.as_str()))
 }
 
-/// The thread in `cq watch --to-codex THREAD` (or `--to-codex=THREAD`).
-fn codex_thread(args: &[String]) -> Option<String> {
+/// An `agy` process that is a conversation, not a one-shot `-p` turn such as those
+/// `cq watch --to-agy` starts.
+fn agy_chat(args: &[String]) -> bool {
+    !args.iter().skip(1).any(|a| a == "-p")
+}
+
+/// The value of `flag` in a command line: `FLAG VALUE` or `FLAG=VALUE`.
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        if a == "--to-codex" {
+        if a == flag {
             return it.next().cloned();
         }
-        if let Some(t) = a.strip_prefix("--to-codex=") {
-            return Some(t.to_string());
+        if let Some(v) = a.strip_prefix(flag).and_then(|v| v.strip_prefix('=')) {
+            return Some(v.to_string());
         }
     }
     None
+}
+
+/// The thread in `cq watch --to-codex THREAD` (or `--to-codex=THREAD`).
+fn codex_thread(args: &[String]) -> Option<String> {
+    flag_value(args, "--to-codex")
+}
+
+/// The conversation in `cq watch --to-agy ID` (or `--to-agy=ID`).
+fn agy_conversation(args: &[String]) -> Option<String> {
+    flag_value(args, "--to-agy")
 }
 
 /// How far up a watcher's parents to look for its session: `cq` runs under a few shells.
@@ -1038,17 +1060,19 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
                 (!args(p).iter().any(|a| a.starts_with("--type="))).then_some(Agent::Claude)
             }
             "codex" => codex_chat(&args(p)).then_some(Agent::Codex),
-            "agy" => Some(Agent::Gemini),
+            "agy" => agy_chat(&args(p)).then_some(Agent::Gemini),
             "cq" => {
                 let a = args(p);
                 if let Some(name) = watch_name(&a) {
                     out.modes.entry(name.clone()).or_insert(watch_mode(&a));
-                    // A `--to-codex` watcher names its thread, so it is matched by that.
-                    match codex_thread(&a) {
-                        Some(thread) => {
-                            out.codex_threads.entry(thread).or_insert(name);
-                        }
-                        None => watchers.push((*pid, name)),
+                    // A `--to-codex` or `--to-agy` watcher names its thread or
+                    // conversation, so it is matched by that.
+                    if let Some(thread) = codex_thread(&a) {
+                        out.codex_threads.entry(thread).or_insert(name);
+                    } else if let Some(id) = agy_conversation(&a) {
+                        out.agy_conversations.entry(id).or_insert(name);
+                    } else {
+                        watchers.push((*pid, name));
                     }
                 }
                 None
@@ -1077,7 +1101,10 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
         let Some(name) = file.strip_suffix(".pid") else {
             continue;
         };
-        if out.modes.get(name) == Some(&cq::members::Mode::Codex) {
+        if matches!(
+            out.modes.get(name),
+            Some(cq::members::Mode::Codex | cq::members::Mode::Agy)
+        ) {
             continue;
         }
         let pid = fs::read_to_string(e.path())
@@ -1529,8 +1556,9 @@ impl Scanner {
         self.rollouts.retain(|p, _| used.contains(p));
     }
 
-    /// One row per Antigravity CLI conversation changed in the last 24 hours, or newest in
-    /// a folder where `agy` or a cq watcher runs. Activity only: model, context, tokens and
+    /// One row per Antigravity CLI conversation changed in the last 24 hours, named by a
+    /// running `cq watch --to-agy` watcher, or newest in a folder where `agy` or a cq
+    /// watcher runs. Activity only: model, context, tokens and
     /// cost are dashes (see `agents`).
     fn gemini_rows(&mut self, now: i64, procs: Option<&Procs>, rows: &mut Vec<Row>) {
         let convs = self
@@ -1563,8 +1591,12 @@ impl Scanner {
                 .and_then(|p| p.sessions.get(&(Agent::Gemini, k.clone())))
                 .filter(|_| is_newest);
             let watcher = procs
-                .and_then(|p| p.watchers.get(&(Some(Agent::Gemini), k.clone())))
-                .filter(|_| is_newest && !k.is_empty())
+                .and_then(|p| p.agy_conversations.get(&c.id))
+                .or_else(|| {
+                    procs
+                        .and_then(|p| p.watchers.get(&(Some(Agent::Gemini), k.clone())))
+                        .filter(|_| is_newest && !k.is_empty())
+                })
                 .cloned();
             if proc.is_none() && watcher.is_none() && now - active > SHOW_SECS {
                 continue;
@@ -1864,6 +1896,18 @@ mod tests {
                 "019a-thread"
             ])),
             Mode::Codex
+        );
+        assert_eq!(
+            watch_mode(&args(&["cq", "watch", "--as", "w1", "--to-agy", "conv-1"])),
+            Mode::Agy
+        );
+        assert_eq!(
+            watch_mode(&args(&["cq", "watch", "--as", "w1", "--to-agy=conv-1"])),
+            Mode::Agy
+        );
+        assert_eq!(
+            watch_mode(&args(&["cq", "watch", "--as", "w1", "--to-agyx"])),
+            Mode::Monitor
         );
     }
 
@@ -2419,6 +2463,23 @@ mod tests {
             Some("t2".into())
         );
         assert_eq!(codex_thread(&args("cq watch --as demo --to-inbox")), None);
+        assert_eq!(
+            agy_conversation(&args("cq watch --as demo-agy --to-agy c1")),
+            Some("c1".into())
+        );
+        assert_eq!(
+            agy_conversation(&args("cq watch --as demo-agy --to-agy=c2")),
+            Some("c2".into())
+        );
+        assert_eq!(
+            agy_conversation(&args("cq watch --as demo --to-codex t1")),
+            None
+        );
+        assert!(agy_chat(&args("agy")));
+        assert!(agy_chat(&args("agy --conversation c1")));
+        assert!(!agy_chat(&args(
+            "agy --conversation c1 -p hi --output-format json"
+        )));
         let a = Path::new("/work/a");
         let newest =
             newest_by_folder([(Some(a), 5, "x"), (Some(a), 9, "y"), (None, 99, "z")].into_iter());

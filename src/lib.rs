@@ -4,6 +4,7 @@
 //! `done`, `list`, `requeue`, `leave`, `members`, `sleep`, `wake`, `status`, `session-start`, `turn-end` and `idle-alert`. The library holds all queue logic so the integration tests can
 //! check the message validator directly.
 
+pub mod agy;
 pub mod claim;
 pub mod codex;
 pub mod dispatch;

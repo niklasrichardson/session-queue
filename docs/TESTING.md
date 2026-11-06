@@ -14,6 +14,26 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Antigravity CLI wake on Windows, 6 November 2026
+
+`cq watch --to-agy` (experimental, see [Commands](COMMANDS.md#wake-an-antigravity-cli-conversation)). Checked on Windows 11 with `cargo test --workspace` (312 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check`. All passed.
+
+The `agy` command that the watcher runs was tested by hand on Windows on 6 November 2026, before the watcher was written:
+
+- `agy --conversation CONVERSATION_ID -p PROMPT --output-format json` prints one JSON object with `conversation_id`, `status` (`SUCCESS`), `response`, `duration_seconds`, `num_turns` and `usage`. A line `root agent idle; waiting for 1 background task(s) to finish` can come before it.
+- `--conversation` resumes the conversation from any folder. The turn's workspace stays the conversation's own.
+- A print-mode turn ran `cq --version` without a permission prompt.
+- Turns took 4 to 80 seconds, and up to about 3.5 minutes.
+- Two print-mode turns on one conversation at the same time both succeeded.
+
+Tests, all with a fake `agy`; no test runs the real one:
+
+- Unit tests in `src/agy.rs` (14 tests) use a fake runner and the inbox's fake clock. They cover: one turn per 2-second batch, with the fixed prompt; lines during a turn give one turn after it; `CQ-WAKE` and `CQ-SLEEP` start nothing; held lines are dropped when asleep, and a normal stop starts a last turn; retries 1, 2 and 4 seconds apart, then exit 11; a success resets the failure count; a failed start is retried; another conversation is not retried; a turn past the time limit is stopped and retried; usage errors for an empty or multi-line conversation ID and an empty prompt; the JSON is found after other lines; a non-zero exit, no JSON or a status other than `SUCCESS` fails; the summary never holds the `response`; each turn gets new output files.
+- `tests/to_agy.rs` (9 tests) runs the real `cq` against a temporary queue root and a fake `agy` (`tests/support/fake_agy.rs`) that records its arguments. The tests check: two waiting messages give one turn, and a later message a second; the arguments are exactly `--conversation ID -p PROMPT --output-format json`, and no subject, body, sender name or ID reaches them; the `response` text is never printed; the temporary output files are removed; `cq sleep` stops the watcher with exit 7; a name asleep at start exits 7 with no turn; `--agy-prompt` replaces the prompt; a non-zero exit, a status other than `SUCCESS` and no JSON each give 4 turns, then exit 11; another `conversation_id` gives 1 turn, then exit 11; a slow turn does not block the watcher, messages during it give one more turn, and `cq sleep` stops the watcher within 3 seconds while a turn runs; bad flag combinations exit 64; the record is `members/agy-NAME` with mode `agy`, `CQ_SESSION_ID` sets the key, and `cq status` shows `mode=agy`; `cq session-start` for an `agy` key says not to start a watcher, both while the watcher runs and after it stops. The fake `agy` fails if `CLAUDE_CODE_MESSAGING_TOKEN` reaches it.
+- cq-top: `--to-agy` in a process's arguments and an `agy` record show the mode `agy` and the agent `gemini`; the conversation ID is read from `--to-agy ID` and `--to-agy=ID`; an `agy -p` turn is not counted as a conversation's process.
+
+Not verified: `cq watch --to-agy` with a real `agy`; a turn while the same conversation is open in an interactive `agy --conversation CONVERSATION_ID`; a long run; macOS and Linux at run time.
+
 ## Monitor tasks and the idle alert on Windows, 6 November 2026
 
 `cq turn-end` no longer counts a task of `type` `monitor` as background work (issue #50). In live use, a session's `background_tasks` held Monitor tasks with no command that Claude Code had armed by itself, so no idle alert was sent for it. Checked on Windows 11 with `cargo test --workspace` (289 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`. All passed.
