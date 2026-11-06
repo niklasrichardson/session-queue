@@ -168,7 +168,7 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | [cq-top](docs/CQ-TOP.md) | The live, read-only terminal view of the queue |
 | [Design decisions](docs/DESIGN.md) | Why `cq` behaves as it does, and known risks |
 | [Test status](docs/TESTING.md) | What has been tested live, and what has not |
-| [Specification](docs/SPEC.md) | The original requirements, architecture and test plan |
+| [Specification](docs/SPEC.md) | The original requirements, architecture and test plan. Historical: it no longer describes `cq` in full |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to report a problem, build, test and send a pull request |
 | [`AGENTS.md`](AGENTS.md) | Rules for AI agents that change this repo |
 

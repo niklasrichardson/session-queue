@@ -1,6 +1,6 @@
 # Design decisions
 
-The goals of `cq`, the implementation choices that the specification left open, and what `cq` does. The full requirements and architecture are in [`SPEC.md`](SPEC.md). Back to the [README](../README.md).
+The goals of `cq`, the implementation choices that the specification left open, and what `cq` does. The original specification is in [`SPEC.md`](SPEC.md). It is historical: where it differs, this page and [Commands](COMMANDS.md) describe what `cq` does now. Back to the [README](../README.md).
 
 ## Goals
 
