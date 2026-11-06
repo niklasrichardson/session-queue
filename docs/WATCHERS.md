@@ -16,7 +16,7 @@ Tested on Windows 11 with PowerShell 7.6 and a fake `cq` only: the config checks
 
 1. Install PowerShell 7 (`pwsh`). The script does not run in Windows PowerShell 5.1.
 2. Use the default queue root, or set `CQ_ROOT` as in [Configuration](SETUP.md#configuration). The watchers get the environment of the window.
-3. Set up each chat or conversation first: [Wake a Codex chat](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex) and [Antigravity CLI](OTHER-AGENTS.md#antigravity-cli). You need its queue name, and the Codex thread ID or the `agy` conversation ID.
+3. Set up each chat or conversation first: [Wake a Codex chat](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex) and [Antigravity CLI setup](ANTIGRAVITY.md). You need its queue name, and the Codex thread ID or the `agy` conversation ID.
 
 ## Set up the script
 

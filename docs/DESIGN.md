@@ -83,7 +83,7 @@ A message is read soon after it is sent.
 
 ## Inbox mode
 
-`cq watch --to-inbox` posts the watcher's lines into the session's own Claude Code inbox instead of stdout. The commands are in [Commands](COMMANDS.md#watch-into-the-inbox) and the session steps in [Session protocol](PROTOCOL.md#inbox-mode).
+`cq watch --to-inbox` posts the watcher's lines into the session's own Claude Code inbox instead of stdout. The commands are in [Commands](COMMANDS.md#watch-into-the-inbox) and the session steps in [Protocol](PROTOCOL.md#inbox-mode).
 
 - **Decision (28 Oct 2026).** Inbox mode is the default way for Claude Code sessions to receive queue events. Monitor mode is the fallback, for a session where `--to-inbox` exits 64 (no inbox). Inbox mode was added as experimental in [#24](https://github.com/niklasrichardson/session-queue/pull/24). On 28 Oct 2026 the owner moved all live sessions to it, to test it in real use. A planned 24-hour soak test was stopped after about 1 hour, so there are no long-run results yet.
 
@@ -123,7 +123,7 @@ A message is read soon after it is sent.
 
 ## Sleep
 
-Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Session protocol](PROTOCOL.md#sleep-and-wake).
+Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Protocol](PROTOCOL.md#sleep-and-wake).
 
 - **Why a flag file.** `sleep/<name>` works like `PAUSE`, but for one name. A file needs no running process, survives restarts, can be checked by any `cq` command and by `cq-top`, and can be removed by hand. The watcher checks it on every 250 ms tick, so a running watcher stops within a second. A message to the session would not work: a stopped watcher cannot read it.
 - **Its own exit code.** Exit 7 tells the session "do not re-arm". Exit 0 means "re-arm", and exit 5 means "retry with `--takeover`".
@@ -146,8 +146,7 @@ Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7
 - The dispatcher invokes Codex directly, without a shell. Prompt data goes through a file on stdin. Structured final output carries status and reply. Event logs and stderr are files, so a full output pipe cannot deadlock a worker.
 - Defaults are read-only sandboxing, no interactive approvals, ephemeral runs and invocation-local disabling of hooks and user configuration. A worker can explicitly select workspace-write. Existing saved authentication is reused.
 - `dispatch/NAME/ID` retains prompts, output and completion records. The intended completion is written before `done`; incomplete records block restart. Records are not pruned automatically.
-- Failed agent exits and invalid or oversized answers yield bounded failed results. Timeouts and interrupted active tasks stop the agent process tree, leave the task claimed and stop the dispatcher. Windows uses a non-inheritable kill-on-close Job Object, assigned before the suspended agent resumes. Forced dispatcher death closes the job and stops the tree. Unix SIGHUP/SIGINT/SIGTERM stop the agent process group; SIGKILL on Unix can leave a child running. An operator must review before recovery. Tasks are never automatically replayed.
-- Completion exit 4 stops with the task already moved. No reply retry occurs automatically, because a crash near completion can make delivery uncertain. Recovery must inspect the saved completion and sender queue. Exactly-once side effects are not promised.
+- Failures never replay a task. A crash near completion can make delivery uncertain, so there is no automatic retry, and an operator reviews side effects before recovery. Exactly-once side effects are not promised. What each failure does, and the recovery steps, are in [Failure handling and recovery](CODEX-DISPATCH.md#failure-handling-and-recovery).
 - The session membership key is the first non-empty CQ_SESSION_ID, CLAUDE_CODE_HOST_SESSION_ID or CLAUDE_CODE_SESSION_ID, with the existing sanitisation and 64-character cap. Codex variables are not read implicitly. The dispatcher does not register its parent chat, and clears inherited session IDs for each fresh child.
 
 - The dispatcher reserves each job directory before claiming; a collision refuses the job without claiming the inbox message. It writes its PID while holding the watcher lock, removes its own PID on normal exit, and shares a single 30-second heartbeat schedule across idle scans, agent execution and PAUSE waits.

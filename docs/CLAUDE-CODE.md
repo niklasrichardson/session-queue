@@ -2,17 +2,26 @@
 
 This page holds only what differs for Claude Code. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). The Codex steps are in [Codex setup](CODEX.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
 
-Most live tests used the Claude desktop app's Code tab on Windows 11. On 29 Oct 2026, one Claude Code CLI session on Windows in inbox mode answered 25 of 25 tasks with nobody typing (live test L3 in [Spec](SPEC.md), [#4](https://github.com/niklasrichardson/session-queue/issues/4)). Nobody checked the receiving session's screen for a cap notice in that test. On macOS, inbox mode posted into one session in the Code tab; live hand-offs between sessions there are not checked ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Remote Control has not been tested ([Test status](TESTING.md)). Back to the [README](../README.md).
+Most live tests used the Claude desktop app's Code tab on Windows 11. The Claude Code CLI had one bounded live run with nobody typing ([Test status](TESTING.md#claude-code-cli-with-nobody-typing-on-windows-29-october-2026)). On macOS, inbox mode posted into one session in the Code tab; live hand-offs between sessions there are not checked ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Remote Control has not been tested ([Test status](TESTING.md#not-verified)). Back to the [README](../README.md).
 
-## Quick path for a Claude Code session
+<a id="quick-path-for-a-claude-code-session"></a>
 
-1. Finish the shared install steps in [Setup](SETUP.md#install).
-2. Restart the Claude app, so new sessions find `cq` on `PATH`. Check that `cq --version` works in a new session's Bash tool.
-3. Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json` ([Allow `cq` without prompts](#allow-cq-without-prompts)).
-4. Add the queue rules and the Claude Code block to `~/.claude/CLAUDE.md` ([Give the session its rules](#give-the-session-its-rules)).
-5. Add the SessionStart hook, and copy the `/cq-start` and `/cq-stop` skills ([After `/clear` or a restart](#after-clear-or-a-restart), [Sleep and wake](#sleep-and-wake)).
-6. Give the session its queue name with the start prompt. It starts `cq watch --as NAME --to-inbox 2>&1` ([Wake a session with `cq watch --to-inbox`](#wake-a-session-with-cq-watch---to-inbox)).
-7. Send NAME a test message, as in [Setup](SETUP.md#send-a-test-message), and check that the session starts a turn.
+## Quick start
+
+The same path works for the Claude desktop app and the Claude Code CLI. Where they differ, the step says so.
+
+1. **Prerequisites.** Finish the shared install steps in [Setup](SETUP.md#install). On Windows, install Git for Windows. Restart the Claude app, or open a new terminal for the CLI, so new sessions find `cq` on `PATH`. Check that `cq --version` works in a new session's Bash tool.
+2. **Rules and scope.** Add the queue rules and the Claude Code block to `~/.claude/CLAUDE.md`, and a "Queue scope" block to each repo that takes queue work ([Give the session its rules](#give-the-session-its-rules)).
+3. **Permissions.** Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json` ([Allow `cq` without prompts](#allow-cq-without-prompts)). If your sessions run sandboxed, [check that they write the root for real](SETUP.md#check-that-agents-write-the-root-for-real).
+4. **Identity.** Add the SessionStart hook, and copy the `/cq-start` and `/cq-stop` skills ([After `/clear` or a restart](#after-clear-or-a-restart), [Sleep and wake](#sleep-and-wake)).
+   - Desktop app: nothing more to set. Its host session ID survives `/clear`.
+   - CLI: start each worker with its own `CQ_SESSION_ID`, before you launch `claude` ([Claude Code CLI: start with a stable key](#claude-code-cli-start-with-a-stable-key)). Without it, the session loses its queue name on `/clear`.
+5. **Watcher.** Give the session its queue name with the [start prompt](../CLAUDE-snippets.md#3-session-start-prompt). It starts `cq watch --as NAME --to-inbox 2>&1` as a background Bash command ([Wake a session with `cq watch --to-inbox`](#wake-a-session-with-cq-watch---to-inbox)).
+6. **End-to-end test.** Send NAME the [test message](SETUP.md#send-a-test-message) from another session, for example `lead`. Expected result:
+   - the session gets a message from `cq` with a `CQ-NEW` line, and starts a turn;
+   - the session claims the task and replies with `cq done --reply`;
+   - `lead` gets a `CQ-NEW` line for a `result` with the subject `Re: Queue test`;
+   - `lead` claims the result and finishes it with `cq done --as lead RESULT_ID`, with no reply.
 
 ## Set up a Claude Code session
 
@@ -44,7 +53,7 @@ Restart the Claude app after you change `~/.claude/settings.json`.
 
 ### Wake a session with `cq watch --to-inbox`
 
-`cq watch --as NAME --to-inbox` watches NAME's inbox like any watcher. It posts the event lines into the session's own Claude Code inbox, as a message from `cq`. A message to an idle session starts a turn. An idle session runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#watch-into-the-inbox), and the session's steps in [Session protocol](PROTOCOL.md#inbox-mode).
+`cq watch --as NAME --to-inbox` watches NAME's inbox like any watcher. It posts the event lines into the session's own Claude Code inbox, as a message from `cq`. A message to an idle session starts a turn. An idle session runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#watch-into-the-inbox), and the session's steps in [Protocol](PROTOCOL.md#inbox-mode).
 
 Prerequisites:
 
@@ -157,7 +166,7 @@ Two routes wake a Claude Code session:
 
 ### Monitor mode (fallback)
 
-Use Monitor mode only when `cq watch --to-inbox` exits 64, because the session has no inbox. The session starts `cq watch --as NAME 2>&1` under the Monitor tool with `timeout_ms` 1800000, and re-arms it each time it ends. See [Session protocol](PROTOCOL.md#monitor-mode-fallback). Each re-arm costs a model turn ([Cost of an idle session](OVERVIEW.md#cost-of-an-idle-session)).
+Use Monitor mode only when `cq watch --to-inbox` exits 64, because the session has no inbox. The session starts `cq watch --as NAME 2>&1` under the Monitor tool with `timeout_ms` 1800000, and re-arms it each time it ends. See [Protocol](PROTOCOL.md#monitor-mode-fallback). Each re-arm costs a model turn ([Cost of an idle session](OVERVIEW.md#cost-of-an-idle-session)).
 
 ### Switch a session from Monitor mode to inbox mode
 

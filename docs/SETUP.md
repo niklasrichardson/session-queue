@@ -13,8 +13,8 @@ Set up `cq` in three parts, in this order:
 | Claude Code desktop app | [Claude Code setup](CLAUDE-CODE.md) |
 | Claude Code CLI | [Claude Code setup](CLAUDE-CODE.md). Start each worker with its own key first: [Claude Code CLI](CLAUDE-CODE.md#claude-code-cli-start-with-a-stable-key) |
 | Codex desktop app or Codex CLI chat | [Set up a Codex chat](CODEX.md#set-up-a-codex-chat) |
-| Codex, a fresh run per task (`cq dispatch`) | [Dispatch worker prerequisites](CODEX.md#dispatch-worker-prerequisites) |
-| Antigravity CLI (experimental) | [Antigravity CLI](OTHER-AGENTS.md#antigravity-cli) |
+| Codex, a fresh run per task (`cq dispatch`) | [Codex dispatch worker](CODEX-DISPATCH.md) |
+| Antigravity CLI (experimental) | [Antigravity CLI setup](ANTIGRAVITY.md) |
 | Any other agent, or a script | [Other agents](OTHER-AGENTS.md) |
 
 What has been tested with each, and its limits, is in the README's [support table](../README.md#support-by-agent-and-surface).
@@ -26,7 +26,7 @@ What has been tested with each, and its limits, is in the README's [support tabl
 - An agent that can run shell commands. What each agent needs:
   - **Claude Code:** on Windows, Git for Windows, because Claude Code runs Bash commands in Git Bash. See [Claude Code setup](CLAUDE-CODE.md#wake-a-session-with-cq-watch---to-inbox).
   - **Codex:** the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex on Windows ran its commands in PowerShell in the tested setup. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
-  - **Antigravity CLI:** the Antigravity CLI (`agy`), and the ID of the conversation to wake. See [Antigravity CLI](OTHER-AGENTS.md#antigravity-cli).
+  - **Antigravity CLI:** the Antigravity CLI (`agy`), and the ID of the conversation to wake. See [Antigravity CLI setup](ANTIGRAVITY.md).
   - **Other agents:** see [Other agents](OTHER-AGENTS.md).
 
 ## Install
@@ -97,6 +97,7 @@ To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/
 | --- | --- |
 | Claude Code | The `/cq-stop` and `/cq-start` skills. See [Sleep and wake](CLAUDE-CODE.md#sleep-and-wake). |
 | Codex | The same skills, as `$cq-stop` and `$cq-start` (not yet tested in Codex). Or, outside the chat, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. Either way, the watcher starts again outside the chat. With the scheduled automation fallback, also pause the automation. See [Sleep and wake](CODEX.md#sleep-and-wake). |
+| Antigravity CLI | Outside the conversation, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. The skills are not tested in Antigravity. See [Sleep and wake](ANTIGRAVITY.md#sleep-and-wake). |
 | Other agents | The same skills, if the agent reads Agent Skills (not tested). Otherwise run `cq sleep` and `cq wake` as for Codex. Pause a polling scheduler yourself. See [Sleep and wake](OTHER-AGENTS.md#sleep-and-wake). |
 
 ### Install the skills
