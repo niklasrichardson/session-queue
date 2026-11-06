@@ -36,6 +36,8 @@ An unattended session must run `cq` without stopping at a permission prompt.
 
 1. Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json`. Call `cq` by its bare name everywhere, so the rule matches. See [Permissions](../CLAUDE-snippets.md#6-permissions).
 2. If your sessions run sandboxed, add the queue root to the sandbox's writable paths.
+
+   **Warning:** check that the sandbox writes the queue root for real. On Windows, Claude Code's Bash tool was seen to redirect writes under `%LOCALAPPDATA%`, where the default root is, into a private copy that other programs do not see. The queue then splits into separate copies. See [Check that agents write the root for real](SETUP.md#check-that-agents-write-the-root-for-real).
 3. Optional: add deny rules for actions that must never happen unattended, such as force-push or deleting outside the repo.
 
 Restart the Claude app after you change `~/.claude/settings.json`.

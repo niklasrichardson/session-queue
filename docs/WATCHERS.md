@@ -20,7 +20,7 @@ Tested on Windows 11 with PowerShell 7.6 and a fake `cq` only: the config checks
 
 ## Set up the script
 
-1. Copy `examples/watchers.example.json` to `watchers.json` in the queue root, for example `%LOCALAPPDATA%\cq\watchers.json` on Windows.
+1. Copy `examples/watchers.example.json` to `watchers.json` in the queue root, for example `%LOCALAPPDATA%\cq\watchers.json` on Windows. If your root is elsewhere because an agent's sandbox does not write the default root for real ([check](SETUP.md#check-that-agents-write-the-root-for-real)), put `watchers.json` in that root. Then start the script with `-Config PATH`, or with `CQ_ROOT` set.
 2. Replace the example names and IDs with your own.
 3. Copy `examples/start-watchers.ps1` to any folder outside the repo, for example the queue root.
 4. Run the script once from a terminal, to see any config error:

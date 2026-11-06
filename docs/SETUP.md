@@ -47,7 +47,7 @@ Set up `cq` in three parts, in this order:
    cq init
    ```
 
-   The queue lives in a per-user folder by default (see [Configuration](#configuration)). Keep that default unless you need another drive ([why](#configuration)). Every session must use the same absolute queue root. If you set `CQ_ROOT`, use the same value for every `cq` command: in each session, for each watcher and for each sender.
+   The queue lives in a per-user folder by default (see [Configuration](#configuration)). Keep that default unless you need another drive ([why](#configuration)), or an agent's sandbox does not write it for real ([check](#check-that-agents-write-the-root-for-real)). Every session must use the same absolute queue root. If you set `CQ_ROOT`, use the same value for every `cq` command: in each session, for each watcher and for each sender.
 
 ## Connect each session
 
@@ -146,6 +146,23 @@ Put your own cq files in the queue root too. `cq` and `cq-top` ignore files and 
   watchers.json        the watcher list for start-watchers.ps1 (see Watchers)
   inbox\, done\, ...   the queue itself, made by cq init
 ```
+
+### Check that agents write the root for real
+
+Some agent sandboxes do not write every folder for real. On Windows on 6 November 2026, Claude Code's Bash tool redirected writes under `%LOCALAPPDATA%` into a private copy. Later Bash commands in that session saw the files. PowerShell, other programs and other sessions did not. With the default root, the queue then split into separate copies: sessions that ran `cq` through the sandbox saw one queue, and watchers, Codex and `cq-top` saw another. Details are in [Test status](TESTING.md#sandbox-writes-to-the-default-root-on-windows-6-november-2026).
+
+Before you use the default root, check each agent:
+
+1. From the agent's own shell (the tool that it uses to run `cq`), create a test file in the root. For example, in Git Bash: `touch "$LOCALAPPDATA/cq/sandbox-check.txt"`.
+2. From a normal terminal, check that the file is there. In PowerShell: `Test-Path "$env:LOCALAPPDATA\cq\sandbox-check.txt"`. Expected result: `True`.
+3. Delete the test file.
+
+If the result is `False`, the agent does not write the root for real. Use a root in a folder that every agent writes for real, for example under your projects folder, outside every git repo:
+
+- Point every program at that root: set `CQ_ROOT`, or build `cq` with `CQ_DEFAULT_ROOT` (see [Optional: build-time defaults](#optional-build-time-defaults)).
+- Prefer the build-time default if some programs might start without `CQ_ROOT`. A program that does not get `CQ_ROOT` uses the default root without a warning, so it uses a different queue.
+- Keep `config.toml`, `watchers.json` and your other cq files in that root.
+- To move a queue that is in use, see [Move an existing queue root](#move-an-existing-queue-root).
 
 ### config.toml
 
