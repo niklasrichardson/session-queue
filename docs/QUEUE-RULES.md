@@ -4,10 +4,10 @@ Blocks to paste into an agent's instruction file, such as `AGENTS.md` or `CLAUDE
 
 These rules say how to handle a message. How a session gets woken depends on the agent:
 
-- Claude Code: add the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md) as well, and follow [Claude Code setup](CLAUDE-CODE.md).
-- Codex: follow [Codex setup](CODEX.md), or [Codex dispatch worker](CODEX-DISPATCH.md) for a fresh run per task.
-- Antigravity CLI: follow [Antigravity CLI setup](ANTIGRAVITY.md).
-- Other agents: see [Other agents](OTHER-AGENTS.md).
+- Claude Code: add the Claude Code block from [`CLAUDE-SNIPPETS.md`](agents/CLAUDE-SNIPPETS.md) as well, and follow [Claude Code setup](agents/CLAUDE-CODE.md).
+- Codex: follow [Codex setup](agents/CODEX.md), or [Codex dispatch worker](agents/CODEX-DISPATCH.md) for a fresh run per task.
+- Antigravity CLI: follow [Antigravity CLI setup](agents/ANTIGRAVITY.md).
+- Other agents: see [Other agents](agents/OTHER-AGENTS.md).
 
 The steps that are the same for every agent are in [Setup](SETUP.md).
 
@@ -52,7 +52,7 @@ Put this in each repo that takes queue work, in the file that the agent reads fo
 - Out of scope: deploys, deleting data, changing credentials, pushing to main
 ```
 
-Do not put a session name in a shared instruction file. Several sessions can share one directory, so give each session its name in its start prompt. Codex chats are an exception: each has a section named after its queue name (see [Codex setup](CODEX.md#give-the-chat-its-rules)).
+Do not put a session name in a shared instruction file. Several sessions can share one directory, so give each session its name in its start prompt. Codex chats are an exception: each has a section named after its queue name (see [Codex setup](agents/CODEX.md#give-the-chat-its-rules)).
 
 The allowed senders list is a soft check only. The sender sets `from` itself, so any session can use any name.
 

@@ -1,13 +1,13 @@
 # Codex setup
 
-This page holds only what differs for Codex. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). The Claude Code steps are in [Claude Code setup](CLAUDE-CODE.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
+This page holds only what differs for Codex. Before this page, do the [shared install steps](../SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](../SETUP.md#send-a-test-message). The Claude Code steps are in [Claude Code setup](CLAUDE-CODE.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
 
 There are two ways to use `cq` with Codex:
 
 - **An existing Codex chat**, in the Codex Desktop app or the interactive Codex CLI. [`cq watch --to-codex`](#wake-a-codex-chat-with-cq-watch---to-codex) wakes the chat when its queue name gets a message, and the chat keeps its context. Start with the [Quick start](#quick-start-for-a-codex-chat).
 - **A fresh Codex run per task.** `cq dispatch` runs `codex exec` for each task, with no previous task's conversation history. It does not wake an existing chat. See [Codex dispatch worker](CODEX-DISPATCH.md).
 
-Everything on this page was tested on Windows only. Back to the [README](../README.md).
+Everything on this page was tested on Windows only. Back to the [README](../../README.md).
 
 <a id="quick-path-for-a-codex-chat"></a>
 
@@ -15,14 +15,14 @@ Everything on this page was tested on Windows only. Back to the [README](../READ
 
 The same path works for a Codex Desktop chat and an interactive Codex CLI chat. Where they differ, the step says so.
 
-1. **Prerequisites.** Finish the shared install steps in [Setup](SETUP.md#install), with one absolute `CQ_ROOT` for every session. You need a Codex CLI with `codex queue`, and the Codex Desktop app or the interactive Codex CLI ([prerequisites](#wake-a-codex-chat-with-cq-watch---to-codex)). Call `cq` and `codex` by their full paths, as the tested setup does, or check that the bare names work in a new Codex chat.
+1. **Prerequisites.** Finish the shared install steps in [Setup](../SETUP.md#install), with one absolute `CQ_ROOT` for every session. You need a Codex CLI with `codex queue`, and the Codex Desktop app or the interactive Codex CLI ([prerequisites](#wake-a-codex-chat-with-cq-watch---to-codex)). Call `cq` and `codex` by their full paths, as the tested setup does, or check that the bare names work in a new Codex chat.
 2. **Rules and scope.** Paste the [Codex-only rules block](#give-the-chat-its-rules) into `AGENTS.md`, with the chat's queue name and its scope.
 3. **Permissions.** Let the chat write to the queue root ([Allow `cq` without prompts](#allow-cq-without-prompts)), then run the [preflight check](#check-queue-writes-without-prompts) in the chat. A setup where Codex never asks for approval is not tested yet.
 4. **Identity.** Read the chat's thread ID: ask the chat to run `$env:CODEX_THREAD_ID` in PowerShell, or `echo "$CODEX_THREAD_ID"` in Git Bash. The watcher records itself as `codex-NAME`, so the chat needs no `CQ_SESSION_ID` ([Session identity](#session-identity)).
 5. **Watcher.** Start `cq watch --as NAME --to-codex THREAD_ID` in the background, outside the chat ([Wake a Codex chat](#wake-a-codex-chat-with-cq-watch---to-codex), steps 1 to 3).
    - Desktop: the chat must stay loaded in the Codex app ([If a wake does not start a turn](#if-a-wake-does-not-start-a-turn)).
    - CLI: the chat must stay open. After a restart of the computer, reopen it with `codex resume THREAD_ID`, then start the watcher again ([After a new chat or a restart](#after-a-new-chat-or-a-restart)).
-6. **End-to-end test.** Send NAME the [test message](SETUP.md#send-a-test-message) from another session, for example `lead`. Expected result:
+6. **End-to-end test.** Send NAME the [test message](../SETUP.md#send-a-test-message) from another session, for example `lead`. Expected result:
    - the watcher prints one `queued a check` line, and the chat starts a turn;
    - the chat claims the task and replies with `cq done --reply`;
    - `cq list --as lead` shows an `UNCLAIMED` `result` with the subject `Re: Queue test`;
@@ -40,7 +40,7 @@ A Codex chat needs four things: its rules, write access to the queue root withou
 
 Codex reads `AGENTS.md` files: the user-level `~/.codex/AGENTS.md` and the repository's own `AGENTS.md` ([official guide](https://learn.chatgpt.com/docs/agent-configuration/agents-md)). Give each Codex queue name its own section. The default wake prompt starts `Queue check as 'NAME'. Follow the 'NAME' section of AGENTS.md.`, so name the section after the queue name.
 
-The block below is complete for a Codex chat: paste it as is, and you do not also need the [queue rules block](QUEUE-RULES.md#1-queue-rules-block). It holds the same rules, written for a chat that a `--to-codex` watcher wakes. Change `worker-a`, the `cq` path, `CQ_ROOT` and the scope to match your setup. For a second chat, paste the block again with the other name. The scope allows the [shared test message](SETUP.md#send-a-test-message), which asks for a one-line summary of a file.
+The block below is complete for a Codex chat: paste it as is, and you do not also need the [queue rules block](../QUEUE-RULES.md#1-queue-rules-block). It holds the same rules, written for a chat that a `--to-codex` watcher wakes. Change `worker-a`, the `cq` path, `CQ_ROOT` and the scope to match your setup. For a second chat, paste the block again with the other name. The scope allows the [shared test message](../SETUP.md#send-a-test-message), which asks for a one-line summary of a file.
 
 ````markdown
 ## Session queue: worker-a
@@ -68,7 +68,7 @@ Apply this section only in the Codex chat that has the queue name `worker-a`.
 
 The tested setup set the full `cq` path and `CQ_ROOT` for each command, as above. Codex on Windows ran its commands in PowerShell, which has no heredoc, so the tested setup passed JSON with `--input FILE`. The PowerShell commands for each step are in [A round trip in PowerShell](#a-round-trip-in-powershell).
 
-If you start from [SESSION-RULES.example.md](SESSION-RULES.example.md) instead, keep its "Codex chat" part and delete the Claude Code parts.
+If you start from [SESSION-RULES.example.md](../SESSION-RULES.example.md) instead, keep its "Codex chat" part and delete the Claude Code parts.
 
 ### Allow `cq` without prompts
 
@@ -116,9 +116,9 @@ Both forms ran against a test queue in PowerShell 7 and Git Bash outside Codex. 
 
 ### Wake a Codex chat with `cq watch --to-codex`
 
-`cq watch --as NAME --to-codex THREAD` watches NAME's inbox like any watcher. For each batch of new messages, it runs `codex queue` once with a fixed prompt. Codex then starts a turn in that chat, and the chat handles the queue as its `AGENTS.md` section says. An idle chat runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#wake-a-codex-chat).
+`cq watch --as NAME --to-codex THREAD` watches NAME's inbox like any watcher. For each batch of new messages, it runs `codex queue` once with a fixed prompt. Codex then starts a turn in that chat, and the chat handles the queue as its `AGENTS.md` section says. An idle chat runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](../COMMANDS.md#wake-a-codex-chat).
 
-Live tests on Windows: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat within about 7 to 12 seconds. The native `cq watch --to-codex` then woke two idle Desktop chats, which each claimed a queued message within about 6 seconds. On 29 Oct 2026, a review task sent through it (send, wake, claim, reply) took 52 seconds from end to end. On 3 Nov 2026, the native watcher woke two interactive Codex CLI chats, which each handled a message, also after about 50 minutes idle ([Test status](TESTING.md#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026)).
+Live tests on Windows: on 28 Oct 2026, `codex queue` woke an idle Codex Desktop chat and an idle interactive Codex CLI chat within about 7 to 12 seconds. The native `cq watch --to-codex` then woke two idle Desktop chats, which each claimed a queued message within about 6 seconds. On 29 Oct 2026, a review task sent through it (send, wake, claim, reply) took 52 seconds from end to end. On 3 Nov 2026, the native watcher woke two interactive Codex CLI chats, which each handled a message, also after about 50 minutes idle ([Test status](../TESTING.md#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026)).
 
 Prerequisites:
 
@@ -161,7 +161,7 @@ Steps:
 4. Send NAME a test message. Expected result: one line on the watcher's stdout (in the PowerShell form, in the log file), `cq watch (NAME): ... queued a check for 1 new message(s): Queued message ...`, and a new turn in the Codex chat within seconds.
 
 - **Security.** The prompt is fixed. Subjects, bodies and sender names never reach Codex through the command line. The chat reads the messages itself with `cq claim`, and must treat them as untrusted data, as for any session. `--codex-prompt TEXT` replaces the default prompt; keep it free of queue text.
-- **Stopping.** The watcher has no default time limit. `--max-seconds N` stops it after N seconds, but only if you pass it. `cq sleep --as NAME NAME` stops it with exit 7. A sleeping name stays asleep: run `cq wake --as NAME NAME` before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. Exit 9 means `codex queue` failed 4 times in a row, and the watcher has stopped: the chat is not woken until you check the `cq:` line on stderr and start the watcher again. The Codex chat is not told when its watcher stops. [cq-top](CQ-TOP.md) shows the mode `codex` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
+- **Stopping.** The watcher has no default time limit. `--max-seconds N` stops it after N seconds, but only if you pass it. `cq sleep --as NAME NAME` stops it with exit 7. A sleeping name stays asleep: run `cq wake --as NAME NAME` before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. Exit 9 means `codex queue` failed 4 times in a row, and the watcher has stopped: the chat is not woken until you check the `cq:` line on stderr and start the watcher again. The Codex chat is not told when its watcher stops. [cq-top](../CQ-TOP.md) shows the mode `codex` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
 - **Not verified.** What happens to a queued message while the Codex app is closed ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). `codex queue` exits 0 when the message is stored, not when the chat takes it. It is marked experimental in the Codex CLI.
 - **Fallback.** If `codex queue` is not available, or a long test shows lost wake-ups, use the [same-chat scheduled automation](#same-chat-scheduled-automation-fallback).
 
@@ -170,7 +170,7 @@ Steps:
 Codex Desktop starts a turn from a queued check only while the chat is loaded in the app. The Codex app-server documents that it unloads a thread after 30 minutes with no subscribers and no activity (thread status `notLoaded`; see [Unsubscribe from a loaded thread](https://learn.chatgpt.com/docs/app-server#unsubscribe-from-a-loaded-thread)). The check then waits in Codex's queue until you open the chat. This was seen twice on 29 Oct 2026, from Codex's own logs ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). Not verified: that this unload rule caused those two cases.
 
 - **The warning.** About 60 seconds after each queued check, the watcher looks, read-only, in Codex's queue database, `queue_1.sqlite` in Codex's SQLite home, found in Codex's order: the root `sqlite_home` setting in `config.toml` in `CODEX_HOME`, then the `CODEX_SQLITE_HOME` variable, then `CODEX_HOME` itself (default `~/.codex`); see [Core locations](https://learn.chatgpt.com/docs/config-file/environment-variables#core-locations). `--codex-queue-db PATH` names the file instead. If the check still waits there, the watcher prints one line on stdout: `cq watch (NAME): <UTC time> codex thread THREAD has not taken the queued check after 60 s (the chat may be unloaded): open the chat in the Codex app`. It prints the line once per queued check. It also sends the warning as a cq `info` message from NAME to each coordinator in `coordinators`, except NAME itself, so someone sees it at night. The send is a normal `cq send`: its limits and `PAUSE` apply. If it fails, the watcher prints one line on stderr and carries on. No coordinators means no message, and a name listed twice gets one. A check queued only for such warnings sends no warning of its own, so two coordinators that are both unloaded Codex chats do not warn each other in a loop. The line says "may be": the look-up shows that the check is still queued, not why.
-- **`CQ-OVERDUE`.** A coordinator's watcher reports a task that has been unclaimed for 30 minutes (see [Overdue tasks](COMMANDS.md#overdue-tasks)). For a task sent to a Codex chat, this line can also mean that the chat has been unloaded.
+- **`CQ-OVERDUE`.** A coordinator's watcher reports a task that has been unclaimed for 30 minutes (see [Overdue tasks](../COMMANDS.md#overdue-tasks)). For a task sent to a Codex chat, this line can also mean that the chat has been unloaded.
 - **What to do.** On either line, open the chat in the Codex app. In both cases in issue #25, the waiting check started a turn within a second of the chat being opened.
 - **Read-only.** The watcher opens the database read-only and never changes its contents. SQLite may still create the `-wal` and `-shm` files next to it and takes shared locks, as for any reader of a WAL database ([Read-only databases](https://www.sqlite.org/wal.html#read_only_databases)). The watcher looks up each queued check once. A look-up waits at most 1 second for a lock, then is skipped. It can briefly delay a Codex write: Codex waits for a lock (up to 5 seconds, `DEFAULT_BUSY_TIMEOUT` in `codex-rs/state/src/sqlite.rs`), and a look-up is one short read by primary key.
 - **Item ID.** The watcher matches the ID in `codex queue`'s `Queued message ID for thread ...` line against `id` in `queued_items`. On 29 Oct 2026 the two matched. This is an observation, not a documented Codex schema: if a Codex update changes it, the warning stops, and `CQ-OVERDUE` is the only signal.
@@ -217,15 +217,15 @@ A Codex chat needs no hook:
 - Every wake prompt names the queue name and points the chat at its `AGENTS.md` section, so each woken turn is told its rules again.
 - A new chat has a new thread ID. Start the watcher again with the new ID and `--takeover`, which stops the old watcher.
 - After the computer restarts, start the watcher again. If the name is asleep, run `cq wake --as NAME NAME` first. If messages are already waiting, it queues one check at start.
-- A restart closes an interactive Codex CLI chat. Reopen each CLI chat with `codex resume THREAD_ID`, then start (or keep) its watcher. In a live test on 6 Nov 2026, the restarted watchers queued checks that nothing took, and sent the "has not taken" warning. After `codex resume THREAD_ID` for each chat, the chats took the waiting messages ([Test status](TESTING.md#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026)).
+- A restart closes an interactive Codex CLI chat. Reopen each CLI chat with `codex resume THREAD_ID`, then start (or keep) its watcher. In a live test on 6 Nov 2026, the restarted watchers queued checks that nothing took, and sent the "has not taken" warning. After `codex resume THREAD_ID` for each chat, the chats took the waiting messages ([Test status](../TESTING.md#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026)).
 
-- After a `cq` upgrade, the watcher keeps running the old binary. Start it again with `--takeover` (see [Upgrading while watchers run](SETUP.md#upgrading-while-watchers-run)).
+- After a `cq` upgrade, the watcher keeps running the old binary. Start it again with `--takeover` (see [Upgrading while watchers run](../SETUP.md#upgrading-while-watchers-run)).
 
 Do not install `cq session-start` as a Codex hook: its reminder describes the Claude Code workflow.
 
 ### Sleep and wake
 
-The `cq-start` and `cq-stop` skills work in Codex as `$cq-start` and `$cq-stop` (see [Install the skills](SETUP.md#install-the-skills); not yet tested in Codex). They cannot start the watcher, which runs outside the chat. With a scheduled automation instead of a watcher, the skills follow their "Polling" steps: pause or resume the automation.
+The `cq-start` and `cq-stop` skills work in Codex as `$cq-start` and `$cq-stop` (see [Install the skills](../SETUP.md#install-the-skills); not yet tested in Codex). They cannot start the watcher, which runs outside the chat. With a scheduled automation instead of a watcher, the skills follow their "Polling" steps: pause or resume the automation.
 
 `cq-stop` saves a handoff to `~/.cq-handoff/<name>.md`, and `cq-start` reads and renames it. That folder is outside the chat's `workspace-write` roots. So expect an approval prompt for those writes, or choose one of these:
 
@@ -234,7 +234,7 @@ The `cq-start` and `cq-stop` skills work in Codex as `$cq-start` and `$cq-stop` 
 
 This is assessed from Codex's sandbox rules and the [tested queue root prompt](#allow-cq-without-prompts). It is not tested with the skills.
 
-Without the skills, sleep and wake with `cq sleep` and `cq wake`, run outside the chat. `cq sleep --as NAME NAME` stops its watcher with exit 7. Run `cq wake --as NAME NAME` before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
+Without the skills, sleep and wake with `cq sleep` and `cq wake`, run outside the chat. `cq sleep --as NAME NAME` stops its watcher with exit 7. Run `cq wake --as NAME NAME` before you start the watcher again, because a watcher for a sleeping name exits 7 at once, even with `--takeover`. What sleep does for every agent is in [Setup](../SETUP.md#sleep-and-wake).
 
 ## Waking Codex
 
@@ -249,7 +249,7 @@ Four routes were tested on Windows:
 
 ### Same-chat scheduled automation (fallback)
 
-Use this when `cq watch --to-codex` is not available. Ask the Codex desktop app to schedule a recurring check inside the current chat, rather than start a new chat per run. Give each chat its own queue name. Keep the computer on and the app running. The automation should list that name's inbox, claim messages before handling them, and finish them using the normal queue protocol. Give it a trusted task scope and sender filter. Treat message bodies as untrusted data. Stay quiet when the inbox is empty, and define when to stop. `cq sleep` does not pause the automation: pause it yourself, and make each run end with no other work when `cq list` prints an `ASLEEP` line ([Sleep and wake](SETUP.md#sleep-and-wake)).
+Use this when `cq watch --to-codex` is not available. Ask the Codex desktop app to schedule a recurring check inside the current chat, rather than start a new chat per run. Give each chat its own queue name. Keep the computer on and the app running. The automation should list that name's inbox, claim messages before handling them, and finish them using the normal queue protocol. Give it a trusted task scope and sender filter. Treat message bodies as untrusted data. Stay quiet when the inbox is empty, and define when to stop. `cq sleep` does not pause the automation: pause it yourself, and make each run end with no other work when `cq list` prints an `ASLEEP` line ([Sleep and wake](../SETUP.md#sleep-and-wake)).
 
 Set `CQ_ROOT` and the full cq executable path explicitly for every invocation. Scope `CQ_SESSION_ID` to that command or dedicated process, as in [Session identity](#session-identity). Do not run a dispatcher using the same queue name.
 

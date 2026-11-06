@@ -1,13 +1,13 @@
 # Codex dispatch worker
 
-`cq dispatch` runs a fresh `codex exec` for each task. Each run reads the target repository's `AGENTS.md` and a local scope file, and has no previous task's conversation history. It does not wake an existing chat: for that, see [Codex setup](CODEX.md). Before this page, do the [shared install steps](SETUP.md#install). Back to the [README](../README.md).
+`cq dispatch` runs a fresh `codex exec` for each task. Each run reads the target repository's `AGENTS.md` and a local scope file, and has no previous task's conversation history. It does not wake an existing chat: for that, see [Codex setup](CODEX.md). Before this page, do the [shared install steps](../SETUP.md#install). Back to the [README](../../README.md).
 
-Tested on Windows only: native dispatcher integration tests with a fake Codex, and one real read-only task ([Test status](TESTING.md#codex-on-windows-26-october-2026)). Write tasks are not tested.
+Tested on Windows only: native dispatcher integration tests with a fake Codex, and one real read-only task ([Test status](../TESTING.md#codex-on-windows-26-october-2026)). Write tasks are not tested.
 
 ## Quick start
 
 1. **Prerequisites.** Check the [prerequisites](#prerequisites), and [build a separate binary](#1-build-separately). Use one absolute `CQ_ROOT` for the dispatcher and every sender ([step 2](#2-choose-the-queue-and-initialise-it)).
-2. **Rules and scope.** Put the generic rules and the "Codex dispatch worker" part of [SESSION-RULES.example.md](SESSION-RULES.example.md) in the worker repository's `AGENTS.md`. Write a trusted scope file, and choose the allowed senders ([step 3](#3-write-trusted-worker-instructions)).
+2. **Rules and scope.** Put the generic rules and the "Codex dispatch worker" part of [SESSION-RULES.example.md](../SESSION-RULES.example.md) in the worker repository's `AGENTS.md`. Write a trusted scope file, and choose the allowed senders ([step 3](#3-write-trusted-worker-instructions)).
 3. **Permissions.** Nothing to allow in Codex. Each run uses approval policy `never` and a `read-only` sandbox by default; choose `--sandbox workspace-write` only for a trusted write scope ([step 4](#4-start-the-worker)). The dispatcher itself runs `cq claim` and `cq done` as a normal process, outside the Codex sandbox.
 4. **Identity.** Give the dispatcher its own queue name. Do not run `cq watch` or another dispatcher with that name. It needs no `CQ_SESSION_ID` ([Session identity](#session-identity)).
 5. **Watcher.** The dispatcher is the watcher: keep `cq dispatch --as NAME ...` running in a dedicated terminal ([step 4](#4-start-the-worker)).
@@ -58,7 +58,7 @@ Set `$codex` to the real executable, not a `.cmd` wrapper or a shell command. `-
 
 ### 3. Write trusted worker instructions
 
-Copy the generic rules from [SESSION-RULES.example.md](SESSION-RULES.example.md) (with its "Codex dispatch worker" part) into the worker repository's `AGENTS.md`, or link them from instructions that Codex can read. Keep that repository's existing rules.
+Copy the generic rules from [SESSION-RULES.example.md](../SESSION-RULES.example.md) (with its "Codex dispatch worker" part) into the worker repository's `AGENTS.md`, or link them from instructions that Codex can read. Keep that repository's existing rules.
 
 Create the scope file before starting the dispatcher. Example `CODEX-QUEUE-SCOPE.md`:
 
@@ -103,7 +103,7 @@ $env:CQ_ROOT = 'D:/queues/codex-test'
     & $cq send --from lead --to codex-review --type task
 ```
 
-JSON is passed on stdin. In Git Bash, use a quoted heredoc as shown in [Commands](COMMANDS.md). Never put a message body in command-line arguments.
+JSON is passed on stdin. In Git Bash, use a quoted heredoc as shown in [Commands](../COMMANDS.md). Never put a message body in command-line arguments.
 
 Expected result: the task moves to `done/codex-review/`, and a correlated `result` appears in `inbox/lead/`. In the sender terminal:
 

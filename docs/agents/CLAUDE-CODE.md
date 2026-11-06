@@ -1,8 +1,8 @@
 # Claude Code setup
 
-This page holds only what differs for Claude Code. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). The Codex steps are in [Codex setup](CODEX.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
+This page holds only what differs for Claude Code. Before this page, do the [shared install steps](../SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](../SETUP.md#send-a-test-message). The Codex steps are in [Codex setup](CODEX.md), and the steps for any other agent in [Other agents](OTHER-AGENTS.md).
 
-Most live tests used the Claude desktop app's Code tab on Windows 11. The Claude Code CLI had one bounded live run with nobody typing ([Test status](TESTING.md#claude-code-cli-with-nobody-typing-on-windows-29-october-2026)). On macOS, inbox mode posted into one session in the Code tab; live hand-offs between sessions there are not checked ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Remote Control has not been tested ([Test status](TESTING.md#not-verified)). Back to the [README](../README.md).
+Most live tests used the Claude desktop app's Code tab on Windows 11. The Claude Code CLI had one bounded live run with nobody typing ([Test status](../TESTING.md#claude-code-cli-with-nobody-typing-on-windows-29-october-2026)). On macOS, inbox mode posted into one session in the Code tab; live hand-offs between sessions there are not checked ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Remote Control has not been tested ([Test status](../TESTING.md#not-verified)). Back to the [README](../../README.md).
 
 <a id="quick-path-for-a-claude-code-session"></a>
 
@@ -10,14 +10,14 @@ Most live tests used the Claude desktop app's Code tab on Windows 11. The Claude
 
 The same path works for the Claude desktop app and the Claude Code CLI. Where they differ, the step says so.
 
-1. **Prerequisites.** Finish the shared install steps in [Setup](SETUP.md#install). On Windows, install Git for Windows. Restart the Claude app, or open a new terminal for the CLI, so new sessions find `cq` on `PATH`. Check that `cq --version` works in a new session's Bash tool.
+1. **Prerequisites.** Finish the shared install steps in [Setup](../SETUP.md#install). On Windows, install Git for Windows. Restart the Claude app, or open a new terminal for the CLI, so new sessions find `cq` on `PATH`. Check that `cq --version` works in a new session's Bash tool.
 2. **Rules and scope.** Add the queue rules and the Claude Code block to `~/.claude/CLAUDE.md`, and a "Queue scope" block to each repo that takes queue work ([Give the session its rules](#give-the-session-its-rules)).
-3. **Permissions.** Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json` ([Allow `cq` without prompts](#allow-cq-without-prompts)). If your sessions run sandboxed, [check that they write the root for real](SETUP.md#check-that-agents-write-the-root-for-real).
+3. **Permissions.** Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json` ([Allow `cq` without prompts](#allow-cq-without-prompts)). If your sessions run sandboxed, [check that they write the root for real](../SETUP.md#check-that-agents-write-the-root-for-real).
 4. **Identity.** Add the SessionStart hook, and copy the `/cq-start` and `/cq-stop` skills ([After `/clear` or a restart](#after-clear-or-a-restart), [Sleep and wake](#sleep-and-wake)).
    - Desktop app: nothing more to set. Its host session ID survives `/clear`.
    - CLI: start each worker with its own `CQ_SESSION_ID`, before you launch `claude` ([Claude Code CLI: start with a stable key](#claude-code-cli-start-with-a-stable-key)). Without it, the session loses its queue name on `/clear`.
-5. **Watcher.** Give the session its queue name with the [start prompt](../CLAUDE-snippets.md#3-session-start-prompt). It starts `cq watch --as NAME --to-inbox 2>&1` as a background Bash command ([Wake a session with `cq watch --to-inbox`](#wake-a-session-with-cq-watch---to-inbox)).
-6. **End-to-end test.** Send NAME the [test message](SETUP.md#send-a-test-message) from another session, for example `lead`. Expected result:
+5. **Watcher.** Give the session its queue name with the [start prompt](CLAUDE-SNIPPETS.md#3-session-start-prompt). It starts `cq watch --as NAME --to-inbox 2>&1` as a background Bash command ([Wake a session with `cq watch --to-inbox`](#wake-a-session-with-cq-watch---to-inbox)).
+6. **End-to-end test.** Send NAME the [test message](../SETUP.md#send-a-test-message) from another session, for example `lead`. Expected result:
    - the session gets a message from `cq` with a `CQ-NEW` line, and starts a turn;
    - the session claims the task and replies with `cq done --reply`;
    - `lead` gets a `CQ-NEW` line for a `result` with the subject `Re: Queue test`;
@@ -31,29 +31,29 @@ A Claude Code session needs four things: its rules, permission to run `cq` witho
 
 Claude Code reads `~/.claude/CLAUDE.md` and the repository's own `CLAUDE.md`. Put three things there:
 
-1. In `~/.claude/CLAUDE.md`: the [queue rules block](QUEUE-RULES.md#1-queue-rules-block), which is the same for every agent.
-2. In `~/.claude/CLAUDE.md`: the Claude Code block from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md#1-user-level-block). It covers the watcher, the Monitor fallback and the skills.
-3. In each repo that takes queue work: a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block).
+1. In `~/.claude/CLAUDE.md`: the [queue rules block](../QUEUE-RULES.md#1-queue-rules-block), which is the same for every agent.
+2. In `~/.claude/CLAUDE.md`: the Claude Code block from [`CLAUDE-SNIPPETS.md`](CLAUDE-SNIPPETS.md#1-user-level-block). It covers the watcher, the Monitor fallback and the skills.
+3. In each repo that takes queue work: a ["Queue scope" block](../QUEUE-RULES.md#2-per-repo-scope-block).
 
-Do not put a queue name in `CLAUDE.md`. Several sessions can share one folder, so each session gets its name in its [start prompt](../CLAUDE-snippets.md#3-session-start-prompt).
+Do not put a queue name in `CLAUDE.md`. Several sessions can share one folder, so each session gets its name in its [start prompt](CLAUDE-SNIPPETS.md#3-session-start-prompt).
 
-If you start from [SESSION-RULES.example.md](SESSION-RULES.example.md), keep its "Claude Code" and "Fallback: Monitor mode" parts. Delete the Codex parts: they do not apply to Claude Code.
+If you start from [SESSION-RULES.example.md](../SESSION-RULES.example.md), keep its "Claude Code" and "Fallback: Monitor mode" parts. Delete the Codex parts: they do not apply to Claude Code.
 
 ### Allow `cq` without prompts
 
 An unattended session must run `cq` without stopping at a permission prompt.
 
-1. Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json`. Call `cq` by its bare name everywhere, so the rule matches. See [Permissions](../CLAUDE-snippets.md#6-permissions).
+1. Add `Bash(cq *)` to `permissions.allow` in `~/.claude/settings.json`. Call `cq` by its bare name everywhere, so the rule matches. See [Permissions](CLAUDE-SNIPPETS.md#6-permissions).
 2. If your sessions run sandboxed, add the queue root to the sandbox's writable paths.
 
-   **Warning:** check that the sandbox writes the queue root for real. On Windows, Claude Code's Bash tool was seen to redirect writes under `%LOCALAPPDATA%`, where the default root is, into a private copy that other programs do not see. The queue then splits into separate copies. See [Check that agents write the root for real](SETUP.md#check-that-agents-write-the-root-for-real).
+   **Warning:** check that the sandbox writes the queue root for real. On Windows, Claude Code's Bash tool was seen to redirect writes under `%LOCALAPPDATA%`, where the default root is, into a private copy that other programs do not see. The queue then splits into separate copies. See [Check that agents write the root for real](../SETUP.md#check-that-agents-write-the-root-for-real).
 3. Optional: add deny rules for actions that must never happen unattended, such as force-push or deleting outside the repo.
 
 Restart the Claude app after you change `~/.claude/settings.json`.
 
 ### Wake a session with `cq watch --to-inbox`
 
-`cq watch --as NAME --to-inbox` watches NAME's inbox like any watcher. It posts the event lines into the session's own Claude Code inbox, as a message from `cq`. A message to an idle session starts a turn. An idle session runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#watch-into-the-inbox), and the session's steps in [Protocol](PROTOCOL.md#inbox-mode).
+`cq watch --as NAME --to-inbox` watches NAME's inbox like any watcher. It posts the event lines into the session's own Claude Code inbox, as a message from `cq`. A message to an idle session starts a turn. An idle session runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](../COMMANDS.md#watch-into-the-inbox), and the session's steps in [Protocol](../PROTOCOL.md#inbox-mode).
 
 Prerequisites:
 
@@ -62,7 +62,7 @@ Prerequisites:
 
 Steps:
 
-1. Give the session its queue name with the [start prompt](../CLAUDE-snippets.md#3-session-start-prompt).
+1. Give the session its queue name with the [start prompt](CLAUDE-SNIPPETS.md#3-session-start-prompt).
 2. The session starts the watcher once, as a background Bash command, not with the Monitor tool:
 
    ```bash
@@ -72,8 +72,8 @@ Steps:
    If it exits 5 ("already running"), it starts it again with `--takeover`.
 3. Send `worker-a` a test message. Expected result: a message from `cq` that starts with `cq watch (worker-a): queue events`, and a new turn in the session.
 
-- **Stopping.** The watcher has no default time limit. When it stops, it posts one last message: `cq watch (NAME) stopped: ... Run /cq-start to re-arm.` A watcher that is killed without warning posts nothing. [cq-top](CQ-TOP.md) shows the mode `inbox` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
-- **Not verified.** Runs of many hours ([Design](DESIGN.md#inbox-mode)).
+- **Stopping.** The watcher has no default time limit. When it stops, it posts one last message: `cq watch (NAME) stopped: ... Run /cq-start to re-arm.` A watcher that is killed without warning posts nothing. [cq-top](../CQ-TOP.md) shows the mode `inbox` and the watcher's heartbeat, which turns `STALE` 90 seconds after the watcher dies.
+- **Not verified.** Runs of many hours ([Design](../DESIGN.md#inbox-mode)).
 
 ### After `/clear` or a restart
 
@@ -87,14 +87,14 @@ A Claude Code session forgets its queue name after `/clear` or a compaction. The
 
 On macOS, a hook command may not find a bare `cq`: the Rust installer adds `~/.cargo/bin` to `PATH` only through the shell profile, and a hook command may not run through it. If the hook fails there, put the full path in the hook command, for example `/Users/<you>/.cargo/bin/cq session-start`. This was reported in [#1](https://github.com/niklasrichardson/session-queue/issues/1) and is not yet confirmed in a real hook. Keep the bare name `cq` in Bash tool commands, so they match `Bash(cq *)`.
 
-Expected result: after `/clear` in a session whose watcher ran, the new context starts with "You are in the cq session queue as NAME". The reminder also says whether the watcher still runs. See [Rejoin after /clear](PROTOCOL.md#rejoin-after-clear). The hook was tested live after `/clear` only, not after a compaction or a resume.
+Expected result: after `/clear` in a session whose watcher ran, the new context starts with "You are in the cq session queue as NAME". The reminder also says whether the watcher still runs. See [Rejoin after /clear](../PROTOCOL.md#rejoin-after-clear). The hook was tested live after `/clear` only, not after a compaction or a resume.
 
 - The inbox watcher survives `/clear` and compaction, and keeps posting into the same session. After a clear, do not start a second watcher.
-- After a session restarts, or its watcher was down, give the session the [recovery prompt](../CLAUDE-snippets.md#5-recovery-prompt). If the name is asleep, run `/cq-start NAME` instead.
+- After a session restarts, or its watcher was down, give the session the [recovery prompt](CLAUDE-SNIPPETS.md#5-recovery-prompt). If the name is asleep, run `/cq-start NAME` instead.
 
 ### Tell a lead when a worker is idle
 
-Optional. A lead gets one `info` message when a chosen worker session has finished a turn and no activity is observed for about 5 minutes, at most once an hour per worker. The message is fixed (`worker-a is idle`, `Idle since 14:05 UK.`) and holds nothing from the worker's work. Details: [Idle alerts](COMMANDS.md#idle-alerts).
+Optional. A lead gets one `info` message when a chosen worker session has finished a turn and no activity is observed for about 5 minutes, at most once an hour per worker. The message is fixed (`worker-a is idle`, `Idle since 14:05 UK.`) and holds nothing from the worker's work. Details: [Idle alerts](../COMMANDS.md#idle-alerts).
 
 1. List each worker and its lead in `CQ_ROOT/idle-alerts`, one pair per line:
 
@@ -144,7 +144,7 @@ Limits:
 
 ### Sleep and wake
 
-Two skills put a session to sleep and wake it. The same files work in Codex (see [Install the skills](SETUP.md#install-the-skills)). For Claude Code, copy `skills/cq-start` and `skills/cq-stop` to `~/.claude/skills/`:
+Two skills put a session to sleep and wake it. The same files work in Codex (see [Install the skills](../SETUP.md#install-the-skills)). For Claude Code, copy `skills/cq-start` and `skills/cq-stop` to `~/.claude/skills/`:
 
 ```bash
 cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
@@ -153,7 +153,7 @@ cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
 - `/cq-stop` saves a handoff, sets the sleep flag, stops the watcher and clears the conversation.
 - `/cq-start NAME` wakes NAME, and sends the sleeping session a message through Claude Code, so it starts its watcher again.
 
-What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
+What sleep does for every agent is in [Setup](../SETUP.md#sleep-and-wake).
 
 ## Waking Claude Code
 
@@ -161,12 +161,12 @@ Two routes wake a Claude Code session:
 
 | Route | Chat context | Pickup latency | Test status |
 | --- | --- | --- | --- |
-| Inbox mode: `cq watch --to-inbox` (default since 28 Oct 2026, [#24](https://github.com/niklasrichardson/session-queue/pull/24)) | Keeps the session's context | Not measured on its own. Lines are batched for 2 seconds, and posts are at least 5 seconds apart. | Tests with a fake inbox passed on Windows ([Test status](TESTING.md#inbox-mode-on-windows-28-october-2026)). Runs of many hours are not tested. |
+| Inbox mode: `cq watch --to-inbox` (default since 28 Oct 2026, [#24](https://github.com/niklasrichardson/session-queue/pull/24)) | Keeps the session's context | Not measured on its own. Lines are batched for 2 seconds, and posts are at least 5 seconds apart. | Tests with a fake inbox passed on Windows ([Test status](../TESTING.md#inbox-mode-on-windows-28-october-2026)). Runs of many hours are not tested. |
 | Monitor mode: `cq watch` under the Monitor tool (fallback) | Keeps the session's context | Each output line wakes the session | Tested live in the desktop app: hundreds of re-arms across 10 sessions. |
 
 ### Monitor mode (fallback)
 
-Use Monitor mode only when `cq watch --to-inbox` exits 64, because the session has no inbox. The session starts `cq watch --as NAME 2>&1` under the Monitor tool with `timeout_ms` 1800000, and re-arms it each time it ends. See [Protocol](PROTOCOL.md#monitor-mode-fallback). Each re-arm costs a model turn ([Cost of an idle session](OVERVIEW.md#cost-of-an-idle-session)).
+Use Monitor mode only when `cq watch --to-inbox` exits 64, because the session has no inbox. The session starts `cq watch --as NAME 2>&1` under the Monitor tool with `timeout_ms` 1800000, and re-arms it each time it ends. See [Protocol](../PROTOCOL.md#monitor-mode-fallback). Each re-arm costs a model turn ([Cost of an idle session](../OVERVIEW.md#cost-of-an-idle-session)).
 
 ### Switch a session from Monitor mode to inbox mode
 
@@ -180,11 +180,11 @@ To go back to Monitor mode, stop the background command with TaskStop and arm th
 
 ## After a cq upgrade
 
-An inbox-mode watcher never re-arms, so it keeps running the old binary. Ask each inbox-mode session to restart its watcher: stop the background watcher command with TaskStop if it is still listed, then start `cq watch --as NAME --to-inbox --takeover 2>&1` as a background Bash command. Each Monitor-mode watcher picks up the new binary at its next re-arm (within 30 minutes). The shared upgrade steps are in [Setup](SETUP.md#upgrading-while-watchers-run).
+An inbox-mode watcher never re-arms, so it keeps running the old binary. Ask each inbox-mode session to restart its watcher: stop the background watcher command with TaskStop if it is still listed, then start `cq watch --as NAME --to-inbox --takeover 2>&1` as a background Bash command. Each Monitor-mode watcher picks up the new binary at its next re-arm (within 30 minutes). The shared upgrade steps are in [Setup](../SETUP.md#upgrading-while-watchers-run).
 
 ## Session identity
 
-`cq` records which session owns a queue name in `members/`. In Claude Code, the key is `CLAUDE_CODE_HOST_SESSION_ID` (the desktop app's `local_...` ID), else `CLAUDE_CODE_SESSION_ID`. `CQ_SESSION_ID` takes precedence over both. Never set one global `CQ_SESSION_ID` shared by Claude Code sessions: every session would get the same key and replace the others' records. See [Rejoin after /clear](PROTOCOL.md#rejoin-after-clear).
+`cq` records which session owns a queue name in `members/`. In Claude Code, the key is `CLAUDE_CODE_HOST_SESSION_ID` (the desktop app's `local_...` ID), else `CLAUDE_CODE_SESSION_ID`. `CQ_SESSION_ID` takes precedence over both. Never set one global `CQ_SESSION_ID` shared by Claude Code sessions: every session would get the same key and replace the others' records. See [Rejoin after /clear](../PROTOCOL.md#rejoin-after-clear).
 
 ### Claude Code CLI: start with a stable key
 
@@ -202,7 +202,7 @@ In PowerShell:
 $env:CQ_SESSION_ID = 'worker-a'; claude "Your queue name is worker-a. ..."
 ```
 
-In PowerShell the variable stays set in that window after `claude` exits, so start each worker in its own window. Use the start prompt from [`CLAUDE-snippets.md`](../CLAUDE-snippets.md#3-session-start-prompt) in place of `...`. The CLI asks you to trust the folder when it starts; answer that once.
+In PowerShell the variable stays set in that window after `claude` exits, so start each worker in its own window. Use the start prompt from [`CLAUDE-SNIPPETS.md`](CLAUDE-SNIPPETS.md#3-session-start-prompt) in place of `...`. The CLI asks you to trust the folder when it starts; answer that once.
 
 Use a different value for each worker. Two sessions with the same `CQ_SESSION_ID` share one record, `members/<key>`. Each `cq watch` rewrites that record with its own name, so after `/clear` both sessions are told the name of the session whose watcher started last. One of them then works as the wrong name.
 

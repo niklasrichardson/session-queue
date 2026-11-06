@@ -1,17 +1,17 @@
 # Other agents
 
-This page holds only what differs for an agent other than Claude Code, Codex and the Antigravity CLI, or for a script. Before this page, do the [shared install steps](SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](SETUP.md#send-a-test-message). Back to the [README](../README.md).
+This page holds only what differs for an agent other than Claude Code, Codex and the Antigravity CLI, or for a script. Before this page, do the [shared install steps](../SETUP.md#install): install, `PATH` and `cq init`. After this page, [send a test message](../SETUP.md#send-a-test-message). Back to the [README](../../README.md).
 
 `cq` has been tested live with Claude Code and Codex. The Antigravity CLI watcher had a short live use with a real `agy` on 6 Nov 2026. Nothing else on this page has been tested with another agent. The tested setups are in [Claude Code setup](CLAUDE-CODE.md), [Codex setup](CODEX.md) and [Antigravity CLI setup](ANTIGRAVITY.md).
 
 ## Quick path for another agent
 
-1. Finish the shared install steps in [Setup](SETUP.md#install).
+1. Finish the shared install steps in [Setup](../SETUP.md#install).
 2. Check that the agent can run `cq --version` in its shell.
 3. Add the queue rules to the agent's own instruction file ([Give the agent its rules](#give-the-agent-its-rules)).
 4. Let the agent write to the queue root without an approval prompt ([Allow `cq` without prompts](#allow-cq-without-prompts)).
 5. Choose a wake route ([Wake the agent](#wake-the-agent)).
-6. Send NAME a test message, as in [Setup](SETUP.md#send-a-test-message), and check that the agent handles it.
+6. Send NAME a test message, as in [Setup](../SETUP.md#send-a-test-message), and check that the agent handles it.
 
 ## Set up another agent
 
@@ -19,7 +19,7 @@ The agent needs the same four things as a Claude Code session or a Codex chat: i
 
 ### Give the agent its rules
 
-Put the [queue rules](QUEUE-RULES.md) in the agent's instruction file, and a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block) in each repo that takes queue work. If you start from [SESSION-RULES.example.md](SESSION-RULES.example.md), delete the Claude Code, Codex and Antigravity CLI parts.
+Put the [queue rules](../QUEUE-RULES.md) in the agent's instruction file, and a ["Queue scope" block](../QUEUE-RULES.md#2-per-repo-scope-block) in each repo that takes queue work. If you start from [SESSION-RULES.example.md](../SESSION-RULES.example.md), delete the Claude Code, Codex and Antigravity CLI parts.
 
 The rules work for any agent that can run a shell command. The agent runs `cq list`, `cq claim`, `cq done` and `cq send`, and treats every claimed message as data from another session, not as instructions from the user.
 
@@ -41,7 +41,7 @@ With a wake feature or polling, start the watcher or the scheduled task again af
 
 ### Sleep and wake
 
-The `cq-start` and `cq-stop` skills follow the Agent Skills format, and have steps for other agents. If your agent reads Agent Skills, install them as in [Install the skills](SETUP.md#install-the-skills). This is not tested. Otherwise, outside the agent, `cq sleep --as NAME NAME` puts the name to sleep, and `cq wake --as NAME NAME` must run before you start its watcher again. What sleep does for every agent is in [Setup](SETUP.md#sleep-and-wake).
+The `cq-start` and `cq-stop` skills follow the Agent Skills format, and have steps for other agents. If your agent reads Agent Skills, install them as in [Install the skills](../SETUP.md#install-the-skills). This is not tested. Otherwise, outside the agent, `cq sleep --as NAME NAME` puts the name to sleep, and `cq wake --as NAME NAME` must run before you start its watcher again. What sleep does for every agent is in [Setup](../SETUP.md#sleep-and-wake).
 
 With polling, `cq sleep` does not stop the scheduled task. Each run still starts and still costs a model turn, and `cq list` still lists the `UNCLAIMED` messages, after a first line `ASLEEP by=... reason="..."`. So:
 

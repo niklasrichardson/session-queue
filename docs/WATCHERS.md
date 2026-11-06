@@ -16,7 +16,7 @@ Tested on Windows 11 with PowerShell 7.6 and a fake `cq` only: the config checks
 
 1. Install PowerShell 7 (`pwsh`). The script does not run in Windows PowerShell 5.1.
 2. Use the default queue root, or set `CQ_ROOT` as in [Configuration](SETUP.md#configuration). The watchers get the environment of the window.
-3. Set up each chat or conversation first: [Wake a Codex chat](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex) and [Antigravity CLI setup](ANTIGRAVITY.md). You need its queue name, and the Codex thread ID or the `agy` conversation ID.
+3. Set up each chat or conversation first: [Wake a Codex chat](agents/CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex) and [Antigravity CLI setup](agents/ANTIGRAVITY.md). You need its queue name, and the Codex thread ID or the `agy` conversation ID.
 
 ## Set up the script
 
@@ -76,4 +76,4 @@ The window stays open while the watchers run. At the end, it waits for Enter, so
 
 - The watchers stop when the window closes, when you sign out and when the PC restarts. Start the script again after a restart. Issue #63 tracks an app that could keep them running.
 - A watcher that exits stays stopped until you run the script again. Check with `cq status --as NAME`, or watch the heartbeats in [cq-top](CQ-TOP.md).
-- A `--to-codex` wake starts a turn only while the chat is loaded in the Codex app. See [If a wake does not start a turn](CODEX.md#if-a-wake-does-not-start-a-turn).
+- A `--to-codex` wake starts a turn only while the chat is loaded in the Codex app. See [If a wake does not start a turn](agents/CODEX.md#if-a-wake-does-not-start-a-turn).
