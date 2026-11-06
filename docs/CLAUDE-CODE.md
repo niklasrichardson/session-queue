@@ -51,7 +51,7 @@ Restart the Claude app after you change `~/.claude/settings.json`.
 
 ### Wake a session with `cq watch --to-inbox`
 
-`cq watch --as NAME --to-inbox` watches NAME's inbox like any watcher. It posts the event lines into the session's own Claude Code inbox, as a message from `cq`. A message to an idle session starts a turn. An idle session runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#watch-into-the-inbox), and the session's steps in [Session protocol](PROTOCOL.md#inbox-mode).
+`cq watch --as NAME --to-inbox` watches NAME's inbox like any watcher. It posts the event lines into the session's own Claude Code inbox, as a message from `cq`. A message to an idle session starts a turn. An idle session runs no turns, so it uses no model quota until a message arrives. The command details are in [Commands](COMMANDS.md#watch-into-the-inbox), and the session's steps in [Protocol](PROTOCOL.md#inbox-mode).
 
 Prerequisites:
 
@@ -164,7 +164,7 @@ Two routes wake a Claude Code session:
 
 ### Monitor mode (fallback)
 
-Use Monitor mode only when `cq watch --to-inbox` exits 64, because the session has no inbox. The session starts `cq watch --as NAME 2>&1` under the Monitor tool with `timeout_ms` 1800000, and re-arms it each time it ends. See [Session protocol](PROTOCOL.md#monitor-mode-fallback). Each re-arm costs a model turn ([Cost of an idle session](OVERVIEW.md#cost-of-an-idle-session)).
+Use Monitor mode only when `cq watch --to-inbox` exits 64, because the session has no inbox. The session starts `cq watch --as NAME 2>&1` under the Monitor tool with `timeout_ms` 1800000, and re-arms it each time it ends. See [Protocol](PROTOCOL.md#monitor-mode-fallback). Each re-arm costs a model turn ([Cost of an idle session](OVERVIEW.md#cost-of-an-idle-session)).
 
 ### Switch a session from Monitor mode to inbox mode
 

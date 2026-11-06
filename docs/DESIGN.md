@@ -83,7 +83,7 @@ A message is read soon after it is sent.
 
 ## Inbox mode
 
-`cq watch --to-inbox` posts the watcher's lines into the session's own Claude Code inbox instead of stdout. The commands are in [Commands](COMMANDS.md#watch-into-the-inbox) and the session steps in [Session protocol](PROTOCOL.md#inbox-mode).
+`cq watch --to-inbox` posts the watcher's lines into the session's own Claude Code inbox instead of stdout. The commands are in [Commands](COMMANDS.md#watch-into-the-inbox) and the session steps in [Protocol](PROTOCOL.md#inbox-mode).
 
 - **Decision (28 Oct 2026).** Inbox mode is the default way for Claude Code sessions to receive queue events. Monitor mode is the fallback, for a session where `--to-inbox` exits 64 (no inbox). Inbox mode was added as experimental in [#24](https://github.com/niklasrichardson/session-queue/pull/24). On 28 Oct 2026 the owner moved all live sessions to it, to test it in real use. A planned 24-hour soak test was stopped after about 1 hour, so there are no long-run results yet.
 
@@ -123,7 +123,7 @@ A message is read soon after it is sent.
 
 ## Sleep
 
-Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Session protocol](PROTOCOL.md#sleep-and-wake).
+Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Protocol](PROTOCOL.md#sleep-and-wake).
 
 - **Why a flag file.** `sleep/<name>` works like `PAUSE`, but for one name. A file needs no running process, survives restarts, can be checked by any `cq` command and by `cq-top`, and can be removed by hand. The watcher checks it on every 250 ms tick, so a running watcher stops within a second. A message to the session would not work: a stopped watcher cannot read it.
 - **Its own exit code.** Exit 7 tells the session "do not re-arm". Exit 0 means "re-arm", and exit 5 means "retry with `--takeover`".

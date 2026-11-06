@@ -159,9 +159,10 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | [Antigravity CLI setup](docs/ANTIGRAVITY.md) | What differs for the Antigravity CLI (experimental): rules, the `--to-agy` watcher, the open-conversation caution, what else is known |
 | [Other agents](docs/OTHER-AGENTS.md) | What any other agent or script needs: rules, permissions, a wake route |
 | [Watchers](docs/WATCHERS.md) | Run Codex and Antigravity CLI watchers from one PowerShell window, with an example script and config |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | A stopped watcher, Codex checks that are not taken, approval prompts, an open `agy` session, split queues |
 | [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
 | [`CLAUDE-snippets.md`](CLAUDE-snippets.md) | Claude Code blocks and session prompts to paste |
-| [Session protocol](docs/PROTOCOL.md) | How a session watches, claims, replies, rejoins and sleeps; storm limits |
+| [Message protocol and session lifecycle](docs/PROTOCOL.md) | Message handling for every agent (claim, finish, reply, reject, storm limits), then the lifecycle per wake route (watch, rejoin, sleep, overdue tasks) |
 | [Example session rules](docs/SESSION-RULES.example.md) | A longer rules file to adapt, with a part for each agent |
 | [Commands](docs/COMMANDS.md) | Every command, the exit codes, the queue root layout |
 | [cq-top](docs/CQ-TOP.md) | The live, read-only terminal view of the queue |

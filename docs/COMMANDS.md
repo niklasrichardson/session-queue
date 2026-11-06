@@ -83,7 +83,7 @@ TOTAL rejected_in=1 rejected_out=1
 
 ## Sleep and wake
 
-Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual commands only. Nothing puts a session to sleep by itself. The protocol is in [Session protocol](PROTOCOL.md#sleep-and-wake).
+Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual commands only. Nothing puts a session to sleep by itself. The protocol is in [Protocol](PROTOCOL.md#sleep-and-wake).
 
 ```bash
 cq sleep --as worker-a worker-a --reason "idle overnight"
@@ -173,7 +173,7 @@ A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 
 
 ## Watch into the inbox
 
-`cq watch --as B --to-inbox` posts its lines into the Claude Code session that started it, instead of printing them. A message to an idle session starts a new turn, so the session needs no Monitor and no re-arm every 30 minutes. It is the default way for Claude Code sessions to receive queue events. How a session runs it is in [Session protocol](PROTOCOL.md#inbox-mode). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
+`cq watch --as B --to-inbox` posts its lines into the Claude Code session that started it, instead of printing them. A message to an idle session starts a new turn, so the session needs no Monitor and no re-arm every 30 minutes. It is the default way for Claude Code sessions to receive queue events. How a session runs it is in [Protocol](PROTOCOL.md#inbox-mode). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
 
 - **Inbox address.** Claude Code exports `CLAUDE_CODE_MESSAGING_SOCKET` (a Unix socket, or a named pipe such as `\\.\pipe\LOCAL\cc-msg-<hex>` on Windows) and `CLAUDE_CODE_MESSAGING_TOKEN` to Bash commands and hooks. If either is missing or empty, `cq watch` exits 64. It never prints the token or the address.
 - **One post.** Connect, write `{"type":"auth","token":"..."}`, then `{"type":"user","from":"cq","message":{"role":"user","content":"..."}}`, each followed by a newline, then close. `cq` connects only when the message is ready, because Claude Code closes a connection that sends no complete line within 30 seconds.
