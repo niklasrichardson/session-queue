@@ -9,7 +9,9 @@ Starts the Codex and Antigravity CLI cq watchers listed in a JSON config, in thi
 - Close the window, or press Ctrl+C, to stop every watcher.
 - Check a watcher from anywhere with: cq status --as NAME
 
-Config: -Config PATH, else $env:CQ_WATCHERS, else watchers.json next to this script.
+Config: -Config PATH, else $env:CQ_WATCHERS, else watchers.json in the queue root
+($env:CQ_ROOT, else the per-user default). A root set at build time with CQ_DEFAULT_ROOT
+is not known here: use -Config or CQ_WATCHERS with such a build.
 See watchers.example.json and docs/WATCHERS.md.
 #>
 param(
@@ -30,9 +32,18 @@ function Stop-WithError([string]$Message) {
     exit 1
 }
 
+# The queue root, as cq finds it without a build-time default.
+function Get-QueueRoot {
+    if ($env:CQ_ROOT) { return $env:CQ_ROOT }
+    if ($IsWindows) { return Join-Path $env:LOCALAPPDATA 'cq' }
+    if ($IsMacOS) { return Join-Path $HOME 'Library/Application Support/cq' }
+    $data = if ($env:XDG_DATA_HOME) { $env:XDG_DATA_HOME } else { Join-Path $HOME '.local/share' }
+    Join-Path $data 'cq'
+}
+
 # Find and read the config.
 if (-not $Config) { $Config = $env:CQ_WATCHERS }
-if (-not $Config) { $Config = Join-Path $PSScriptRoot 'watchers.json' }
+if (-not $Config) { $Config = Join-Path (Get-QueueRoot) 'watchers.json' }
 if (-not (Test-Path -LiteralPath $Config -PathType Leaf)) { Stop-WithError "config file not found: $Config" }
 try { $cfg = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json }
 catch { Stop-WithError "config file is not valid JSON: $Config ($($_.Exception.Message))" }

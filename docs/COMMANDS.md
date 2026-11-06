@@ -53,7 +53,7 @@ Event line:
 CQ-NEW 2026-10-24T00:06:16Z (00:06 GMT) to=worker-a from=lead type=task id=20261024T000615Z-lead-ab12 subject="Run the tests"
 ```
 
-The time is when the watcher saw the message: UTC first, then local time with its label, computed by `cq` (see `CQ_TZ` and `CQ_TZ_LABEL` in [Setup](SETUP.md#configuration)).
+The time is when the watcher saw the message: UTC first, then local time with its label, computed by `cq` (see `tz` and `tz_label` in `config.toml`, or `CQ_TZ` and `CQ_TZ_LABEL`, in [Setup](SETUP.md#configuration)).
 
 ## Rejections
 
@@ -272,7 +272,7 @@ asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" 
 | 9 | `watch --to-codex`: `codex queue` failed 4 times in a row. Nothing wakes the Codex chat until the watcher is started again. |
 | 10 | `status`: no watcher runs for the name, and it is not asleep. |
 | 11 | `watch --to-agy`: an `agy` turn failed 4 times in a row, or ran in another conversation. Nothing wakes the conversation until the watcher is started again. |
-| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found, or `watch --to-agy` with an empty conversation ID, an empty prompt or an `agy` executable that cannot be found. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value for `list --overdue`, a coordinator's `watch` or `cq-top`. |
+| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found, or `watch --to-agy` with an empty conversation ID, an empty prompt or an `agy` executable that cannot be found. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value for `list --overdue`, a coordinator's `watch` or `cq-top`. A `config.toml` in the queue root that cannot be used (bad TOML, an unknown key, a wrong value), for every command except `init` and the hooks, and for `cq-top`. |
 | 70 | Dispatch timeout/interruption (task stays claimed), or any other error (I/O, `CQ_ROOT` missing or not initialised). |
 
 
@@ -280,6 +280,7 @@ asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" 
 
 ```text
 CQ_ROOT/
+  config.toml                optional settings: rules, tz, tz_label (edited by the owner; see Setup)
   tmp/                       temp files, renamed into inboxes
   inbox/<name>/              new messages
   inbox/<name>/.processing/  claimed messages
@@ -305,6 +306,8 @@ CQ_ROOT/
   watch-exits.log.lock       locked while a watcher appends its line or renames the log
   watch-exits.log.old        the previous log, once it passed 1 MiB
 ```
+
+`cq` and `cq-top` read only the files and folders listed above. They ignore any other file or folder in the root, so your own files, such as `SESSION-RULES.md` and `watchers.json`, can live there.
 
 Message format: [`schema/message.v1.json`](../schema/message.v1.json). One file per message, `<id>.json`, UTF-8 without BOM. IDs are `<UTC yyyymmddThhmmssZ>-<from>-<4 hex>`. Readers ignore unknown fields.
 

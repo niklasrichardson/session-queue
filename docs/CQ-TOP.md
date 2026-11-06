@@ -22,7 +22,7 @@ To build without replacing a `cq-top` that is already installed, use a separate 
 cq-top
 ```
 
-The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#configuration). If the queue root is missing or not set up, `cq-top` prints the reason and exits with code 70. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value exits with code 64 (see [Overdue tasks](#overdue-tasks)).
+The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#configuration). If the queue root is missing or not set up, `cq-top` prints the reason and exits with code 70. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value exits with code 64 (see [Overdue tasks](#overdue-tasks)). So does a `config.toml` in the queue root that `cq` would refuse.
 
 | Key | What it does |
 | --- | --- |
@@ -160,7 +160,7 @@ The rule is `own_owner` and `owners` in `tools/cq-top/src/sessions.rs`. The Code
 
 - Each reply is counted once, by its message ID, or by its request ID when there is no message ID. Claude Code writes one reply on several lines.
 - `<synthetic>` replies are skipped.
-- Today starts at local midnight. Times in transcripts are UTC.
+- Today starts at local midnight, in the same time zone as `cq`'s local times: `CQ_TZ`, else `tz` in the root's `config.toml`, else the build's default, else the system zone. Times in transcripts are UTC.
 - Transcripts are read incrementally: each scan reads only the lines added since the last one.
 - Prices are in `PRICES` in `tools/cq-top/src/sessions.rs`. They come from <https://platform.claude.com/docs/en/about-claude/pricing>, read on 28 October 2026. Cache writes use the 5-minute or 1-hour price as the transcript records them. Haiku 5.5 costs more for a prompt over 100k tokens, so the cost is worked out reply by reply. Fast mode, batch and regional prices are not applied.
 

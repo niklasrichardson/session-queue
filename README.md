@@ -65,7 +65,7 @@ cargo install --path .
 cq init
 ```
 
-Every session must use the same absolute queue root: `CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration). If you set `CQ_ROOT`, set it before you run `cq init`, and use the same value for every `cq` command. Keep the queue root outside every git repo ([why](docs/SETUP.md#keep-cq-data-outside-the-repo)).
+Every session must use the same absolute queue root: `CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration). If you set `CQ_ROOT`, set it before you run `cq init`, and use the same value for every `cq` command. Keep the per-user default unless you need another drive: it is outside every git repo, and your `config.toml`, rules file and watcher list go in it too ([Configuration](docs/SETUP.md#configuration)).
 
 ### 2. Connect each session
 

@@ -15,24 +15,24 @@ Tested on Windows 11 with PowerShell 7.6 and a fake `cq` only: the config checks
 ## Before you start
 
 1. Install PowerShell 7 (`pwsh`). The script does not run in Windows PowerShell 5.1.
-2. Set the queue root, as in [Configuration](SETUP.md#configuration): a `CQ_ROOT` user variable, or `CQ_DEFAULT_ROOT` in your build. The watchers get the environment of the window.
+2. Use the default queue root, or set `CQ_ROOT` as in [Configuration](SETUP.md#configuration). The watchers get the environment of the window.
 3. Set up each chat or conversation first: [Wake a Codex chat](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex) and [Antigravity CLI](OTHER-AGENTS.md#antigravity-cli). You need its queue name, and the Codex thread ID or the `agy` conversation ID.
 
 ## Set up the script
 
-1. Copy `examples/start-watchers.ps1` and `examples/watchers.example.json` to the `local` folder of your data folder, outside every git repo ([why](SETUP.md#keep-cq-data-outside-the-repo)).
-2. Rename `watchers.example.json` to `watchers.json`.
-3. Replace the example names and IDs with your own.
+1. Copy `examples/watchers.example.json` to `watchers.json` in the queue root, for example `%LOCALAPPDATA%\cq\watchers.json` on Windows.
+2. Replace the example names and IDs with your own.
+3. Copy `examples/start-watchers.ps1` to any folder outside the repo, for example the queue root.
 4. Run the script once from a terminal, to see any config error:
 
    ```powershell
-   pwsh -NoLogo -File "D:\cq-data\local\start-watchers.ps1"
+   pwsh -NoLogo -File "$env:LOCALAPPDATA\cq\start-watchers.ps1"
    ```
 
    Expected result: `Started N watcher(s).`, then each watcher's start line.
 5. In another terminal, check each watcher: `cq status --as NAME`. Expected result: `running`.
 
-The script finds its config in this order: `-Config PATH`, else the `CQ_WATCHERS` environment variable, else `watchers.json` next to the script. Add `-NoWait` to close the window at the end without waiting for Enter.
+The script finds its config in this order: `-Config PATH`, else the `CQ_WATCHERS` environment variable, else `watchers.json` in the queue root (`CQ_ROOT`, else the per-user default). A build with `CQ_DEFAULT_ROOT` uses a root that the script does not know: give it `-Config` or `CQ_WATCHERS`. Add `-NoWait` to close the window at the end without waiting for Enter.
 
 ## The config
 
@@ -64,9 +64,10 @@ The script stops with a clear message, and starts nothing, if the config is miss
 2. For the location, enter:
 
    ```text
-   pwsh -NoLogo -File "<data folder>\local\start-watchers.ps1"
+   pwsh -NoLogo -File "<folder>\start-watchers.ps1"
    ```
 
+   Replace `<folder>` with the folder that holds your copy of the script.
 3. Name the shortcut, for example `cq watchers`.
 
 The window stays open while the watchers run. At the end, it waits for Enter, so you can read the last lines.
