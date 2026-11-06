@@ -216,6 +216,7 @@ impl Runner for AgyBin {
             let _ = turn.child.kill();
             let _ = turn.child.wait();
             turn.output();
+            remove_old_outputs(&self.dir, TURN_TIMEOUT);
         }
     }
 }
