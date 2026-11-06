@@ -103,7 +103,7 @@ Optional. A lead gets one `info` message when a chosen worker session has finish
 
 How it works:
 
-- At each turn end, `cq turn-end` writes the time, the transcript path and the transcript's length in bytes to `idle/worker-a.turn-end`. It writes nothing for a name that is not listed or is asleep, and nothing when the hook input lists background work that is still running, other than the `cq watch` watcher.
+- At each turn end, `cq turn-end` writes the time, the transcript path and the transcript's length in bytes to `idle/worker-a.turn-end`. It writes nothing for a name that is not listed or is asleep, and nothing when the hook input lists background work that is still running, other than the `cq watch` watcher and Monitor tasks.
 - The worker's watcher checks that file every 5 seconds. It sends the alert when `--idle-after` (default 5 minutes) has passed since the turn end with no activity observed. Any of these cancels the alert:
   - a new `user` entry in the transcript after the turn end: a new prompt, a tool result or a queued notification;
   - a transcript write later than 30 seconds after the turn end;
@@ -114,8 +114,9 @@ How it works:
 Limits:
 
 - A Stop hook does not run when the user interrupts a turn, so that turn end records nothing. An API error runs `StopFailure` instead of `Stop`, which also records nothing.
-- A session that waits on work the hook input does not report can be reported idle, at most once an hour. When the hook input has no `background_tasks` field (older Claude Code versions), `cq turn-end` cannot see background work, and records the turn end anyway.
-- The watcher is recognised in `background_tasks` only by its command: the program is `cq` or `cq.exe`, the first argument is `watch`, and the command runs nothing else. A command with `&&`, `||`, `;`, `|`, a lone `&`, `$(`, `<(`, `>(`, a backtick or a line break counts as background work; a redirection such as `2>&1` is allowed. A task with no command is never the watcher, whatever its description says. So a watcher run through a tool that reports no command counts as background work, and no alert is sent for that session. **Not verified:** whether Claude Code reports a command for a Monitor watcher.
+- A session that waits on work the hook input does not report can be reported idle, at most once an hour.
+- A Monitor task never blocks the alert. Claude Code reports no command for a Monitor, and it can arm one by itself that runs for the whole session (for example for live updates). So a session that waits on a Monitor is reported idle after the idle delay (5 minutes by default). When the hook input has no `background_tasks` field (older Claude Code versions), `cq turn-end` cannot see background work, and records the turn end anyway.
+- The watcher is recognised in `background_tasks` only by its command: the program is `cq` or `cq.exe`, the first argument is `watch`, and the command runs nothing else. A command with `&&`, `||`, `;`, `|`, a lone `&`, `$(`, `<(`, `>(`, a backtick or a line break counts as background work; a redirection such as `2>&1` is allowed. A task with no command is never the watcher, whatever its description says. So a watcher run through a tool that reports no command, other than the Monitor, counts as background work, and no alert is sent for that session.
 - The watcher reads at most 1 MB of transcript added after the turn end, and only each entry's `type` field. It never keeps or prints transcript text. More than 1 MB added counts as a new turn.
 - **Not verified** in a live session: the Stop hook input, the transcript timing after the hook, and the alert end to end. The commands are covered by tests that run them with hook input and planted turn ends.
 - The macOS note above about a bare `cq` in a hook command applies here too.
