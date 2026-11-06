@@ -153,11 +153,12 @@ Some agent sandboxes do not write every folder for real. On Windows on 6 Novembe
 
 Before you use the default root, check each agent:
 
-1. Make sure the root exists (run `cq init` from a normal terminal). Then, from the agent's own shell (the tool that it uses to run `cq`), create a test file in the root. For example, in Git Bash: `touch "$LOCALAPPDATA/cq/sandbox-check.txt"`.
-2. From a normal terminal, check that the file is there. In PowerShell: `Test-Path "$env:LOCALAPPDATA\cq\sandbox-check.txt"`. Expected result: `True`.
-3. Delete the test file.
+1. Make sure the root exists (run `cq init` from a normal terminal).
+2. From the agent's own shell (the tool that it uses to run `cq`), write a new marker file with a unique text, and check that the command succeeded. For example, in Git Bash: `m="sandbox-check-$(date +%s)-$RANDOM"; echo "$m" > "$LOCALAPPDATA/cq/$m.txt" && echo "$m"`. Note the printed text.
+3. From a normal terminal, read that exact file and compare its text with the printed text. In PowerShell: `Get-Content "$env:LOCALAPPDATA\cq\<marker>.txt"`. Expected result: the same text. A missing file, an error or other text means the agent's writes are not real.
+4. Delete the marker file from both the agent's shell and the normal terminal, because each may see its own copy.
 
-If the result is `False`, the agent does not write the root for real. Use a root in a folder that every agent writes for real, for example under your projects folder, outside every git repo:
+If the text does not match, the agent does not write the root for real. Use a root in a folder that every agent writes for real, for example under your projects folder, outside every git repo:
 
 - Point every program at that root: set `CQ_ROOT`, or build `cq` with `CQ_DEFAULT_ROOT` (see [Optional: build-time defaults](#optional-build-time-defaults)).
 - Prefer the build-time default if some programs might start without `CQ_ROOT`. A program that does not get `CQ_ROOT` uses the default root without a warning, so it uses a different queue.
