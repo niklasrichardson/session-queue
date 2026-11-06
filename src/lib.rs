@@ -7,6 +7,7 @@
 pub mod agy;
 pub mod claim;
 pub mod codex;
+pub mod config;
 pub mod dispatch;
 pub mod done;
 pub mod error;

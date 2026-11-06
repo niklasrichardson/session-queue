@@ -165,7 +165,7 @@ Tests: extend T11 to cover a subject and body that hold `"`, `'`, `$(...)`, back
 
 ## Build spec
 
-Build five scripts in `$CQ_ROOT/bin/`. Default `CQ_ROOT` is `D:\Code\ai-projects\session-queue\data`. Every script reads `CQ_ROOT` and fails with a clear message if the directory is missing. The data folder is git-ignored inside the session-queue repo (decided 24 Oct 2026; was \~/claude-queue).
+Build five scripts in `$CQ_ROOT/bin/`. Default `CQ_ROOT` is `D:\Code\ai-projects\session-queue\data`. Every script reads `CQ_ROOT` and fails with a clear message if the directory is missing. The data folder is git-ignored inside the session-queue repo (decided 24 Oct 2026; was \~/claude-queue). Superseded on 6 Nov 2026: use the per-user default queue root, outside every git repo, with `config.toml` in it, as in [Setup](SETUP.md#configuration).
 
 | Script | Purpose | Behaviour |
 | --- | --- | --- |

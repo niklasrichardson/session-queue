@@ -47,7 +47,7 @@ Set up `cq` in three parts, in this order:
    cq init
    ```
 
-   The queue lives in a per-user folder by default (see [Configuration](#configuration)). Every session must use the same absolute queue root. If you set `CQ_ROOT`, use the same value for every `cq` command: in each session, for each watcher and for each sender.
+   The queue lives in a per-user folder by default (see [Configuration](#configuration)). Keep that default unless you need another drive ([why](#configuration)). Every session must use the same absolute queue root. If you set `CQ_ROOT`, use the same value for every `cq` command: in each session, for each watcher and for each sender.
 
 ## Connect each session
 
@@ -127,31 +127,117 @@ Copy them again after you update the repo. A session runs these skills without b
 
 ## Configuration
 
-All settings are environment variables. Set queue-wide values before you start the agent app, such as the Claude app or the Codex app (on Windows: Settings > System > About > Advanced system settings > Environment Variables > User variables).
+`cq` keeps all its data and settings in the queue root. Use the per-user default root: it is already outside every git repo, so `git clean`, a fresh clone, or an agent that works in a repo cannot touch live queue data. Set `CQ_ROOT` only if you need the queue on another drive.
+
+| System | Default queue root |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\cq` |
+| macOS | `~/Library/Application Support/cq` |
+| Linux | `$XDG_DATA_HOME/cq`, or `~/.local/share/cq` |
+
+The macOS default path contains a space, so quote it in shell commands: `ls "$HOME/Library/Application Support/cq"`.
+
+Put your own cq files in the queue root too. `cq` and `cq-top` ignore files and folders in the root that they do not use.
+
+```text
+%LOCALAPPDATA%\cq\
+  config.toml          settings (see below)
+  SESSION-RULES.md     your own session rules, made from SESSION-RULES.example.md
+  watchers.json        the watcher list for start-watchers.ps1 (see Watchers)
+  inbox\, done\, ...   the queue itself, made by cq init
+```
+
+### config.toml
+
+`config.toml` in the queue root holds settings that are the same for every session. The file is optional. Start from [`examples/config.example.toml`](../examples/config.example.toml).
+
+```toml
+rules = 'SESSION-RULES.md'
+tz = 'Europe/London'
+tz_label = 'UK'
+```
+
+| Key | What it sets | Default |
+| --- | --- | --- |
+| `rules` | The rules file that the rejoin reminder tells a session to re-read. A relative path is relative to the queue root. | None: the reminder names the rules in general terms. |
+| `tz` | The time zone of the local time in `CQ-NEW` and list lines (an IANA name such as `Europe/London`). `cq-top` also starts "today" at midnight in this zone. | The system time zone. |
+| `tz_label` | The label after that time, such as `UK`. | The zone's abbreviation, such as `GMT` or `CET`. |
+
+A problem in the file never stops a command. `cq` and `cq-top` print one warning on stderr that names the file and each problem, then run as usual:
+
+- An unknown key, such as `tz_lable`, is ignored. The other keys still apply.
+- A value of the wrong type is ignored. A `tz` that is not a known time zone is ignored, so the next source applies (see [Which value cq uses](#which-value-cq-uses)).
+- A file that is not valid TOML is ignored whole.
+
+The hooks (`session-start`, `turn-end`, `idle-alert`) print the warning only with `--debug`. A running watcher keeps the settings it read at start, so restart watchers after you change the file.
+
+### Environment variables
+
+An environment variable wins over `config.toml`. Set queue-wide values before you start the agent app, such as the Claude app or the Codex app (on Windows: Settings > System > About > Advanced system settings > Environment Variables > User variables). A user environment variable is seen only by processes that start after you set it. Restart the agent app, and open a new terminal, after you set or change one.
 
 | Variable | What it sets | Default |
 | --- | --- | --- |
 | `CQ_SESSION_ID` | Per-command or dedicated session-process membership key, before either Claude identity variable. Never set one global value shared by Claude sessions. Empty values fall back. | None |
-| `CQ_ROOT` | The queue root. Must be an absolute path. | Windows: `%LOCALAPPDATA%\cq`. macOS: `~/Library/Application Support/cq`. Linux: `$XDG_DATA_HOME/cq` or `~/.local/share/cq`. |
-| `CQ_RULES` | The rules file that the rejoin reminder tells a session to re-read. | None: the reminder names the rules in general terms. |
-| `CQ_TZ` | The time zone of the local time in `CQ-NEW` lines (an IANA name such as `Europe/London`). | The system time zone. |
-| `CQ_TZ_LABEL` | The label after that time, such as `UK`. | The zone's abbreviation, such as `GMT` or `CET`. |
+| `CQ_ROOT` | The queue root. Must be an absolute path. `config.toml` cannot set it, because `cq` finds the file in the root. | The per-user default above. |
+| `CQ_RULES` | As `rules` in `config.toml`. | `rules` in `config.toml` |
+| `CQ_TZ` | As `tz` in `config.toml`. An unknown name is skipped. | `tz` in `config.toml` |
+| `CQ_TZ_LABEL` | As `tz_label` in `config.toml`. | `tz_label` in `config.toml` |
 | `CQ_OVERDUE_UNCLAIMED_MINUTES` | Minutes before an unclaimed task counts as overdue (see [Overdue tasks](COMMANDS.md#overdue-tasks)). Whole number, 1 or more. | 30 |
 | `CQ_OVERDUE_CLAIMED_MINUTES` | Minutes before a claimed task with no `cq done` counts as overdue. Whole number, 1 or more. | 120 |
 
 How each agent's session key is chosen is in [Claude Code setup](CLAUDE-CODE.md#session-identity) and [Codex setup](CODEX.md#session-identity).
 
-The macOS default path contains a space, so quote it in shell commands: `ls "$HOME/Library/Application Support/cq"`.
+### Which value cq uses
 
-To bake your own defaults into your build instead, create `.cargo/config.toml` in the repo (it is gitignored). A variable set at run time still wins. Cargo does not apply a value from `[env]` if the same variable is already set in the shell that runs the build.
+For `rules`, `tz` and `tz_label`, `cq` takes the first value that is set and not empty:
+
+1. The environment variable: `CQ_RULES`, `CQ_TZ` or `CQ_TZ_LABEL`.
+2. The key in `config.toml` in the queue root.
+3. The build-time default, if your build has one (see below).
+4. The built-in default in the table above.
+
+For the queue root itself: `CQ_ROOT`, else the build's `CQ_DEFAULT_ROOT`, else the per-user default.
+
+### Optional: build-time defaults
+
+You do not need these: `config.toml` covers the same settings. To bake defaults into your own build instead, create `.cargo/config.toml` in the repo (it is gitignored). Any value set at run time, or in the root's `config.toml`, still wins. Cargo does not apply a value from `[env]` if the same variable is already set in the shell that runs the build.
 
 ```toml
 [env]
-CQ_DEFAULT_ROOT = 'D:\queues\cq'
-CQ_RULES_PATH = 'D:/queues/SESSION-RULES.md'
+CQ_DEFAULT_ROOT = 'E:\cq'
+CQ_RULES_PATH = 'E:/cq/SESSION-RULES.md'
 CQ_DEFAULT_TZ = 'Europe/London'
 CQ_DEFAULT_TZ_LABEL = 'UK'
 ```
+
+`CQ_DEFAULT_ROOT` changes where your build looks for the queue root. Scripts that do not run `cq`, such as [`start-watchers.ps1`](WATCHERS.md), do not know it.
+
+### Move an existing queue root
+
+To move a queue root into the default location, or to another drive:
+
+1. Drain the queue. Ask every session to finish or reject each task it has claimed, and to handle every message in its inbox, replies included. Do this before step 2: under `PAUSE`, `cq done` cannot send its reply. The queue is drained when the old root's `inbox` folder holds no files:
+
+   ```powershell
+   $old = 'D:\old-cq-root'   # your old root
+   (Get-ChildItem "$old\inbox" -Recurse -File -Force).Count   # expect 0
+   ```
+
+2. Create a file named `PAUSE` in the old root, so that `cq send` refuses new messages.
+3. Stop every queue writer. `PAUSE` stops new messages only: sessions can still claim, finish and reject tasks, and the hooks still write their files. Stopping the watchers is not enough. Close every session that uses the queue (Claude Code, Codex, Antigravity CLI and any other agent), and stop every watcher and dispatcher. To check that no watcher runs for `NAME`, run `cq status --as NAME`: it exits 10 for an awake name, and 7 with `watcher=stopped` for a sleeping name.
+4. Copy the old root's contents into the new root, which must be empty. Keep the old root until step 7.
+5. Compare the file counts. They must be equal; if not, copy again before you go on:
+
+   ```powershell
+   $new = "$env:LOCALAPPDATA\cq"   # your new root
+   (Get-ChildItem $old -Recurse -File -Force).Count
+   (Get-ChildItem $new -Recurse -File -Force).Count
+   ```
+
+6. Remove `CQ_ROOT`, or set it to the new root. Restart the agent apps and open new terminals.
+7. Delete `PAUSE` in the new root. Start the watchers again, and check each one with `cq status --as NAME`. When the new root works, delete the old one.
+
+To run Codex and Antigravity CLI watchers from one window, see [Watchers](WATCHERS.md).
 
 ## Upgrading while watchers run
 

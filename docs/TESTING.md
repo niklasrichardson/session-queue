@@ -14,6 +14,15 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Root config.toml and the watcher script on Windows, 6 November 2026
+
+`config.toml` in the queue root (see [Configuration](SETUP.md#configuration)) and `examples/start-watchers.ps1` (see [Watchers](WATCHERS.md)). Checked on Windows 11 with `cargo test --workspace` (330 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`. All passed.
+
+- Unit tests in `src/config.rs` (8 tests): every key is read; a relative `rules` path is joined to the root and an absolute one is kept; empty text and empty values give no settings; an unknown key is named in the warning and the other keys still apply; a wrong type or an unknown zone drops only that key; bad TOML ignores the whole file and gives the line; the order is environment variable, file, build default.
+- `tests/config.rs` (8 tests) runs the real `cq` against temporary queue roots. `tz` and `tz_label` from the file set the local time unless `CQ_TZ` and `CQ_TZ_LABEL` are set; `--help` shows the file's zone; the `session-start` reminder names the file's `rules` path unless `CQ_RULES` is set; with an unknown key, `list`, `watch`, `status`, `init` and `send` run as usual, each prints one warning line that names the file and the key, and the other keys still apply; a wrong type or an unknown zone gives a warning, the other key still applies and `CQ_TZ` still wins; bad TOML and a duplicate key ignore the whole file with a warning that gives the line; `session-start` prints the warning only with `--debug`; a missing or empty file changes nothing and prints nothing.
+- The build-time defaults (`CQ_RULES_PATH`, `CQ_DEFAULT_TZ`, `CQ_DEFAULT_TZ_LABEL`) are set at compile time, so only the unit test checks their place in the order.
+- The script was parsed with PowerShell 7.6 (0 errors). Its config checks were run against bad configs, and its output against a fake `cq` that echoes its arguments and exits 3. Six watchers were run against a fake `cq` that prints a start line, waits 5 seconds, then prints a done line: all six started within 0.1 seconds. Before the fix, the sixth started only after the first five ended, because `Start-ThreadJob` runs at most 5 jobs by default. It has not been run with real watchers, and closing the window or pressing Ctrl+C was not tested.
+
 ## Antigravity CLI wake on Windows, 6 November 2026
 
 `cq watch --to-agy` (experimental, see [Commands](COMMANDS.md#wake-an-antigravity-cli-conversation)). Checked on Windows 11 with `cargo test --workspace` (315 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check`. All passed.

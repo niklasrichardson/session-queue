@@ -1,0 +1,18 @@
+# cq settings. Copy this file to config.toml in the queue root:
+#   Windows: %LOCALAPPDATA%\cq\config.toml
+#   macOS:   ~/Library/Application Support/cq/config.toml
+#   Linux:   $XDG_DATA_HOME/cq/config.toml, or ~/.local/share/cq/config.toml
+#
+# Every key is optional. An environment variable with the same meaning wins
+# (CQ_RULES, CQ_TZ, CQ_TZ_LABEL). cq warns about an unknown key or a bad value,
+# ignores it, and runs as usual. Restart running watchers after you change this file.
+
+# The rules file that the rejoin reminder tells a session to re-read.
+# A relative path is relative to the queue root.
+rules = 'SESSION-RULES.md'
+
+# The time zone of the local time in CQ-NEW and list lines (an IANA name).
+tz = 'Europe/London'
+
+# The label after that time. Leave it out to use the zone's abbreviation (GMT, BST).
+tz_label = 'UK'

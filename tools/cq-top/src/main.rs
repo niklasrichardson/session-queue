@@ -245,6 +245,13 @@ fn main() -> std::io::Result<()> {
             std::process::exit(EXIT_ERROR);
         }
     };
+    // The root's config.toml sets the local time zone, as for cq. A file
+    // with problems gives a warning; its usable settings still apply.
+    let (config, warning) = cq::config::Config::load(&root);
+    if let Some(w) = warning {
+        eprintln!("cq-top: warning: {w}");
+    }
+    cq::config::install(config);
     if exports.html.is_some() || exports.screens.is_some() {
         let scan = || sessions::collect_once(sessions::Sources::live(&root));
         if let Err(e) = export(&root, &limits, &exports, scan) {
