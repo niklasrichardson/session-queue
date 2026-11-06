@@ -70,9 +70,10 @@ Each wake is a full model turn. In the hand test, a turn took 4 seconds to about
 Until this is understood, do not keep the conversation open in an interactive `agy` while its watcher runs. To work in the conversation yourself:
 
 1. Put the name to sleep: `cq sleep --as NAME NAME`. The watcher exits 7.
-2. Open the conversation in `agy` and work in it.
-3. Close `agy`.
-4. Run `cq wake --as NAME NAME`, then start the watcher again.
+2. Check that the watcher has stopped: `cq status --as NAME` prints `asleep` with `watcher=stopped`. Sleep does not stop a print turn that has already started, so also wait until no `agy` print turn for this conversation runs. In PowerShell: `Get-CimInstance Win32_Process -Filter "Name='agy.exe'" | Where-Object CommandLine -like '*CONVERSATION_ID*-p*'` prints nothing when none runs.
+3. Open the conversation in `agy` and work in it.
+4. Close `agy`.
+5. Run `cq wake --as NAME NAME`, then start the watcher again.
 
 After a restart, start the watcher again, with `--takeover` if it exits 5. If it exits 11, read its last `cq:` line: a turn failed 4 times in a row, or `agy` answered from another conversation. Check the conversation ID, then start the watcher again.
 
