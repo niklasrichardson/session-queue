@@ -13,7 +13,7 @@ Set up `cq` in three parts, in this order:
 | Claude Code desktop app | [Claude Code setup](CLAUDE-CODE.md) |
 | Claude Code CLI | [Claude Code setup](CLAUDE-CODE.md). Start each worker with its own key first: [Claude Code CLI](CLAUDE-CODE.md#claude-code-cli-start-with-a-stable-key) |
 | Codex desktop app or Codex CLI chat | [Set up a Codex chat](CODEX.md#set-up-a-codex-chat) |
-| Codex, a fresh run per task (`cq dispatch`) | [Dispatch worker prerequisites](CODEX.md#dispatch-worker-prerequisites) |
+| Codex, a fresh run per task (`cq dispatch`) | [Codex dispatch worker](CODEX-DISPATCH.md) |
 | Antigravity CLI (experimental) | [Antigravity CLI setup](ANTIGRAVITY.md) |
 | Any other agent, or a script | [Other agents](OTHER-AGENTS.md) |
 

@@ -65,7 +65,7 @@ Each status links to its dated evidence in [Test status](docs/TESTING.md). "Not 
 | Claude Code CLI | Live, one bounded run: 25 of 25 tasks with nobody typing, in inbox mode ([evidence](docs/TESTING.md#not-verified)) | The inbox watcher (`inbox`), as in the desktop app | None in inbox mode | Not measured | [Claude Code CLI](docs/CLAUDE-CODE.md#claude-code-cli-start-with-a-stable-key) |
 | Codex desktop app | Live: woke and handled messages ([evidence](docs/TESTING.md#codex-wake-on-windows-28-october-2026)). Unattended with no approval prompts: not tested | A watcher outside the chat runs `codex queue` (`codex`). Fallback: a scheduled automation in the chat | None with `--to-codex` (checked once, in the session file). Automation: 1 turn per run | About 6 s (2 chats) | [Codex setup](docs/CODEX.md#set-up-a-codex-chat) |
 | Codex CLI | Live: woke and handled messages, also after 50 minutes idle ([evidence](docs/TESTING.md#codex-cli-with-the-native-watcher-on-windows-3-and-6-november-2026)). Unattended with no approval prompts: not tested | A watcher outside the chat runs `codex queue` (`codex`). The chat must be open | None by design; not checked for the CLI | Not measured | [Codex setup](docs/CODEX.md#set-up-a-codex-chat) |
-| Codex via `cq dispatch` | Tests with a fake Codex, and one real read-only task ([evidence](docs/TESTING.md#codex-on-windows-26-october-2026)). Write tasks: not tested | `cq dispatch` scans the inbox every second and runs a fresh `codex exec` per task | None by design: it runs Codex only for a task | Not measured | [Dispatch worker](docs/CODEX.md#dispatch-worker-prerequisites) |
+| Codex via `cq dispatch` | Tests with a fake Codex, and one real read-only task ([evidence](docs/TESTING.md#codex-on-windows-26-october-2026)). Write tasks: not tested | `cq dispatch` scans the inbox every second and runs a fresh `codex exec` per task | None by design: it runs Codex only for a task | Not measured | [Codex dispatch worker](docs/CODEX-DISPATCH.md) |
 | Antigravity CLI | Experimental. Live, one short use: woke a conversation, which claimed and finished 2 messages ([evidence](docs/TESTING.md#antigravity-cli-live-use-on-windows-6-november-2026)). Long run: not tested | A watcher outside the conversation runs one print-mode `agy` turn per batch (`agy`) | None by design: `agy` runs only when a message arrives | Not measured | [Antigravity CLI setup](docs/ANTIGRAVITY.md) |
 | Antigravity desktop app | Not tested ([evidence](docs/TESTING.md#antigravity-cli-live-use-on-windows-6-november-2026)) | Unknown | Unknown | Not measured | None |
 | Other agents or scripts | Not tested | Needs a wake feature (a new watcher mode), a fresh run per task, or polling with `cq list` | Depends on the route. Polling costs a turn per run (seen with Codex) | Not measured | [Other agents](docs/OTHER-AGENTS.md) |
@@ -112,7 +112,7 @@ On Windows, you also need Git for Windows. The full steps, including the rejoin 
 
 #### Codex
 
-You also need the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex was tested on Windows only. The full steps, and the `cq dispatch` worker for a fresh Codex run per task, are in [Codex setup](docs/CODEX.md).
+You also need the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex was tested on Windows only. The full steps are in [Codex setup](docs/CODEX.md). For a fresh Codex run per task, see [Codex dispatch worker](docs/CODEX-DISPATCH.md).
 
 1. The tested setup called `cq` and `codex` by their full paths, for example `C:/full/path/to/cq.exe`. If you use the bare names, check that `cq --version` works in a new Codex chat.
 2. Paste the Codex-only rules block into `AGENTS.md`, with the chat's queue name. See [Give the chat its rules](docs/CODEX.md#give-the-chat-its-rules).
@@ -154,7 +154,8 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | [How cq works](docs/OVERVIEW.md) | Why `cq` exists, one task from start to finish, how agents differ, idle cost, safety model, platform status |
 | [Setup](docs/SETUP.md) | The shared steps for every agent: requirements, install, the test message, configuration, where to keep cq data, sleep and wake, upgrading |
 | [Claude Code setup](docs/CLAUDE-CODE.md) | What differs for Claude Code: rules, permissions, the inbox watcher, the rejoin hook, the idle alert hook, the skills, Monitor mode |
-| [Codex setup](docs/CODEX.md) | What differs for Codex: rules, approvals, the `--to-codex` watcher, restart, the `cq dispatch` worker |
+| [Codex setup](docs/CODEX.md) | What differs for a Codex chat: rules, approvals, the `--to-codex` watcher, restart |
+| [Codex dispatch worker](docs/CODEX-DISPATCH.md) | A fresh `codex exec` per task with `cq dispatch`: setup, sandbox, failure handling and recovery |
 | [Antigravity CLI setup](docs/ANTIGRAVITY.md) | What differs for the Antigravity CLI (experimental): rules, the `--to-agy` watcher, the open-conversation caution, what else is known |
 | [Other agents](docs/OTHER-AGENTS.md) | What any other agent or script needs: rules, permissions, a wake route |
 | [Watchers](docs/WATCHERS.md) | Run Codex and Antigravity CLI watchers from one PowerShell window, with an example script and config |
