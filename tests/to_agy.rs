@@ -156,6 +156,50 @@ fn one_turn_per_batch_with_the_fixed_prompt_then_asleep_stops() {
     assert!(env.pid_of_watcher("b").is_none());
 }
 
+/// Output files of turns that outlived an earlier watcher are removed when
+/// the watcher starts, and again after each turn: a file that was not yet
+/// 30 minutes old at start goes after a later turn.
+#[test]
+fn old_output_files_are_removed_at_start_and_after_each_turn() {
+    let env = Env::new();
+    let tmp = env.path("agy-tmp");
+    fs::create_dir_all(&tmp).unwrap();
+    let old = std::time::SystemTime::now() - Duration::from_secs(31 * 60);
+    let plant = |name: &str, age_it: bool| {
+        let f = fs::File::create(tmp.join(name)).unwrap();
+        if age_it {
+            f.set_modified(old).unwrap();
+        }
+    };
+    plant("cq-agy-1-0.out", true);
+    plant("cq-agy-1-1.err", false);
+    let w = Watcher::spawn(watch_cmd(&env, "b", "ok", &[]));
+    assert!(wait_until(Duration::from_secs(10), || {
+        !tmp.join("cq-agy-1-0.out").exists()
+    }));
+    assert!(
+        tmp.join("cq-agy-1-1.err").exists(),
+        "a new file was removed"
+    );
+
+    // The kept file is now old, as a turn that outlived its watcher leaves it.
+    fs::File::options()
+        .write(true)
+        .open(tmp.join("cq-agy-1-1.err"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    plant("other.err", true);
+    env.send(FROM, "b", "task", SUBJECT, BODY);
+    w.line(Duration::from_secs(15)).expect("a start line");
+    let ended = w.line(Duration::from_secs(15)).expect("an end line");
+    assert!(ended.contains("ended after"), "{ended}");
+    assert!(!tmp.join("cq-agy-1-1.err").exists(), "kept after a turn");
+    assert!(tmp.join("other.err").exists(), "removed another file");
+    fs::remove_file(tmp.join("other.err")).unwrap();
+    assert!(leftovers(&env).is_empty(), "{:?}", leftovers(&env));
+}
+
 #[test]
 fn asleep_at_start_exits_7_without_a_call() {
     let env = Env::new();

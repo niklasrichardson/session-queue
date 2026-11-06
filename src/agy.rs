@@ -18,8 +18,8 @@
 //! at a time. Lines that arrive during a turn give one more turn after it.
 //! `agy` writes to temporary files, not pipes, so a turn that still runs
 //! when the watcher stops can finish and print. A watcher that stops while
-//! a turn runs starts no last turn; a new watcher removes output files over
-//! `TURN_TIMEOUT` old.
+//! a turn runs starts no last turn. Output files over `TURN_TIMEOUT` old
+//! are removed when a watcher starts and after each turn.
 //!
 //! A turn fails when `agy` exits non-zero, prints no JSON object, or its
 //! `status` is not `SUCCESS`. It is tried again 1, 2 and 4 s later; after 4
@@ -110,13 +110,14 @@ impl Turn {
 /// The real Antigravity CLI, run without a shell.
 pub struct AgyBin {
     bin: OsString,
+    /// Where the turns' output files go: the temporary folder.
+    dir: PathBuf,
     turn: Option<Turn>,
 }
 
-/// A new, empty output file in the temporary folder.
-fn output_file(ext: &str) -> io::Result<(File, PathBuf)> {
+/// A new, empty output file in `dir`.
+fn output_file(dir: &Path, ext: &str) -> io::Result<(File, PathBuf)> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir();
     loop {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let path = dir.join(format!("cq-agy-{}-{n}.{ext}", std::process::id()));
@@ -130,7 +131,9 @@ fn output_file(ext: &str) -> io::Result<(File, PathBuf)> {
 
 /// Remove `cq-agy-*.out` and `cq-agy-*.err` files in `dir` last changed
 /// more than `age` ago: the output of turns that still ran when an earlier
-/// watcher stopped. Errors are ignored; on Windows a file that a turn still
+/// watcher stopped. Runs when the watcher starts and after each turn, so
+/// files of a turn that outlived a watcher go even when the next watcher
+/// started before they were `age` old. Errors are ignored; on Windows a file that a turn still
 /// writes cannot be removed. Returns how many were removed.
 pub fn remove_old_outputs(dir: &Path, age: Duration) -> usize {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -161,8 +164,8 @@ pub fn remove_old_outputs(dir: &Path, age: Duration) -> usize {
 
 impl Runner for AgyBin {
     fn start(&mut self, conversation: &str, prompt: &str) -> io::Result<()> {
-        let (out_file, out) = output_file("out")?;
-        let (err_file, err) = match output_file("err") {
+        let (out_file, out) = output_file(&self.dir, "out")?;
+        let (err_file, err) = match output_file(&self.dir, "err") {
             Ok(v) => v,
             Err(e) => {
                 let _ = fs::remove_file(&out);
@@ -201,6 +204,7 @@ impl Runner for AgyBin {
         };
         let turn = self.turn.take()?;
         let (out, err) = turn.output();
+        remove_old_outputs(&self.dir, TURN_TIMEOUT);
         Some(match status {
             Ok(status) => outcome(status, &out, &err, conversation),
             Err(e) => Err(Failure::retry(format!("could not wait for agy: {e}"))),
@@ -332,12 +336,17 @@ impl AgyTurn<AgyBin, SystemClock> {
                 Path::new(&bin).display()
             )));
         }
-        remove_old_outputs(&std::env::temp_dir(), TURN_TIMEOUT);
+        let dir = std::env::temp_dir();
+        remove_old_outputs(&dir, TURN_TIMEOUT);
         Self::with(
             name,
             conversation,
             prompt,
-            AgyBin { bin, turn: None },
+            AgyBin {
+                bin,
+                dir,
+                turn: None,
+            },
             SystemClock,
             Box::new(io::stdout()),
         )
@@ -1013,8 +1022,9 @@ mod tests {
 
     #[test]
     fn output_files_are_new_each_time() {
-        let (_a, pa) = output_file("out").unwrap();
-        let (_b, pb) = output_file("out").unwrap();
+        let dir = std::env::temp_dir();
+        let (_a, pa) = output_file(&dir, "out").unwrap();
+        let (_b, pb) = output_file(&dir, "out").unwrap();
         assert_ne!(pa, pb);
         fs::remove_file(pa).unwrap();
         fs::remove_file(pb).unwrap();
