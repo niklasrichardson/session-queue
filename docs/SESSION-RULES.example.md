@@ -34,6 +34,10 @@ A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a
 
 The other parts for Claude Code do not apply to a Codex chat. For a block to paste into AGENTS.md as is, use the [Codex-only rules block](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md#give-the-chat-its-rules) instead of this file.
 
+### Antigravity CLI
+
+A `cq watch --to-agy` watcher runs outside the conversation. For each batch of new messages, it starts one print-mode turn with a fixed prompt that names NAME. On that prompt, run `cq list --as NAME`. If the first line starts with `ASLEEP`, or there are no UNCLAIMED messages, end the turn with no other work and no update. Otherwise handle each UNCLAIMED message, oldest first. Do not start, stop or take over a watcher yourself, also not as a background command. In PowerShell, pass reply and reason JSON with --input FILE, from a UTF-8 file without a byte order mark: PowerShell has no heredoc. If cq send warns that a name is asleep, tell the user which name. To sleep or wake, the user runs `cq sleep --as NAME NAME` and `cq wake --as NAME NAME` outside the conversation. The setup is in docs/ANTIGRAVITY.md in the cq repository.
+
 ### Other agents
 
 Use the wake route your setup provides, such as polling. On each wake or poll, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If the first line starts with `ASLEEP`, the name is asleep: end the turn with no other work, even if messages are listed. If there are none, end the turn with no other work and no update. See [Other agents](https://github.com/niklasrichardson/session-queue/blob/main/docs/OTHER-AGENTS.md#wake-the-agent).
