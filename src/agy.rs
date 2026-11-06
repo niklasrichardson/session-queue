@@ -21,6 +21,13 @@
 //! a turn runs starts no last turn. Output files over `TURN_TIMEOUT` old
 //! are removed when a watcher starts and after each turn.
 //!
+//! Each turn runs in its own Job Object (Windows) or process group (Unix),
+//! which does not end when the watcher exits. A turn past `TURN_TIMEOUT` is
+//! stopped with all of it: `agy` and the helpers and commands it started.
+//! `agy` gets no inbox variables and no session variables
+//! (`members::SESSION_VARS`), so it never reads as the session that started
+//! the watcher.
+//!
 //! A turn fails when `agy` exits non-zero, prints no JSON object, or its
 //! `status` is not `SUCCESS`. It is tried again 1, 2 and 4 s later; after 4
 //! failed turns in a row the watcher exits 11. A turn that ran in another
@@ -32,7 +39,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -43,6 +50,8 @@ use crate::error::{CqError, Result, exit};
 use crate::inbox::{
     BATCH_WINDOW, Clock, MIN_GAP, POST_TRIES, RETRY_FIRST, SOCKET_VAR, SystemClock, TOKEN_VAR,
 };
+use crate::members;
+use crate::platform::{self, Agent};
 use crate::timefmt::{self, rfc3339};
 use crate::watch::{Ended, Sink};
 
@@ -84,13 +93,13 @@ pub trait Runner {
     /// `None` while the turn runs. Then, once, its result: a summary of
     /// `agy`'s JSON on success.
     fn poll(&mut self, conversation: &str) -> Option<std::result::Result<String, Failure>>;
-    /// Stop the running turn.
+    /// Stop the running turn, with every process it started.
     fn kill(&mut self);
 }
 
-/// A turn of the real `agy`: the process and its output files.
+/// A turn of the real `agy`: the process tree and its output files.
 struct Turn {
-    child: Child,
+    agent: Agent,
     out: PathBuf,
     err: PathBuf,
 }
@@ -162,6 +171,17 @@ pub fn remove_old_outputs(dir: &Path, age: Duration) -> usize {
     removed
 }
 
+impl AgyBin {
+    /// Run `bin`, with the turns' output files in `dir`.
+    pub fn new(bin: OsString, dir: PathBuf) -> Self {
+        Self {
+            bin,
+            dir,
+            turn: None,
+        }
+    }
+}
+
 impl Runner for AgyBin {
     fn start(&mut self, conversation: &str, prompt: &str) -> io::Result<()> {
         let (out_file, out) = output_file(&self.dir, "out")?;
@@ -172,19 +192,20 @@ impl Runner for AgyBin {
                 return Err(e);
             }
         };
-        let child = Command::new(&self.bin)
+        let mut command = Command::new(&self.bin);
+        members::remove_session_vars(&mut command)
             .args(["--conversation", conversation, "-p", prompt])
             .args(["--output-format", "json"])
             .env_remove(SOCKET_VAR)
             .env_remove(TOKEN_VAR)
             .stdin(Stdio::null())
             .stdout(out_file)
-            .stderr(err_file)
-            .spawn();
-        match child {
-            Ok(child) => {
-                // A turn still running is left to finish on its own.
-                self.turn = Some(Turn { child, out, err });
+            .stderr(err_file);
+        match platform::spawn_tree(&mut command) {
+            Ok(agent) => {
+                // A turn still running is left to finish on its own: the
+                // job or process group outlives the watcher.
+                self.turn = Some(Turn { agent, out, err });
                 Ok(())
             }
             Err(e) => {
@@ -197,7 +218,7 @@ impl Runner for AgyBin {
 
     fn poll(&mut self, conversation: &str) -> Option<std::result::Result<String, Failure>> {
         let turn = self.turn.as_mut()?;
-        let status = match turn.child.try_wait() {
+        let status = match turn.agent.child.try_wait() {
             Ok(None) => return None,
             Ok(Some(status)) => Ok(status),
             Err(e) => Err(e),
@@ -213,8 +234,11 @@ impl Runner for AgyBin {
 
     fn kill(&mut self) {
         if let Some(mut turn) = self.turn.take() {
-            let _ = turn.child.kill();
-            let _ = turn.child.wait();
+            // The whole tree: `agy`'s helpers and commands must not run on.
+            if platform::stop_agent(&mut turn.agent).is_err() {
+                let _ = turn.agent.child.kill();
+                let _ = turn.agent.child.wait();
+            }
             turn.output();
             remove_old_outputs(&self.dir, TURN_TIMEOUT);
         }
@@ -343,11 +367,7 @@ impl AgyTurn<AgyBin, SystemClock> {
             name,
             conversation,
             prompt,
-            AgyBin {
-                bin,
-                dir,
-                turn: None,
-            },
+            AgyBin::new(bin, dir),
             SystemClock,
             Box::new(io::stdout()),
         )

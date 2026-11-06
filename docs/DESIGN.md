@@ -116,6 +116,11 @@ A message is read soon after it is sent.
 - **Its own member key.** The watcher usually runs in another process tree than the Codex chat, often started by a Claude Code session. Recording it under that session's key would replace the session's own name, so it uses `CQ_SESSION_ID` or `codex-NAME`.
 - **Known risks.** `codex queue` is experimental. It confirms that the message is stored, not that a turn started. A message queued while the app is closed is untested ([issue #25](https://github.com/niklasrichardson/session-queue/issues/25)). The chat is not told when its watcher stops; cq-top shows the heartbeat.
 
+## Antigravity CLI wake
+
+- **A turn is a process tree.** `agy` starts helpers and shell commands. Each turn runs in its own Job Object (Windows) or process group (Unix), so the 30-minute limit stops all of it, not only `agy`. The Windows job has no kill-on-close, unlike the dispatcher's: a turn that still runs when the watcher stops must finish on its own. Only the time limit stops a turn.
+- **No session variables.** `agy` gets neither the inbox variables nor the session variables that the dispatcher clears (`CQ_SESSION_ID`, the Codex thread and session IDs, the Claude Code session IDs). One helper, `members::remove_session_vars`, clears them for the dispatcher, `--to-agy` and `--to-codex`.
+
 ## Sleep
 
 Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Session protocol](PROTOCOL.md#sleep-and-wake).

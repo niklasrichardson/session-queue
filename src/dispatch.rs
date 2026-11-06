@@ -14,7 +14,7 @@ use crate::done::{self, DoneRequest};
 use crate::error::{CqError, Result, exit};
 use crate::message::{DoneInput, MAX_BODY_BYTES, Message, MsgType, Status};
 use crate::names::{check_name, is_valid_id};
-use crate::{Root, claim, fsutil, platform, watch};
+use crate::{Root, claim, fsutil, members, platform, watch};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Sandbox {
@@ -383,15 +383,7 @@ Do not spawn other agents. Report failures accurately. Keep reply under 20480 UT
         .stdin(File::open(job.join("prompt.txt")).map_err(|e| io("open prompt", e))?)
         .stdout(File::create(job.join("events.jsonl")).map_err(|e| io("create event log", e))?)
         .stderr(File::create(job.join("stderr.log")).map_err(|e| io("create error log", e))?);
-    for name in [
-        "CQ_SESSION_ID",
-        "CODEX_THREAD_ID",
-        "CODEX_SESSION_ID",
-        "CLAUDE_CODE_HOST_SESSION_ID",
-        "CLAUDE_CODE_SESSION_ID",
-    ] {
-        command.env_remove(name);
-    }
+    members::remove_session_vars(&mut command);
     let mut agent = match platform::spawn_agent(&mut command) {
         Ok(agent) => agent,
         Err(e) => return Ok(failed(format!("Could not start Codex: {e}"))),

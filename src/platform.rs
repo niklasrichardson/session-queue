@@ -364,8 +364,11 @@ mod imp {
     }
 }
 
-/// An owned agent process. Windows keeps the non-inheritable job handle only
-/// in the dispatcher, so even forced dispatcher termination kills the tree.
+/// An owned agent process and its tree: a Job Object on Windows, a process
+/// group on Unix. Only the spawning `cq` holds the non-inheritable job
+/// handle. For `spawn_agent` the job kills the tree when that handle closes,
+/// so even forced dispatcher termination kills it; a `spawn_tree` job does
+/// not.
 pub struct Agent {
     pub child: std::process::Child,
     #[cfg(windows)]
@@ -435,24 +438,29 @@ mod agent_windows {
         Err(io::Error::other("could not find suspended agent thread"))
     }
 
-    pub fn spawn(command: &mut std::process::Command) -> io::Result<super::Agent> {
+    pub fn spawn(
+        command: &mut std::process::Command,
+        kill_on_close: bool,
+    ) -> io::Result<super::Agent> {
         // SAFETY: null security attributes make the job non-inheritable;
         // null name prevents any other process opening it by name.
         let job = owned(unsafe { CreateJobObjectW(null(), null()) })?;
-        // SAFETY: plain Win32 configuration structure, zero is valid initially.
-        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        // SAFETY: live job and correctly sized configuration buffer.
-        if unsafe {
-            SetInformationJobObject(
-                job.as_raw_handle(),
-                JobObjectExtendedLimitInformation,
-                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                size_of_val(&limits) as u32,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
+        if kill_on_close {
+            // SAFETY: plain Win32 configuration structure, zero is valid initially.
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: live job and correctly sized configuration buffer.
+            if unsafe {
+                SetInformationJobObject(
+                    job.as_raw_handle(),
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    size_of_val(&limits) as u32,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
         }
         command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_SUSPENDED);
         let mut child = command.spawn()?;
@@ -464,7 +472,9 @@ mod agent_windows {
             return Err(error);
         }
         if let Err(error) = resume(child.id()) {
-            drop(job); // Kills the still-suspended process before returning.
+            // The process is still suspended, and a job without
+            // kill-on-close does not end it when dropped.
+            let _ = child.kill();
             let _ = child.wait();
             return Err(error);
         }
@@ -472,13 +482,28 @@ mod agent_windows {
     }
 }
 
+/// Start a `cq dispatch` agent in its own job or process group. On Windows
+/// the tree ends when `cq` exits, however it exits.
 pub fn spawn_agent(command: &mut std::process::Command) -> std::io::Result<Agent> {
+    spawn_group(command, true)
+}
+
+/// Start `command` in its own job or process group that outlives `cq`: the
+/// tree runs on when `cq` exits, and `stop_agent` still ends all of it. Used
+/// for `--to-agy` turns, which may finish after the watcher stops.
+pub fn spawn_tree(command: &mut std::process::Command) -> std::io::Result<Agent> {
+    spawn_group(command, false)
+}
+
+fn spawn_group(command: &mut std::process::Command, kill_on_close: bool) -> std::io::Result<Agent> {
     #[cfg(windows)]
     {
-        agent_windows::spawn(command)
+        agent_windows::spawn(command, kill_on_close)
     }
     #[cfg(unix)]
     {
+        // A process group never ends with its creator.
+        let _ = kill_on_close;
         use std::os::unix::process::CommandExt;
         command.process_group(0);
         command.spawn().map(|child| Agent { child })

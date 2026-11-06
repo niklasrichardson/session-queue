@@ -452,3 +452,74 @@ fn session_start_for_an_agy_watcher() {
     );
     assert!(!text.contains("Monitor"), "{text}");
 }
+
+/// `agy` gets `CQ_ROOT` but none of the session variables of the process
+/// that started the watcher.
+#[test]
+fn agy_gets_no_session_variables() {
+    let env = Env::new();
+    env.send("a", "b", "task", SUBJECT, BODY);
+    let mut c = watch_cmd(&env, "b", "ok", &[]);
+    c.env("CQ_FAKE_ENV", env.path("env.txt"))
+        .env("CQ_SESSION_ID", "agy-env-test")
+        .env("CODEX_THREAD_ID", "thread-mark")
+        .env("CODEX_SESSION_ID", "codex-mark")
+        .env(HOST, "local_mark")
+        .env("CLAUDE_CODE_SESSION_ID", "session-mark")
+        .env("CLAUDE_CODE_MESSAGING_SOCKET", "socket-mark");
+    let _w = Watcher::spawn(c);
+    assert!(wait_until(Duration::from_secs(10), || env
+        .path("env.txt")
+        .exists()));
+    assert!(wait_until(Duration::from_secs(5), || fs::read_to_string(
+        env.path("env.txt")
+    )
+    .is_ok_and(|t| !t.is_empty())));
+    assert_eq!(fs::read_to_string(env.path("env.txt")).unwrap(), "CQ_ROOT");
+}
+
+/// A turn that `agy` runs: its descendant writes `marker` 3 s after start.
+fn tree_turn(env: &Env, marker: &str) -> cq::agy::AgyBin {
+    use cq::agy::Runner;
+    let dir = env.path("agy-tmp");
+    fs::create_dir_all(&dir).unwrap();
+    let mut agy = cq::agy::AgyBin::new(fake_agy().into(), dir);
+    let marker = env.path(marker);
+    agy.start(CONVERSATION, &format!("tree {}", marker.display()))
+        .unwrap();
+    let ready = PathBuf::from(format!("{}.ready", marker.display()));
+    assert!(
+        wait_until(Duration::from_secs(10), || ready.exists()),
+        "the descendant did not start"
+    );
+    agy
+}
+
+/// The timeout's kill ends the whole turn: `agy` and what it started.
+#[test]
+fn a_killed_turn_ends_with_its_descendants() {
+    use cq::agy::Runner;
+    let env = Env::new();
+    let mut agy = tree_turn(&env, "killed-marker");
+    let killed = Instant::now();
+    agy.kill();
+    assert!(killed.elapsed() < Duration::from_secs(3), "kill waited");
+    assert!(agy.poll(CONVERSATION).is_none(), "the turn is gone");
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(
+        !env.path("killed-marker").exists(),
+        "agy's descendant survived the kill"
+    );
+}
+
+/// A turn that still runs when the watcher stops is left to finish, with
+/// its descendants: the job or process group outlives the watcher.
+#[test]
+fn a_turn_outlives_its_watcher() {
+    let env = Env::new();
+    drop(tree_turn(&env, "kept-marker"));
+    assert!(
+        wait_until(Duration::from_secs(10), || env.path("kept-marker").exists()),
+        "the turn's descendant did not finish"
+    );
+}
