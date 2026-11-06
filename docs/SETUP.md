@@ -47,7 +47,7 @@ Set up `cq` in three parts, in this order:
    cq init
    ```
 
-   The queue lives in a per-user folder by default (see [Configuration](#configuration)). Every session must use the same absolute queue root. If you set `CQ_ROOT`, use the same value for every `cq` command: in each session, for each watcher and for each sender.
+   The queue lives in a per-user folder by default (see [Configuration](#configuration)). Keep it outside every git repo ([why](#keep-cq-data-outside-the-repo)). Every session must use the same absolute queue root. If you set `CQ_ROOT`, use the same value for every `cq` command: in each session, for each watcher and for each sender.
 
 ## Connect each session
 
@@ -143,15 +143,42 @@ How each agent's session key is chosen is in [Claude Code setup](CLAUDE-CODE.md#
 
 The macOS default path contains a space, so quote it in shell commands: `ls "$HOME/Library/Application Support/cq"`.
 
+A user environment variable is seen only by processes that start after you set it. Restart the agent app, and open a new terminal, after you set or change one.
+
 To bake your own defaults into your build instead, create `.cargo/config.toml` in the repo (it is gitignored). A variable set at run time still wins. Cargo does not apply a value from `[env]` if the same variable is already set in the shell that runs the build.
 
 ```toml
 [env]
-CQ_DEFAULT_ROOT = 'D:\queues\cq'
-CQ_RULES_PATH = 'D:/queues/SESSION-RULES.md'
+CQ_DEFAULT_ROOT = 'D:\cq-data\queue'
+CQ_RULES_PATH = 'D:/cq-data/private/SESSION-RULES.md'
 CQ_DEFAULT_TZ = 'Europe/London'
 CQ_DEFAULT_TZ_LABEL = 'UK'
 ```
+
+### Which queue root cq uses
+
+`cq` picks the queue root in this order:
+
+1. `CQ_ROOT`, if it is set and not empty when the command runs.
+2. Else `CQ_DEFAULT_ROOT`, if it was set when `cq` was built (for example in `.cargo/config.toml`).
+3. Else the per-user default: `%LOCALAPPDATA%\cq` on Windows, and the paths in the table above on macOS and Linux.
+
+For the rules file, `CQ_RULES` at run time wins over the build's `CQ_RULES_PATH` in the same way.
+
+### Keep cq data outside the repo
+
+Keep the queue root and your other local cq files outside every git repo, in one data folder. Then `git clean`, a fresh clone, or an agent that works in the repo cannot touch live queue data. For example:
+
+```text
+D:\cq-data\
+  queue\     the queue root (CQ_ROOT, or CQ_DEFAULT_ROOT in .cargo/config.toml)
+  local\     start-watchers.ps1 and watchers.json (see Watchers)
+  private\   your own session rules (CQ_RULES) and queue names
+```
+
+The per-user default is already outside the repo. To move a queue root that you already use, stop every watcher first. Then move the folder, set the new root (`CQ_ROOT`, or rebuild with the new `CQ_DEFAULT_ROOT`), and start the watchers again.
+
+To run Codex and Antigravity CLI watchers from one window, see [Watchers](WATCHERS.md).
 
 ## Upgrading while watchers run
 

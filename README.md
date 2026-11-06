@@ -65,7 +65,7 @@ cargo install --path .
 cq init
 ```
 
-Every session must use the same absolute queue root: `CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration). If you set `CQ_ROOT`, set it before you run `cq init`, and use the same value for every `cq` command.
+Every session must use the same absolute queue root: `CQ_ROOT`, or the per-user default in [Configuration](docs/SETUP.md#configuration). If you set `CQ_ROOT`, set it before you run `cq init`, and use the same value for every `cq` command. Keep the queue root outside every git repo ([why](docs/SETUP.md#keep-cq-data-outside-the-repo)).
 
 ### 2. Connect each session
 
@@ -117,10 +117,11 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | Document | What it covers |
 | --- | --- |
 | [How cq works](docs/OVERVIEW.md) | Why `cq` exists, one task from start to finish, agent support, idle cost, safety model, platform status |
-| [Setup](docs/SETUP.md) | The shared steps for every agent: requirements, install, the test message, configuration, sleep and wake, upgrading |
+| [Setup](docs/SETUP.md) | The shared steps for every agent: requirements, install, the test message, configuration, where to keep cq data, sleep and wake, upgrading |
 | [Claude Code setup](docs/CLAUDE-CODE.md) | What differs for Claude Code: rules, permissions, the inbox watcher, the rejoin hook, the idle alert hook, the skills, Monitor mode |
 | [Codex setup](docs/CODEX.md) | What differs for Codex: rules, approvals, the `--to-codex` watcher, restart, the `cq dispatch` worker |
 | [Other agents](docs/OTHER-AGENTS.md) | What any other agent or script needs: rules, permissions, a wake route |
+| [Watchers](docs/WATCHERS.md) | Run Codex and Antigravity CLI watchers from one PowerShell window, with an example script and config |
 | [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
 | [`CLAUDE-snippets.md`](CLAUDE-snippets.md) | Claude Code blocks and session prompts to paste |
 | [Session protocol](docs/PROTOCOL.md) | How a session watches, claims, replies, rejoins and sleeps; storm limits |
