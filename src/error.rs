@@ -34,6 +34,9 @@ pub mod exit {
     /// `cq status`: no watcher or dispatcher runs for the name, and it is
     /// not asleep.
     pub const NOT_RUNNING: i32 = 10;
+    /// `cq watch --to-agy`: the `agy` turn failed after every retry, or ran
+    /// in another conversation, so the conversation is not being woken.
+    pub const AGY_TURN_FAILED: i32 = 11;
     /// Bad command-line arguments or bad JSON input.
     pub const USAGE: i32 = 64;
     /// Any other error (I/O, `CQ_ROOT` missing).

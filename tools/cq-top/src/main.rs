@@ -123,7 +123,7 @@ struct Watcher {
     /// `None` without a record. `Snapshot::mode` prefers the process's own arguments.
     mode: Option<Mode>,
     /// The agent its `members/` record shows it belongs to: Codex for a `--to-codex`
-    /// watcher, Claude for a Claude Code Desktop session key (`local_...`). `None` without a
+    /// watcher, Gemini for a `--to-agy` watcher, Claude for a Claude Code Desktop session key (`local_...`). `None` without a
     /// record, or for another key, such as one from `CQ_SESSION_ID`, which any agent can set.
     agent: Option<sessions::Agent>,
     pid: String,
@@ -201,7 +201,7 @@ impl Snapshot {
             .count()
     }
 
-    /// The watcher's mode: `--to-inbox` or `--to-codex` in its process's arguments while cq-top can see the
+    /// The watcher's mode: `--to-inbox`, `--to-codex` or `--to-agy` in its process's arguments while cq-top can see the
     /// process, else its `members/` record. `None` with neither.
     fn mode(&self, w: &Watcher) -> Option<Mode> {
         self.sessions.modes.get(&w.name).copied().or(w.mode)
@@ -752,6 +752,7 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64, limits: &Limits) ->
             .unwrap_or_default();
         let agent = match (modes.get(name), sessions.get(name)) {
             (Some(Mode::Codex), _) => Some(sessions::Agent::Codex),
+            (Some(Mode::Agy), _) => Some(sessions::Agent::Gemini),
             (_, Some(k)) if k.starts_with("local_") => Some(sessions::Agent::Claude),
             _ => None,
         };
@@ -1524,8 +1525,14 @@ mod tests {
             "w4\n2026-10-27T11:00:00Z\nD:\\Code\\d\ncodex\n",
         )
         .unwrap();
+        fs::write(
+            root.members().join("agy-w5"),
+            "w5\n2026-10-27T11:00:00Z\nD:\\Code\\e\nagy\n",
+        )
+        .unwrap();
         fs::write(root.heartbeat("w3"), "2026-10-27T11:29:00Z\n").unwrap();
         fs::write(root.heartbeat("w4"), "2026-10-27T11:29:00Z\n").unwrap();
+        fs::write(root.heartbeat("w5"), "2026-10-27T11:29:00Z\n").unwrap();
 
         let mut s = snap(&root, &mut Beats::new());
         let mode = |s: &Snapshot, n: &str| s.mode(s.watchers.iter().find(|w| w.name == n).unwrap());
@@ -1533,12 +1540,14 @@ mod tests {
         assert_eq!(mode(&s, "w2"), Some(Mode::Monitor));
         assert_eq!(mode(&s, "w3"), None);
         assert_eq!(mode(&s, "w4"), Some(Mode::Codex));
+        assert_eq!(mode(&s, "w5"), Some(Mode::Agy));
         // The owner from the record: a Claude Code Desktop key, a `--to-codex` watcher,
         // and none for a key any agent could have written.
         let agent = |n: &str| s.watchers.iter().find(|w| w.name == n).unwrap().agent;
         assert_eq!(agent("w1"), Some(sessions::Agent::Claude));
         assert_eq!(agent("w2"), Some(sessions::Agent::Claude));
         assert_eq!(agent("w4"), Some(sessions::Agent::Codex));
+        assert_eq!(agent("w5"), Some(sessions::Agent::Gemini));
         assert_eq!(agent("w3"), None);
 
         s.sessions.modes.insert("w1".into(), Mode::Monitor);

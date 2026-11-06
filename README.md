@@ -52,7 +52,7 @@ Either agent can send a task to the other. The receiving agent's own watcher wak
 | Fresh run per task | Not available | `cq dispatch` runs `codex exec` once per task. |
 | Setup | [Claude Code setup](docs/CLAUDE-CODE.md) | [Codex setup](docs/CODEX.md) |
 
-`cq --help` marks both `--to-inbox` and `--to-codex` as experimental. Any other agent needs a wake route of its own: see [Other agents](docs/OTHER-AGENTS.md). One task from start to finish, what each agent supports, the cost of an idle session, the safety model and the platform status are in [How cq works](docs/OVERVIEW.md).
+`cq --help` marks `--to-inbox`, `--to-codex` and `--to-agy` as experimental. `--to-agy` wakes an Antigravity CLI conversation (see [Other agents](docs/OTHER-AGENTS.md#antigravity-cli)). Any other agent needs a wake route of its own: see [Other agents](docs/OTHER-AGENTS.md). One task from start to finish, what each agent supports, the cost of an idle session, the safety model and the platform status are in [How cq works](docs/OVERVIEW.md).
 
 ## Getting started
 

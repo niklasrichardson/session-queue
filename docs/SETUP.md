@@ -88,7 +88,7 @@ A name that will be idle for a long time can sleep. `cq sleep --as A B` writes a
 
 What sleep stops depends on the wake route:
 
-- **A watcher** (`--to-inbox`, `--to-codex`, Monitor mode) sees the record, prints `CQ-SLEEP by=... reason="..."` and exits 7. After that, no watcher wakes the session until someone runs `cq wake` and starts its watcher again.
+- **A watcher** (`--to-inbox`, `--to-codex`, `--to-agy`, Monitor mode) sees the record, prints `CQ-SLEEP by=... reason="..."` and exits 7. After that, no watcher wakes the session until someone runs `cq wake` and starts its watcher again.
 - **Polling** is not stopped by `cq sleep`. A scheduled run still starts and still costs a model turn. `cq list` still lists the `UNCLAIMED` messages, after a first line `ASLEEP by=... reason="..."`. So pause the agent's own scheduler as well, and resume it after `cq wake`. The polling rules must end the run with no other work when `cq list` prints an `ASLEEP` line.
 
 To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.

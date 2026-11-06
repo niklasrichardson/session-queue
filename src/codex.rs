@@ -136,7 +136,7 @@ fn read_all(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>>
 }
 
 /// The last non-empty line, cut to 200 characters.
-fn last_line(text: &str) -> Option<&str> {
+pub(crate) fn last_line(text: &str) -> Option<&str> {
     let line = text.lines().map(str::trim).rfind(|l| !l.is_empty())?;
     Some(match line.char_indices().nth(200) {
         Some((i, _)) => &line[..i],
@@ -146,7 +146,7 @@ fn last_line(text: &str) -> Option<&str> {
 
 /// True when `bin` names a file: a path as given, or a bare name on `PATH`
 /// (with `.exe` added on Windows, as `Command` does).
-fn found(bin: &OsStr) -> bool {
+pub(crate) fn found(bin: &OsStr) -> bool {
     let path = Path::new(bin);
     if path.components().count() > 1 {
         return path.is_file();
