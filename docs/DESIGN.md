@@ -1,6 +1,6 @@
 # Design decisions
 
-The goals of `cq`, the implementation choices that the specification left open, and what `cq` does. The full requirements and architecture are in [`SPEC.md`](SPEC.md). Back to the [README](../README.md).
+The goals of `cq`, the implementation choices that the specification left open, and what `cq` does. The original specification is in [`SPEC.md`](SPEC.md). It is historical: where it differs, this page and [Commands](COMMANDS.md) describe what `cq` does now. Back to the [README](../README.md).
 
 ## Goals
 
@@ -106,7 +106,7 @@ A message is read soon after it is sent.
 
 ## Codex wake
 
-`cq watch --to-codex THREAD` wakes an existing Codex Desktop chat with `codex queue`. The commands are in [Commands](COMMANDS.md#wake-a-codex-chat) and the setup in [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
+`cq watch --to-codex THREAD` wakes an existing Codex Desktop chat with `codex queue`. The commands are in [Commands](COMMANDS.md#wake-a-codex-chat) and the setup in [Codex setup](agents/CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
 
 - **Why.** The fallback, a same-chat automation that runs every 10 minutes, costs a model turn per run even when the inbox is empty (about 1% of the 5-hour limit per run, [issue #12](https://github.com/niklasrichardson/session-queue/issues/12)). `codex queue` starts a turn only when there is work. Other routes were rejected in issue #12: the Desktop app's app-server is private, `codex exec resume` on a live chat can split its history, and hooks cannot start a turn.
 - **A sink, like the inbox.** It reuses the watcher and its `Sink` trait, so the lock, heartbeat, `PAUSE`, sleep and `--takeover` behave as in every mode. It uses the inbox values for batching (2-second window, 5-second gap) and retries (4 tries, 1, 2 and 4 seconds apart). One Codex turn handles every `UNCLAIMED` message, so one call per batch is enough.
@@ -146,7 +146,7 @@ Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7
 - The dispatcher invokes Codex directly, without a shell. Prompt data goes through a file on stdin. Structured final output carries status and reply. Event logs and stderr are files, so a full output pipe cannot deadlock a worker.
 - Defaults are read-only sandboxing, no interactive approvals, ephemeral runs and invocation-local disabling of hooks and user configuration. A worker can explicitly select workspace-write. Existing saved authentication is reused.
 - `dispatch/NAME/ID` retains prompts, output and completion records. The intended completion is written before `done`; incomplete records block restart. Records are not pruned automatically.
-- Failures never replay a task. A crash near completion can make delivery uncertain, so there is no automatic retry, and an operator reviews side effects before recovery. Exactly-once side effects are not promised. What each failure does, and the recovery steps, are in [Failure handling and recovery](CODEX-DISPATCH.md#failure-handling-and-recovery).
+- Failures never replay a task. A crash near completion can make delivery uncertain, so there is no automatic retry, and an operator reviews side effects before recovery. Exactly-once side effects are not promised. What each failure does, and the recovery steps, are in [Failure handling and recovery](agents/CODEX-DISPATCH.md#failure-handling-and-recovery).
 - The session membership key is the first non-empty CQ_SESSION_ID, CLAUDE_CODE_HOST_SESSION_ID or CLAUDE_CODE_SESSION_ID, with the existing sanitisation and 64-character cap. Codex variables are not read implicitly. The dispatcher does not register its parent chat, and clears inherited session IDs for each fresh child.
 
 - The dispatcher reserves each job directory before claiming; a collision refuses the job without claiming the inbox message. It writes its PID while holding the watcher lock, removes its own PID on normal exit, and shares a single 30-second heartbeat schedule across idle scans, agent execution and PAUSE waits.

@@ -10,12 +10,12 @@ Set up `cq` in three parts, in this order:
 
 | Agent or surface | Setup page |
 | --- | --- |
-| Claude Code desktop app | [Claude Code setup](CLAUDE-CODE.md) |
-| Claude Code CLI | [Claude Code setup](CLAUDE-CODE.md). Start each worker with its own key first: [Claude Code CLI](CLAUDE-CODE.md#claude-code-cli-start-with-a-stable-key) |
-| Codex desktop app or Codex CLI chat | [Set up a Codex chat](CODEX.md#set-up-a-codex-chat) |
-| Codex, a fresh run per task (`cq dispatch`) | [Codex dispatch worker](CODEX-DISPATCH.md) |
-| Antigravity CLI (experimental) | [Antigravity CLI setup](ANTIGRAVITY.md) |
-| Any other agent, or a script | [Other agents](OTHER-AGENTS.md) |
+| Claude Code desktop app | [Claude Code setup](agents/CLAUDE-CODE.md) |
+| Claude Code CLI | [Claude Code setup](agents/CLAUDE-CODE.md). Start each worker with its own key first: [Claude Code CLI](agents/CLAUDE-CODE.md#claude-code-cli-start-with-a-stable-key) |
+| Codex desktop app or Codex CLI chat | [Set up a Codex chat](agents/CODEX.md#set-up-a-codex-chat) |
+| Codex, a fresh run per task (`cq dispatch`) | [Codex dispatch worker](agents/CODEX-DISPATCH.md) |
+| Antigravity CLI (experimental) | [Antigravity CLI setup](agents/ANTIGRAVITY.md) |
+| Any other agent, or a script | [Other agents](agents/OTHER-AGENTS.md) |
 
 What has been tested with each, and its limits, is in the README's [support table](../README.md#support-by-agent-and-surface).
 
@@ -24,10 +24,10 @@ What has been tested with each, and its limits, is in the README's [support tabl
 - Stable Rust (built and tested with 1.98.1).
 - Windows 10 or 11, or macOS. macOS is partly tested: what passed, what failed and what is not checked is in [Test status](TESTING.md#macos-29-october-2026) and [#1](https://github.com/niklasrichardson/session-queue/issues/1). Please open an issue if something does not work.
 - An agent that can run shell commands. What each agent needs:
-  - **Claude Code:** on Windows, Git for Windows, because Claude Code runs Bash commands in Git Bash. See [Claude Code setup](CLAUDE-CODE.md#wake-a-session-with-cq-watch---to-inbox).
-  - **Codex:** the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex on Windows ran its commands in PowerShell in the tested setup. See [Codex setup](CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
-  - **Antigravity CLI:** the Antigravity CLI (`agy`), and the ID of the conversation to wake. See [Antigravity CLI setup](ANTIGRAVITY.md).
-  - **Other agents:** see [Other agents](OTHER-AGENTS.md).
+  - **Claude Code:** on Windows, Git for Windows, because Claude Code runs Bash commands in Git Bash. See [Claude Code setup](agents/CLAUDE-CODE.md#wake-a-session-with-cq-watch---to-inbox).
+  - **Codex:** the Codex Desktop app or the interactive Codex CLI, and a Codex CLI with `codex queue`. Codex on Windows ran its commands in PowerShell in the tested setup. See [Codex setup](agents/CODEX.md#wake-a-codex-chat-with-cq-watch---to-codex).
+  - **Antigravity CLI:** the Antigravity CLI (`agy`), and the ID of the conversation to wake. See [Antigravity CLI setup](agents/ANTIGRAVITY.md).
+  - **Other agents:** see [Other agents](agents/OTHER-AGENTS.md).
 
 ## Install
 
@@ -60,7 +60,7 @@ What has been tested with each, and its limits, is in the README's [support tabl
 These facts are the same for every agent:
 
 - Each session gets its own queue name, such as `lead` or `worker-a`. Never put a fixed name in a shared instruction file: several sessions can share one folder.
-- The [queue rules block](QUEUE-RULES.md#1-queue-rules-block) is the same for every agent. Codex has a [Codex-only block](CODEX.md#give-the-chat-its-rules) that holds the same rules. Each repo that takes queue work also gets a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block).
+- The [queue rules block](QUEUE-RULES.md#1-queue-rules-block) is the same for every agent. Codex has a [Codex-only block](agents/CODEX.md#give-the-chat-its-rules) that holds the same rules. Each repo that takes queue work also gets a ["Queue scope" block](QUEUE-RULES.md#2-per-repo-scope-block).
 - `cq claim`, `cq done` and `cq send` write files in the queue root, so an unattended session must be able to run them without an approval prompt.
 - Each agent page also says how to recover after `/clear`, a new chat or a restart.
 
@@ -80,7 +80,7 @@ The task asks only for a one-line summary, so it fits the sample scope ("summari
 
 Expected result: the receiving session starts a turn within seconds, claims the task and replies. A Claude Code session gets a message from `cq` with a `CQ-NEW` line. A Codex watcher prints one `queued a check` line, and the chat starts a turn. An agent that polls handles the task at its next run.
 
-PowerShell has no heredoc. The PowerShell form of this send is in [A round trip in PowerShell](CODEX.md#a-round-trip-in-powershell).
+PowerShell has no heredoc. The PowerShell form of this send is in [A round trip in PowerShell](agents/CODEX.md#a-round-trip-in-powershell).
 
 ## Sleep and wake
 
@@ -95,10 +95,10 @@ To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/
 
 | Agent | How to sleep and wake |
 | --- | --- |
-| Claude Code | The `/cq-stop` and `/cq-start` skills. See [Sleep and wake](CLAUDE-CODE.md#sleep-and-wake). |
-| Codex | The same skills, as `$cq-stop` and `$cq-start` (not yet tested in Codex). Or, outside the chat, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. Either way, the watcher starts again outside the chat. With the scheduled automation fallback, also pause the automation. See [Sleep and wake](CODEX.md#sleep-and-wake). |
-| Antigravity CLI | Outside the conversation, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. The skills are not tested in Antigravity. See [Sleep and wake](ANTIGRAVITY.md#sleep-and-wake). |
-| Other agents | The same skills, if the agent reads Agent Skills (not tested). Otherwise run `cq sleep` and `cq wake` as for Codex. Pause a polling scheduler yourself. See [Sleep and wake](OTHER-AGENTS.md#sleep-and-wake). |
+| Claude Code | The `/cq-stop` and `/cq-start` skills. See [Sleep and wake](agents/CLAUDE-CODE.md#sleep-and-wake). |
+| Codex | The same skills, as `$cq-stop` and `$cq-start` (not yet tested in Codex). Or, outside the chat, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. Either way, the watcher starts again outside the chat. With the scheduled automation fallback, also pause the automation. See [Sleep and wake](agents/CODEX.md#sleep-and-wake). |
+| Antigravity CLI | Outside the conversation, run `cq sleep --as NAME NAME`, and run `cq wake --as NAME NAME` before you start the watcher again. The skills are not tested in Antigravity. See [Sleep and wake](agents/ANTIGRAVITY.md#sleep-and-wake). |
+| Other agents | The same skills, if the agent reads Agent Skills (not tested). Otherwise run `cq sleep` and `cq wake` as for Codex. Pause a polling scheduler yourself. See [Sleep and wake](agents/OTHER-AGENTS.md#sleep-and-wake). |
 
 ### Install the skills
 
@@ -204,7 +204,7 @@ An environment variable wins over `config.toml`. Set queue-wide values before yo
 | `CQ_OVERDUE_UNCLAIMED_MINUTES` | Minutes before an unclaimed task counts as overdue (see [Overdue tasks](COMMANDS.md#overdue-tasks)). Whole number, 1 or more. | 30 |
 | `CQ_OVERDUE_CLAIMED_MINUTES` | Minutes before a claimed task with no `cq done` counts as overdue. Whole number, 1 or more. | 120 |
 
-How each agent's session key is chosen is in [Claude Code setup](CLAUDE-CODE.md#session-identity) and [Codex setup](CODEX.md#session-identity).
+How each agent's session key is chosen is in [Claude Code setup](agents/CLAUDE-CODE.md#session-identity) and [Codex setup](agents/CODEX.md#session-identity).
 
 ### Which value cq uses
 
@@ -269,8 +269,8 @@ On Windows, a running `cq.exe` is locked, but it can be renamed. To upgrade with
 
    | Agent | What to restart |
    | --- | --- |
-   | Claude Code | Each inbox-mode watcher, from its own session. A Monitor-mode watcher picks up the new binary at its next re-arm (within 30 minutes). See [After a cq upgrade](CLAUDE-CODE.md#after-a-cq-upgrade). |
-   | Codex | Each `--to-codex` watcher, outside the chat, with `--takeover`. A `cq dispatch` worker also runs the old binary until you restart it. See [After a new chat or a restart](CODEX.md#after-a-new-chat-or-a-restart). |
+   | Claude Code | Each inbox-mode watcher, from its own session. A Monitor-mode watcher picks up the new binary at its next re-arm (within 30 minutes). See [After a cq upgrade](agents/CLAUDE-CODE.md#after-a-cq-upgrade). |
+   | Codex | Each `--to-codex` watcher, outside the chat, with `--takeover`. A `cq dispatch` worker also runs the old binary until you restart it. See [After a new chat or a restart](agents/CODEX.md#after-a-new-chat-or-a-restart). |
 
 5. Delete the old file once no process uses it.
 

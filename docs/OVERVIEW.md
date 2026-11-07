@@ -10,7 +10,7 @@ Measured on Windows: in an overnight test with the earlier Monitor mode, a sessi
 
 ## Agent support
 
-`cq` is the same for every agent: the queue root, the commands, the queue rules and the safety model. What differs is how a session is woken, its rules file, how it avoids approval prompts and how it recovers after `/clear`, a new chat or a restart. The status, wake route and idle cost of each agent and surface are in the README's [support table](../README.md#support-by-agent-and-surface). The steps are on each agent's page: [Claude Code setup](CLAUDE-CODE.md), [Codex setup](CODEX.md), [Antigravity CLI setup](ANTIGRAVITY.md) and [Other agents](OTHER-AGENTS.md).
+`cq` is the same for every agent: the queue root, the commands, the queue rules and the safety model. What differs is how a session is woken, its rules file, how it avoids approval prompts and how it recovers after `/clear`, a new chat or a restart. The status, wake route and idle cost of each agent and surface are in the README's [support table](../README.md#support-by-agent-and-surface). The steps are on each agent's page: [Claude Code setup](agents/CLAUDE-CODE.md), [Codex setup](agents/CODEX.md), [Antigravity CLI setup](agents/ANTIGRAVITY.md) and [Other agents](agents/OTHER-AGENTS.md).
 
 [cq-top](CQ-TOP.md) is a live terminal view of the queue: 1 Overview, 2 Sessions, 3 Flow, 4 Rejected. It never writes to the queue root. The folder layout is in [Commands](COMMANDS.md#layout).
 

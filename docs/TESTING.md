@@ -46,7 +46,7 @@ Found on Windows 11 with a real `agy`. Each finding starts with its scope.
 - **Background command, one manual test.** An open interactive `agy` session started a shell command in the background and ended its turn. When the command finished, the session woke by itself and replied. Not yet tried: a long-running `cq watch` as the background command, and the Antigravity desktop app.
 - **`agy agentapi send-message`, tried from outside `agy`.** The command needs the address of a running language server (`ANTIGRAVITY_LS_ADDRESS`) and a CSRF token. `agy` gives that token only to processes that it starts. Called from outside `agy`, it failed. So a watcher outside the session cannot use it.
 - **Conversation stores.** The CLI and the desktop app keep separate conversation stores under `~/.gemini`. The desktop app's summary database also lists CLI conversations. Not known: whether `agy --conversation` can resume a conversation from the desktop app.
-- **Hooks, read in the docs only.** The hooks docs bundled with the CLI describe 6 events, each given JSON on stdin with camelCase field names. No hook was tested with `cq`. What this means for `cq` is in [Antigravity CLI setup](ANTIGRAVITY.md#what-else-is-known).
+- **Hooks, read in the docs only.** The hooks docs bundled with the CLI describe 6 events, each given JSON on stdin with camelCase field names. No hook was tested with `cq`. What this means for `cq` is in [Antigravity CLI setup](agents/ANTIGRAVITY.md#what-else-is-known).
 
 ## Antigravity CLI live use on Windows, 6 November 2026
 
@@ -137,7 +137,7 @@ Failed or intermittent:
 
 - `tests/dispatch.rs`: 2 to 5 tests fail on each run, a different set each time, all with `Codex timed out after 1s`. With `--test-threads=1`, one run had 4 failures and the next passed 13 of 13. The likely cause, not yet confirmed, is the macOS first-run check of the freshly built fake Codex binary.
 
-Not checked on macOS: two Claude Code sessions handing tasks back and forth live; the Monitor fallback under the real Monitor tool; the `cq done` stdin check beyond the tests; the SessionStart hook with a bare `cq` (see [After `/clear` or a restart](CLAUDE-CODE.md#after-clear-or-a-restart)); Codex chats and `cq dispatch` with a real Codex; the cq-top screens in a real terminal ([#17](https://github.com/niklasrichardson/session-queue/issues/17)).
+Not checked on macOS: two Claude Code sessions handing tasks back and forth live; the Monitor fallback under the real Monitor tool; the `cq done` stdin check beyond the tests; the SessionStart hook with a bare `cq` (see [After `/clear` or a restart](agents/CLAUDE-CODE.md#after-clear-or-a-restart)); Codex chats and `cq dispatch` with a real Codex; the cq-top screens in a real terminal ([#17](https://github.com/niklasrichardson/session-queue/issues/17)).
 
 ## Rejection notices, list and requeue, 29 October 2026
 
@@ -259,4 +259,4 @@ In the isolated Windows test root, a one-minute Codex desktop automation resumed
 
 The first scheduled claim failed with Access is denied (os error 5), because the isolated root was outside the writable workspace. Approved escalation allowed the same claim to succeed. The queue root must be writable from the sandbox before unattended use. No global settings or filesystem permissions were changed.
 
-Empty scheduled-run model-turn/usage cost is unverified: the only scheduled exchange had a pending task, and official scheduled-task guidance did not settle empty-check accounting. No controlled empty-run usage measurement was made. Use a longer interval than one minute for unattended operation until usage is checked. Unix runtime and long-running reliability also remain unverified. See [Waking Codex](CODEX.md#waking-codex) for the route comparison.
+Empty scheduled-run model-turn/usage cost is unverified: the only scheduled exchange had a pending task, and official scheduled-task guidance did not settle empty-check accounting. No controlled empty-run usage measurement was made. Use a longer interval than one minute for unattended operation until usage is checked. Unix runtime and long-running reliability also remain unverified. See [Waking Codex](agents/CODEX.md#waking-codex) for the route comparison.

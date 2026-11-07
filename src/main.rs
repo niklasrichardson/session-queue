@@ -946,7 +946,7 @@ fn session_start(debug: bool) {
         )
     } else if mode == members::Mode::Codex {
         format!(
-            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Codex watcher for {name} (cq watch --as {name} --to-codex) has stopped, so nothing wakes the Codex chat for {name}. Do not start a watcher for {name} here: tell the user, who restarts it outside the chat (see docs/CODEX.md). Run cq list --as {name} and handle any UNCLAIMED messages."
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Codex watcher for {name} (cq watch --as {name} --to-codex) has stopped, so nothing wakes the Codex chat for {name}. Do not start a watcher for {name} here: tell the user, who restarts it outside the chat (see docs/agents/CODEX.md). Run cq list --as {name} and handle any UNCLAIMED messages."
         )
     } else if mode == members::Mode::Agy && watch::is_running(&root, &name) {
         format!(
@@ -954,7 +954,7 @@ fn session_start(debug: bool) {
         )
     } else if mode == members::Mode::Agy {
         format!(
-            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Antigravity CLI watcher for {name} (cq watch --as {name} --to-agy) has stopped, so nothing wakes the conversation for {name}. Do not start a watcher for {name} here: tell the user, who restarts it outside the conversation (see docs/OTHER-AGENTS.md). Run cq list --as {name} and handle any UNCLAIMED messages."
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Antigravity CLI watcher for {name} (cq watch --as {name} --to-agy) has stopped, so nothing wakes the conversation for {name}. Do not start a watcher for {name} here: tell the user, who restarts it outside the conversation (see docs/agents/ANTIGRAVITY.md). Run cq list --as {name} and handle any UNCLAIMED messages."
         )
     } else {
         format!(

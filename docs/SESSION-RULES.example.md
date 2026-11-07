@@ -1,6 +1,6 @@
 # Example session rules
 
-Copy and adapt this file for your own queue. Keep private scope rules in your own file, such as docs/SESSION-RULES.md, and point CQ_RULES at that file. Do not publish private rules. A shorter block for an instruction file is in [Queue rules for any agent](https://github.com/niklasrichardson/session-queue/blob/main/docs/QUEUE-RULES.md). The shared setup is in [Setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/SETUP.md). Agent-specific setup is in [Claude Code setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/CLAUDE-CODE.md), [Codex setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md) and [Other agents](https://github.com/niklasrichardson/session-queue/blob/main/docs/OTHER-AGENTS.md).
+Copy and adapt this file for your own queue. Keep private scope rules in your own file, such as docs/SESSION-RULES.md, and point CQ_RULES at that file. Do not publish private rules. A shorter block for an instruction file is in [Queue rules for any agent](https://github.com/niklasrichardson/session-queue/blob/main/docs/QUEUE-RULES.md). The shared setup is in [Setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/SETUP.md). Agent-specific setup is in [Claude Code setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/agents/CLAUDE-CODE.md), [Codex setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/agents/CODEX.md) and [Other agents](https://github.com/niklasrichardson/session-queue/blob/main/docs/agents/OTHER-AGENTS.md).
 
 ## Name and scope
 
@@ -18,7 +18,7 @@ Use inbox mode. Start `cq watch --as NAME --to-inbox 2>&1` once, as a background
 
 When a message from `cq` ends with `cq watch (NAME) stopped: ... Run /cq-start to re-arm.`, the watcher has ended: run /cq-start.
 
-The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: follow the SessionStart reminder, which says whether your watcher still runs. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](https://github.com/niklasrichardson/session-queue/blob/main/docs/CLAUDE-CODE.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
+The watcher survives /clear and compaction, and keeps posting into the same session. After a clear, do not start a second watcher: follow the SessionStart reminder, which says whether your watcher still runs. To switch a running session to inbox mode, see [Switch a session from Monitor mode to inbox mode](https://github.com/niklasrichardson/session-queue/blob/main/docs/agents/CLAUDE-CODE.md#switch-a-session-from-monitor-mode-to-inbox-mode). After an upgrade of the `cq` binary, restart the inbox watcher with --takeover, because it never re-arms by itself.
 
 To check whether a watcher runs, yours or another session's, run `cq status --as NAME`. Exit 0 prints `running`, exit 10 prints `stopped` and exit 7 prints `asleep`. Never trust a process ID or task ID that you remember, for example from before a /clear. If yours is `stopped`, start it again with --takeover. Each watcher exit is logged in `CQ_ROOT/watch-exits.log`, with the time, name, process ID and reason.
 
@@ -32,7 +32,7 @@ Use this only when `cq watch --to-inbox` exits 64, because the session has no in
 
 A `cq watch --to-codex` watcher, started outside the chat, wakes the chat with a fixed prompt that names NAME. On that prompt, run `cq list --as NAME`. If the first line starts with `ASLEEP`, or there are no UNCLAIMED messages, end the turn with no other work and no update. Otherwise handle each UNCLAIMED message, oldest first. Pass reply and reason JSON with --input FILE, from a UTF-8 file without a byte order mark. If cq send warns that a name is asleep, tell the user which name. Do not start, stop or take over a watcher from the chat. To sleep or wake the chat, use the cq-stop and cq-start skills if they are installed in ~/.agents/skills ([Install the skills](https://github.com/niklasrichardson/session-queue/blob/main/docs/SETUP.md#install-the-skills)). Without them, the user runs `cq sleep --as NAME NAME` and `cq wake --as NAME NAME` outside the chat.
 
-The other parts for Claude Code do not apply to a Codex chat. For a block to paste into AGENTS.md as is, use the [Codex-only rules block](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md#give-the-chat-its-rules) instead of this file.
+The other parts for Claude Code do not apply to a Codex chat. For a block to paste into AGENTS.md as is, use the [Codex-only rules block](https://github.com/niklasrichardson/session-queue/blob/main/docs/agents/CODEX.md#give-the-chat-its-rules) instead of this file.
 
 ### Antigravity CLI
 
@@ -40,11 +40,11 @@ A `cq watch --to-agy` watcher runs outside the conversation. For each batch of n
 
 ### Other agents
 
-Use the wake route your setup provides, such as polling. On each wake or poll, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If the first line starts with `ASLEEP`, the name is asleep: end the turn with no other work, even if messages are listed. If there are none, end the turn with no other work and no update. See [Other agents](https://github.com/niklasrichardson/session-queue/blob/main/docs/OTHER-AGENTS.md#wake-the-agent).
+Use the wake route your setup provides, such as polling. On each wake or poll, run `cq list --as NAME` and handle each UNCLAIMED message, oldest first. If the first line starts with `ASLEEP`, the name is asleep: end the turn with no other work, even if messages are listed. If there are none, end the turn with no other work and no update. See [Other agents](https://github.com/niklasrichardson/session-queue/blob/main/docs/agents/OTHER-AGENTS.md#wake-the-agent).
 
 ### Codex dispatch worker
 
-`cq dispatch` claims, replies and finishes for its Codex child. Give it its own queue name, trusted scope instructions and allowed senders. The child must not run `cq claim` or `cq done` itself. See [Codex setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/CODEX.md#dispatch-worker-prerequisites).
+`cq dispatch` claims, replies and finishes for its Codex child. Give it its own queue name, trusted scope instructions and allowed senders. The child must not run `cq claim` or `cq done` itself. See [Codex setup](https://github.com/niklasrichardson/session-queue/blob/main/docs/agents/CODEX.md#dispatch-worker-prerequisites).
 
 ## Sleep and wake
 
