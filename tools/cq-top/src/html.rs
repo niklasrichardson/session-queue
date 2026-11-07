@@ -677,7 +677,7 @@ fn sessions_table(b: &mut String, s: &Snapshot) {
          <p class=\"sub\">{machine} Tokens and cost count from local midnight, the session \
          and its subagents together. The cost is an estimate at API list prices, not the \
          plan's bill, and is shown for Claude Code sessions only. Codex rows show tokens \
-         without a cost, and Antigravity CLI (Gemini) rows show activity only. In the table, \
+         without a cost, and Antigravity (Gemini) rows show activity only. In the table, \
          CPU 100% is one core.</p><div class=\"scroll\"><table><thead><tr>\
          <th>Session</th><th>Agent</th><th>State</th><th>Model</th><th class=\"n\">Context</th>\
          <th class=\"n\">Tokens today</th><th class=\"n\">Est. cost today</th>\

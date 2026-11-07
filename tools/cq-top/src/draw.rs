@@ -968,7 +968,7 @@ fn machine_box(
 }
 
 /// The Sessions screen: CPU and Memory boxes for the whole computer, then one row per Claude
-/// Code session, Codex thread and Antigravity CLI conversation. Only counts, times, model
+/// Code session, Codex thread and Antigravity conversation. Only counts, times, model
 /// names and titles are shown, never message text.
 fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
     use sessions::{Context, State, bytes, count, usd};
@@ -984,10 +984,15 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
 
     // Columns: header, width, priority. A narrow terminal drops the highest numbers first.
     let name_w = name_width("session", r.rows.iter().map(|w| w.name.as_str()));
+    // `claude`, `codex`, `gemini` or `gemini-app`: wider only when a row needs it.
+    let agent_w = r
+        .rows
+        .iter()
+        .map(|w| w.agent.label().len() as u16)
+        .fold(6, u16::max);
     let cols: [(&str, u16, u8); 16] = [
         ("session", name_w, 0),
-        // `claude`, `codex` or `gemini`.
-        ("agent", 6, 4),
+        ("agent", agent_w, 4),
         ("state", 9, 1),
         ("model", 10, 4),
         ("context", 7, 3),
