@@ -2488,6 +2488,50 @@ mod tests {
         assert_eq!(r.rows[1].state, State::Working);
     }
 
+    /// A desktop app row keeps the cq name it was seen with after the watcher stops, so the
+    /// sleeping name still goes with it (see `draw::session_watcher`).
+    #[test]
+    fn desktop_app_row_keeps_its_last_cq_name() {
+        let mut sc = Scanner::new(
+            Sources {
+                projects: PathBuf::new(),
+                heartbeat: PathBuf::new(),
+                codex_home: None,
+                gemini_db: None,
+                gemini_app_db: None,
+                processes: false,
+            },
+            Git::Off,
+        );
+        let folder = Some(PathBuf::from("/work/demo"));
+        let running = sc.agent_row(
+            Agent::GeminiApp,
+            "a-new",
+            folder.clone(),
+            Some("App chat"),
+            Some("demo-agy".into()),
+            None,
+            100,
+            100,
+        );
+        assert_eq!(running.cq_name.as_deref(), Some("demo-agy"));
+        let sleeping = sc.agent_row(
+            Agent::GeminiApp,
+            "a-new",
+            folder.clone(),
+            Some("App chat"),
+            None,
+            None,
+            200,
+            100,
+        );
+        assert_eq!(sleeping.cq_name, None);
+        assert_eq!(sleeping.cq_last.as_deref(), Some("demo-agy"));
+        // The CLI row with the same ID keeps its own.
+        let cli = sc.agent_row(Agent::Gemini, "a-new", folder, None, None, None, 200, 100);
+        assert_eq!(cli.cq_last, None);
+    }
+
     #[test]
     fn codex_chats_and_watched_threads_are_read_from_arguments() {
         let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();

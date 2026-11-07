@@ -1620,6 +1620,62 @@ mod tests {
         );
     }
 
+    /// An `agy` watcher is recorded as the Antigravity CLI's. When it ran beside a desktop
+    /// app conversation and then went to sleep, the app row keeps it by `cq_last`, with its
+    /// queued work; a desktop row never takes a sleeping name by folder alone.
+    #[test]
+    fn sleeping_agy_name_stays_with_its_desktop_row() {
+        use sessions::Agent;
+        let mut snap = sample();
+        let watcher = |asleep| Watcher {
+            name: "demo-agy".into(),
+            beat_age: Some(4000),
+            asleep,
+            folder: Some("c--work-demo".into()),
+            mode: Some(Mode::Agy),
+            agent: Some(Agent::Gemini),
+            pid: String::new(),
+            session: String::new(),
+            queued: 2,
+            claimed: 1,
+            done: 0,
+            rejected: 0,
+            dead: 0,
+        };
+        let row = |cq_name: Option<&str>, cq_last: Option<&str>| sessions::Row {
+            agent: Agent::GeminiApp,
+            state: sessions::State::Idle,
+            cq_name: cq_name.map(str::to_string),
+            cq_last: cq_last.map(str::to_string),
+            folder_key: "c--work-demo".into(),
+            ..Default::default()
+        };
+        let found = |snap: &Snapshot, r: &sessions::Row| {
+            draw::session_watcher(snap, r).map(|w| w.name.clone())
+        };
+
+        // Running: the conversation ID matched, so the row has the name.
+        snap.watchers = vec![watcher(false)];
+        let running = row(Some("demo-agy"), Some("demo-agy"));
+        assert_eq!(found(&snap, &running).as_deref(), Some("demo-agy"));
+
+        // Asleep: the process is gone, and the row keeps only `cq_last`.
+        snap.watchers = vec![watcher(true)];
+        let sleeping = row(None, Some("demo-agy"));
+        assert_eq!(found(&snap, &sleeping).as_deref(), Some("demo-agy"));
+        assert_eq!(
+            draw::session_state(&snap, &sleeping),
+            (sessions::State::Idle, true)
+        );
+        // Never by folder alone, and never for another agent's row.
+        assert_eq!(found(&snap, &row(None, None)), None);
+        let claude = sessions::Row {
+            agent: Agent::Claude,
+            ..row(None, Some("demo-agy"))
+        };
+        assert_eq!(found(&snap, &claude), None);
+    }
+
     /// The mode shows on the Overview and Sessions screens and in the dashboard.
     #[test]
     fn watcher_mode_is_shown_on_screens_and_exports() {

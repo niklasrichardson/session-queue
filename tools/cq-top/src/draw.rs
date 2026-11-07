@@ -746,15 +746,18 @@ fn draw_rejected(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
 /// per agent and per Codex thread). Else, for a Claude Code row only, a sleeping name whose
 /// `members/` record is a Claude Code session's and names the row's folder. A sleeping name
 /// whose owner is unknown, or another agent, goes with no row: Codex threads and Antigravity
-/// CLI conversations are never matched by folder alone.
+/// CLI conversations are never matched by folder alone. An `agy` watcher is recorded as the
+/// Antigravity CLI's, but it also serves the desktop app conversation it was seen beside.
 pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a Watcher> {
+    use sessions::Agent;
     if let Some(name) = row.cq_name.as_deref() {
         return s.watchers.iter().find(|w| w.name == name);
     }
+    let serves = |a: Agent| a == row.agent || (a == Agent::Gemini && row.agent == Agent::GeminiApp);
     let asleep = || {
         s.watchers
             .iter()
-            .filter(|w| w.asleep && w.agent.is_none_or(|a| a == row.agent))
+            .filter(|w| w.asleep && w.agent.is_none_or(serves))
     };
     asleep()
         .find(|w| row.cq_last.as_deref() == Some(w.name.as_str()))

@@ -91,6 +91,8 @@ One row per Claude Code session, Codex thread and Antigravity (Gemini) conversat
 
 A narrow terminal drops the least important columns first: mem, sub, claim, mode, last change, est.cost and tokens.
 
+<a id="codex-and-antigravity-cli-rows"></a>
+
 ### Codex and Antigravity rows
 
 **Codex.**
