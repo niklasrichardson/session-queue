@@ -15,6 +15,17 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## cq-top Antigravity desktop app rows on Windows, 7 November 2026
+
+The Sessions screen reads the Antigravity desktop app's conversations (issue #71, see [cq-top](CQ-TOP.md#codex-and-antigravity-rows)). Checked on Windows 11 with `cargo test --workspace` (336 tests, 0 failed; 68 in cq-top), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`. All passed.
+
+- The desktop app's `~/.gemini/antigravity/conversation_summaries.db` was opened read-only from a copy. Its `conversation_summaries` table has the same 21 columns as the CLI's, and `search_schema_version` is 3 in both. Only counts, times, `source` and `status` values were read, never titles, previews or summaries.
+- The app's database also listed every CLI conversation, with the same ID, step count and modified time, no title, and `source` `CORTEX_TRAJECTORY_SOURCE_CLI`. Its own conversation had an empty `source`, as the CLI's rows do in the CLI's database.
+- The app's `conversations/` folder holds one SQLite file per conversation, with protobuf steps. It is not read.
+- Unit tests in `tools/cq-top/src/sessions/agents.rs` and `sessions.rs`: both databases, either one alone, CLI conversations listed by the app shown once as `gemini` rows, and an app database without a `source` column, without the table, or not SQLite, which gives no app rows and leaves the CLI's rows.
+
+Not verified: the rows in a real terminal while the desktop app runs; macOS and Linux paths.
+
 ## Sandbox writes to the default root on Windows, 6 November 2026
 
 A finding from live use on Windows 11, not a test of a cq change. See [Check that agents write the root for real](SETUP.md#check-that-agents-write-the-root-for-real).

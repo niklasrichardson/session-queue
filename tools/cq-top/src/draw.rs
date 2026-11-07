@@ -746,15 +746,18 @@ fn draw_rejected(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
 /// per agent and per Codex thread). Else, for a Claude Code row only, a sleeping name whose
 /// `members/` record is a Claude Code session's and names the row's folder. A sleeping name
 /// whose owner is unknown, or another agent, goes with no row: Codex threads and Antigravity
-/// CLI conversations are never matched by folder alone.
+/// CLI conversations are never matched by folder alone. An `agy` watcher is recorded as the
+/// Antigravity CLI's, but it also serves the desktop app conversation it was seen beside.
 pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a Watcher> {
+    use sessions::Agent;
     if let Some(name) = row.cq_name.as_deref() {
         return s.watchers.iter().find(|w| w.name == name);
     }
+    let serves = |a: Agent| a == row.agent || (a == Agent::Gemini && row.agent == Agent::GeminiApp);
     let asleep = || {
         s.watchers
             .iter()
-            .filter(|w| w.asleep && w.agent.is_none_or(|a| a == row.agent))
+            .filter(|w| w.asleep && w.agent.is_none_or(serves))
     };
     asleep()
         .find(|w| row.cq_last.as_deref() == Some(w.name.as_str()))
@@ -968,7 +971,7 @@ fn machine_box(
 }
 
 /// The Sessions screen: CPU and Memory boxes for the whole computer, then one row per Claude
-/// Code session, Codex thread and Antigravity CLI conversation. Only counts, times, model
+/// Code session, Codex thread and Antigravity conversation. Only counts, times, model
 /// names and titles are shown, never message text.
 fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
     use sessions::{Context, State, bytes, count, usd};
@@ -984,10 +987,15 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
 
     // Columns: header, width, priority. A narrow terminal drops the highest numbers first.
     let name_w = name_width("session", r.rows.iter().map(|w| w.name.as_str()));
+    // `claude`, `codex`, `gemini` or `gemini-app`: wider only when a row needs it.
+    let agent_w = r
+        .rows
+        .iter()
+        .map(|w| w.agent.label().len() as u16)
+        .fold(6, u16::max);
     let cols: [(&str, u16, u8); 16] = [
         ("session", name_w, 0),
-        // `claude`, `codex` or `gemini`.
-        ("agent", 6, 4),
+        ("agent", agent_w, 4),
         ("state", 9, 1),
         ("model", 10, 4),
         ("context", 7, 3),

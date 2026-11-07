@@ -1,4 +1,4 @@
-//! Codex chats and Antigravity CLI (Gemini) conversations, for rows beside the Claude Code
+//! Codex chats and Antigravity (Gemini) conversations, for rows beside the Claude Code
 //! sessions.
 //!
 //! - Codex: the thread list is the `threads` table in Codex's state database
@@ -8,8 +8,13 @@
 //! - Antigravity CLI: the conversation list is the `conversation_summaries` table in
 //!   `~/.gemini/antigravity-cli/conversation_summaries.db`. Its model and token data are in
 //!   undocumented protobuf blobs, which are not parsed, so those rows show only activity.
+//! - Antigravity desktop app: the same table, with the same columns, in
+//!   `~/.gemini/antigravity/conversation_summaries.db`. The app also lists the CLI's
+//!   conversations there, with the same IDs and a `source` that names the CLI; those stay
+//!   CLI rows, read once. The app's per-conversation files in `conversations/` hold the
+//!   steps as protobuf blobs and are not read.
 //!
-//! Both databases are opened `mode=ro`, the normal read-only access of any SQLite reader,
+//! The databases are opened `mode=ro`, the normal read-only access of any SQLite reader,
 //! so a write by the app in another process is seen whole or not at all. Like any reader,
 //! this takes brief shared read locks, never a write lock, and never checkpoints. When the
 //! app has closed the database, SQLite may create its own `-shm` file (and an empty `-wal`
@@ -19,9 +24,10 @@
 //! error, and the next scan tries again. The databases are never copied.
 //!
 //! Message text is never read: not Codex's `first_user_message` or `preview`, not the
-//! Antigravity CLI's `preview` or `raw_summary`, and not the message lines of a rollout.
+//! Antigravity databases' `preview` or `raw_summary`, and not the message lines of a rollout.
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -310,9 +316,9 @@ impl RolloutTally {
     }
 }
 
-// ---------- Antigravity CLI ----------
+// ---------- Antigravity CLI and desktop app ----------
 
-/// One Antigravity CLI conversation, as far as the Sessions screen uses it.
+/// One Antigravity CLI or desktop app conversation, as far as the Sessions screen uses it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeminiConversation {
     pub id: String,
@@ -322,6 +328,8 @@ pub struct GeminiConversation {
     pub modified: i64,
     /// The first folder in `workspace_uris`.
     pub folder: Option<PathBuf>,
+    /// A conversation of the desktop app, not of the CLI.
+    pub app: bool,
 }
 
 /// `2026-11-02 18:04:20.9701445+00:00` (as the Antigravity CLI writes times) -> epoch
@@ -386,15 +394,28 @@ pub fn gemini_db(home: &Path) -> PathBuf {
         .join("conversation_summaries.db")
 }
 
-/// The top-level conversations in the Antigravity CLI's database. One with a parent
-/// conversation or a nesting depth above 0 was started by another and is skipped.
-/// `not_fully_idle`, `killed` and `status` are not used: their meaning is not documented,
-/// and every value seen so far was 0, 0 and an idle status.
-pub fn gemini_conversations(db: &Path) -> Vec<GeminiConversation> {
-    const SQL: &str = "SELECT conversation_id, title, step_count, last_modified_time, \
-                       workspace_uris, parent_conversation_id, nesting_depth \
-                       FROM conversation_summaries";
-    rows(db, SQL, |row| {
+/// The Antigravity desktop app's database under the home folder.
+pub fn gemini_app_db(home: &Path) -> PathBuf {
+    home.join(".gemini")
+        .join("antigravity")
+        .join("conversation_summaries.db")
+}
+
+/// The `source` the desktop app gives a conversation it lists from the CLI.
+const CLI_SOURCE: &str = "CORTEX_TRAJECTORY_SOURCE_CLI";
+
+/// The top-level conversations in an Antigravity database. One with a parent conversation
+/// or a nesting depth above 0 was started by another and is skipped. In the desktop app's
+/// database (`app`), a conversation whose `source` names the CLI is a CLI conversation.
+/// `not_fully_idle`, `killed` and `status` are not used: their meaning is not documented.
+fn summaries(db: &Path, app: bool) -> Vec<GeminiConversation> {
+    // `source` only in the app's database, so the CLI's reads as before.
+    let sql = format!(
+        "SELECT conversation_id, title, step_count, last_modified_time, workspace_uris, \
+         parent_conversation_id, nesting_depth, {} FROM conversation_summaries",
+        if app { "source" } else { "NULL" }
+    );
+    rows(db, &sql, |row| {
         if text(row, 5).is_some() || int(row, 6).is_some_and(|d| d > 0) {
             return None;
         }
@@ -404,8 +425,24 @@ pub fn gemini_conversations(db: &Path) -> Vec<GeminiConversation> {
             steps: int(row, 2).unwrap_or(0),
             modified: text(row, 3).as_deref().and_then(gemini_time).unwrap_or(0),
             folder: text(row, 4).as_deref().and_then(first_workspace),
+            app: app && text(row, 7).as_deref() != Some(CLI_SOURCE),
         })
     })
+}
+
+/// The top-level conversations in the Antigravity CLI's database.
+pub fn gemini_conversations(db: &Path) -> Vec<GeminiConversation> {
+    summaries(db, false)
+}
+
+/// The CLI's conversations, then the desktop app's that the CLI's database does not hold.
+/// Either database may be missing.
+pub fn gemini_all(cli: Option<&Path>, app: Option<&Path>) -> Vec<GeminiConversation> {
+    let mut out = cli.map(gemini_conversations).unwrap_or_default();
+    let known: HashSet<String> = out.iter().map(|c| c.id.clone()).collect();
+    let app = app.map(|db| summaries(db, true)).unwrap_or_default();
+    out.extend(app.into_iter().filter(|c| !known.contains(&c.id)));
+    out
 }
 
 #[cfg(test)]
@@ -680,6 +717,7 @@ mod tests {
                     steps: 12,
                     modified: 1_793_642_660,
                     folder: Some(PathBuf::from("C:/work/demo")),
+                    app: false,
                 },
                 GeminiConversation {
                     id: "g2".into(),
@@ -687,9 +725,129 @@ mod tests {
                     steps: 0,
                     modified: -62_135_596_800,
                     folder: None,
+                    app: false,
                 },
             ]
         );
+    }
+
+    /// A `conversation_summaries.db` in `dir/sub` with the columns both Antigravity
+    /// databases have, and one row per (ID, title, source).
+    fn summaries_db(dir: &Path, sub: &str, convs: &[(&str, &str, &str)]) -> PathBuf {
+        fs::create_dir_all(dir.join(sub)).unwrap();
+        let db = dir.join(sub).join("conversation_summaries.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT, \
+             preview TEXT, step_count INTEGER, last_modified_time datetime, \
+             workspace_uris TEXT, status TEXT, source TEXT, parent_conversation_id TEXT, \
+             nesting_depth INTEGER, not_fully_idle numeric, killed numeric, raw_summary BLOB)",
+        )
+        .unwrap();
+        for (id, title, source) in convs {
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?1, ?2, 'SECRET-TEXT', 3, \
+                 '2026-11-02 18:04:20+00:00', '[\"file:///C:/work/demo\"]', \
+                 'CASCADE_RUN_STATUS_IDLE', ?3, '', 0, 0, 0, X'00')",
+                [id, title, source],
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    /// (ID, title, desktop app) of each conversation, in order.
+    fn sources(convs: &[GeminiConversation]) -> Vec<(&str, Option<&str>, bool)> {
+        convs
+            .iter()
+            .map(|c| (c.id.as_str(), c.title.as_deref(), c.app))
+            .collect()
+    }
+
+    #[test]
+    fn cli_and_app_conversations_are_read_once_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = summaries_db(dir.path(), "antigravity-cli", &[("g1", "CLI chat", "")]);
+        // The app lists the CLI's conversation too, untitled, with a CLI `source`.
+        let app = summaries_db(
+            dir.path(),
+            "antigravity",
+            &[
+                ("g1", "", CLI_SOURCE),
+                ("g2", "", CLI_SOURCE),
+                ("a1", "App chat", ""),
+                ("a2", "", "CORTEX_TRAJECTORY_SOURCE_OTHER"),
+            ],
+        );
+        let convs = gemini_all(Some(&cli), Some(&app));
+        assert_eq!(
+            sources(&convs),
+            [
+                ("g1", Some("CLI chat"), false),
+                // A CLI conversation the CLI's database no longer holds stays a CLI row.
+                ("g2", None, false),
+                ("a1", Some("App chat"), true),
+                ("a2", None, true),
+            ]
+        );
+        assert_eq!(convs[2].folder, Some(PathBuf::from("C:/work/demo")));
+        assert!(!format!("{convs:?}").contains("SECRET"));
+    }
+
+    #[test]
+    fn either_antigravity_database_alone_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = summaries_db(dir.path(), "antigravity-cli", &[("g1", "CLI chat", "")]);
+        let app = summaries_db(dir.path(), "antigravity", &[("a1", "App chat", "")]);
+        let none = dir.path().join("none").join("conversation_summaries.db");
+        assert_eq!(
+            sources(&gemini_all(Some(&cli), Some(&none))),
+            [("g1", Some("CLI chat"), false)]
+        );
+        assert_eq!(
+            sources(&gemini_all(Some(&none), Some(&app))),
+            [("a1", Some("App chat"), true)]
+        );
+        assert_eq!(
+            sources(&gemini_all(None, Some(&app))),
+            [("a1", Some("App chat"), true)]
+        );
+        assert!(gemini_all(None, None).is_empty());
+        assert_eq!(
+            gemini_app_db(Path::new("/home/me")),
+            Path::new("/home/me/.gemini/antigravity/conversation_summaries.db")
+        );
+    }
+
+    #[test]
+    fn an_app_database_with_another_schema_gives_no_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = summaries_db(dir.path(), "antigravity-cli", &[("g1", "CLI chat", "")]);
+        let app_dir = dir.path().join("antigravity");
+        fs::create_dir_all(&app_dir).unwrap();
+        // No `source` column; then no `conversation_summaries` table; then not SQLite.
+        let app = app_dir.join("conversation_summaries.db");
+        Connection::open(&app)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT, \
+                 step_count INTEGER, last_modified_time datetime, workspace_uris TEXT, \
+                 parent_conversation_id TEXT, nesting_depth INTEGER);
+                 INSERT INTO conversation_summaries VALUES ('a1', 'App chat', 1, \
+                   '2026-11-02 18:04:20+00:00', '[]', '', 0);",
+            )
+            .unwrap();
+        let only_cli = [("g1", Some("CLI chat"), false)];
+        assert_eq!(sources(&gemini_all(Some(&cli), Some(&app))), only_cli);
+        let other = app_dir.join("other.db");
+        Connection::open(&other)
+            .unwrap()
+            .execute_batch("CREATE TABLE trajectory_meta (trajectory_id TEXT)")
+            .unwrap();
+        assert_eq!(sources(&gemini_all(Some(&cli), Some(&other))), only_cli);
+        let junk = app_dir.join("junk.db");
+        fs::write(&junk, b"not a database").unwrap();
+        assert_eq!(sources(&gemini_all(Some(&cli), Some(&junk))), only_cli);
     }
 
     fn token_line(ts: &str, total: u64, input: u64) -> String {
