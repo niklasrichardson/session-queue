@@ -1149,6 +1149,8 @@ pub enum Agent {
     Codex,
     /// The Antigravity CLI.
     Gemini,
+    /// The Antigravity desktop app.
+    GeminiApp,
 }
 
 impl Agent {
@@ -1157,12 +1159,13 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Gemini => "gemini",
+            Agent::GeminiApp => "gemini-app",
         }
     }
 }
 
 /// One session: the newest transcript in a project folder, a Codex thread or an
-/// Antigravity CLI conversation.
+/// Antigravity CLI or desktop app conversation.
 #[derive(Clone, Debug, Default)]
 pub struct Row {
     pub agent: Agent,
@@ -1222,6 +1225,8 @@ pub struct Sources {
     pub codex_home: Option<PathBuf>,
     /// The Antigravity CLI's `conversation_summaries.db`.
     pub gemini_db: Option<PathBuf>,
+    /// The Antigravity desktop app's `conversation_summaries.db`.
+    pub gemini_app_db: Option<PathBuf>,
     /// Read the process list. Off in tests.
     pub processes: bool,
 }
@@ -1248,6 +1253,7 @@ impl Sources {
             heartbeat: root.path().join("heartbeat"),
             codex_home,
             gemini_db: home.as_deref().map(agents::gemini_db),
+            gemini_app_db: home.as_deref().map(agents::gemini_app_db),
             processes: true,
         }
     }
@@ -1558,20 +1564,20 @@ impl Scanner {
         self.rollouts.retain(|p, _| used.contains(p));
     }
 
-    /// One row per Antigravity CLI conversation changed in the last 24 hours, named by a
-    /// running `cq watch --to-agy` watcher, or newest in a folder where `agy` or a cq
-    /// watcher runs. Activity only: model, context, tokens and
+    /// One row per Antigravity CLI or desktop app conversation changed in the last 24
+    /// hours, named by a running `cq watch --to-agy` watcher, or (CLI only) newest in a
+    /// folder where `agy` or a cq watcher runs. Activity only: model, context, tokens and
     /// cost are dashes (see `agents`).
     fn gemini_rows(&mut self, now: i64, procs: Option<&Procs>, rows: &mut Vec<Row>) {
-        let convs = self
-            .src
-            .gemini_db
-            .as_deref()
-            .map(agents::gemini_conversations)
-            .unwrap_or_default();
+        let convs = agents::gemini_all(
+            self.src.gemini_db.as_deref(),
+            self.src.gemini_app_db.as_deref(),
+        );
+        // An `agy` process or its watcher goes to the newest CLI conversation in its folder.
         let newest = newest_by_folder(
             convs
                 .iter()
+                .filter(|c| !c.app)
                 .map(|c| (c.folder.as_deref(), c.modified, c.id.as_str())),
         );
         let mut seen = HashSet::new();
@@ -1587,6 +1593,11 @@ impl Scanner {
             }
             let active = c.modified.max(steps.1);
             seen.insert(c.id.clone());
+            let agent = if c.app {
+                Agent::GeminiApp
+            } else {
+                Agent::Gemini
+            };
             let k = c.folder.as_deref().map(folder_key).unwrap_or_default();
             let is_newest = newest.get(&k) == Some(&c.id.as_str());
             let proc = procs
@@ -1604,7 +1615,7 @@ impl Scanner {
                 continue;
             }
             let row = self.agent_row(
-                Agent::Gemini,
+                agent,
                 &c.id,
                 c.folder.clone(),
                 c.title.as_deref(),
@@ -1738,6 +1749,7 @@ pub fn test_scanner(projects: &Path) -> Scanner {
             heartbeat: PathBuf::new(),
             codex_home: None,
             gemini_db: None,
+            gemini_app_db: None,
             processes: false,
         },
         Git::Off,
@@ -2404,6 +2416,27 @@ mod tests {
             .unwrap();
         }
         drop(conn);
+        // The desktop app's database: its own conversation, and the CLI's listed again.
+        let app = dir.path().join("app.db");
+        let conn = rusqlite::Connection::open(&app).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT, preview TEXT, \
+             step_count INTEGER, last_modified_time datetime, workspace_uris TEXT, \
+             parent_conversation_id TEXT, nesting_depth INTEGER, source TEXT)",
+        )
+        .unwrap();
+        for (id, title, source) in [
+            ("g-new", "", "CORTEX_TRAJECTORY_SOURCE_CLI"),
+            ("a-new", "App chat", ""),
+        ] {
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?1, ?2, 'SECRET-TEXT', 3, ?3, \
+                 '[\"file:///C:/work/demo\"]', '', 0, ?4)",
+                rusqlite::params![id, title, at(now - 600), source],
+            )
+            .unwrap();
+        }
+        drop(conn);
 
         let mut sc = Scanner::new(
             Sources {
@@ -2411,6 +2444,7 @@ mod tests {
                 heartbeat: PathBuf::new(),
                 codex_home: Some(codex),
                 gemini_db: Some(gemini.clone()),
+                gemini_app_db: Some(app.clone()),
                 processes: false,
             },
             Git::Off,
@@ -2420,8 +2454,13 @@ mod tests {
         let names: Vec<(&str, Agent)> = r.rows.iter().map(|r| (r.name.as_str(), r.agent)).collect();
         assert_eq!(
             names,
-            [("demo-codex", Agent::Codex), ("Demo chat", Agent::Gemini)]
+            [
+                ("demo-codex", Agent::Codex),
+                ("Demo chat", Agent::Gemini),
+                ("App chat", Agent::GeminiApp)
+            ]
         );
+        assert_eq!(r.rows[2].agent.label(), "gemini-app");
         let c = &r.rows[0];
         assert_eq!(c.state, State::Working);
         assert_eq!(c.model, "gpt-demo");
