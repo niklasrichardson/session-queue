@@ -1,6 +1,8 @@
 //! The HTML dashboard: one snapshot as a single self-contained page. No scripts, no
 //! external files; light and dark follow the viewer's system setting. Every string read
 //! from the queue is escaped, and message bodies are never written.
+//!
+//! The escaping, UK time, tick and theme helpers here are shared with `report`.
 
 use super::*;
 use std::fmt::Write;
@@ -30,8 +32,13 @@ pub fn esc(s: &str) -> String {
 
 // ---------- UK local time ----------
 
+pub(crate) const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+pub(crate) const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
 /// Days since 1970-01-01 to (year, month, day), proleptic Gregorian.
-fn civil(days: i64) -> (i64, i64, i64) {
+pub(crate) fn civil(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -45,7 +52,7 @@ fn civil(days: i64) -> (i64, i64, i64) {
 }
 
 /// 0 is Sunday.
-fn weekday(epoch: i64) -> i64 {
+pub(crate) fn weekday(epoch: i64) -> i64 {
     (epoch.div_euclid(86_400) + 4).rem_euclid(7)
 }
 
@@ -57,7 +64,7 @@ fn last_sunday_1am(year: i64, month: i64) -> i64 {
 
 /// UK clock time: BST (UTC+1) from 01:00 UTC on the last Sunday of March to 01:00 UTC on
 /// the last Sunday of October, GMT otherwise. Returns (local epoch, zone name).
-fn uk_local(epoch: i64) -> (i64, &'static str) {
+pub(crate) fn uk_local(epoch: i64) -> (i64, &'static str) {
     let (y, _, _) = civil(epoch.div_euclid(86_400));
     if (last_sunday_1am(y, 3)..last_sunday_1am(y, 10)).contains(&epoch) {
         (epoch + 3600, "BST")
@@ -67,11 +74,7 @@ fn uk_local(epoch: i64) -> (i64, &'static str) {
 }
 
 /// `Tue 27 Oct 2026, 11:42:10 GMT`.
-fn uk_datetime(epoch: i64) -> String {
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
+pub(crate) fn uk_datetime(epoch: i64) -> String {
     let (t, zone) = uk_local(epoch);
     let (y, m, d) = civil(t.div_euclid(86_400));
     let secs = t.rem_euclid(86_400);
@@ -86,9 +89,21 @@ fn uk_datetime(epoch: i64) -> String {
 }
 
 /// `11:42`, UK clock time.
-fn uk_clock(epoch: i64) -> String {
+pub(crate) fn uk_clock(epoch: i64) -> String {
     let secs = uk_local(epoch).0.rem_euclid(86_400);
     format!("{:02}:{:02}", secs / 3600, secs % 3600 / 60)
+}
+
+/// `20261027-1142`, UK clock time, for file names.
+pub(crate) fn uk_stamp(epoch: i64) -> String {
+    let t = uk_local(epoch).0;
+    let (y, m, d) = civil(t.div_euclid(86_400));
+    let secs = t.rem_euclid(86_400);
+    format!(
+        "{y:04}{m:02}{d:02}-{:02}{:02}",
+        secs / 3600,
+        secs % 3600 / 60
+    )
 }
 
 // ---------- status chips ----------
@@ -459,7 +474,7 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
 }
 
 /// The smallest of 1, 2, 5, 10, 20, 50 ... that splits `peak` into at most 4 steps.
-fn tick_step(peak: u64) -> u64 {
+pub(crate) fn tick_step(peak: u64) -> u64 {
     let mut base = 1;
     loop {
         for m in [1, 2, 5] {
@@ -790,7 +805,10 @@ fn msg_table(b: &mut String, title: &str, sub: &str, msgs: &[Msg], now: i64) {
     b.push_str("</tbody></table></div></section>");
 }
 
-const CSS: &str = r#"
+/// The colour tokens and page base, light and dark, for the dashboard and the report.
+macro_rules! theme_css {
+    () => {
+        r#"
 :root{color-scheme:light;
  --page:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink-2:#52514e;--muted:#6b6a65;
  --grid:#e1e0d9;--axis:#c3c2b7;--ring:rgba(11,11,11,.10);
@@ -803,7 +821,14 @@ const CSS: &str = r#"
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--page);color:var(--ink);
  font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1200px;margin:0 auto;padding:20px 16px 32px}
+"#
+    };
+}
+pub(crate) use theme_css;
+
+const CSS: &str = concat!(
+    theme_css!(),
+    r#"main{max-width:1200px;margin:0 auto;padding:20px 16px 32px}
 header{margin-bottom:12px}
 .title{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
 h1{font-size:26px;margin:0;font-weight:650}
@@ -860,7 +885,8 @@ tbody tr:last-child td{border-bottom:0}
 details{margin-top:8px;font-size:14px}
 summary{cursor:pointer;color:var(--ink-2)}
 footer{color:var(--ink-2);font-size:12.5px;margin-top:8px}
-"#;
+"#
+);
 
 #[cfg(test)]
 mod tests {
@@ -877,6 +903,18 @@ mod tests {
         assert_eq!(t("2026-10-25T00:59:59Z"), "Sun 25 Oct 2026, 01:59:59 BST");
         assert_eq!(t("2026-10-25T01:00:00Z"), "Sun 25 Oct 2026, 01:00:00 GMT");
         assert_eq!(t("2024-02-29T23:59:59Z"), "Thu 29 Feb 2024, 23:59:59 GMT");
+    }
+
+    #[test]
+    fn uk_stamp_names_files_in_uk_time() {
+        assert_eq!(
+            uk_stamp(parse_ts("2026-10-27T11:42:10Z").unwrap()),
+            "20261027-1142"
+        );
+        assert_eq!(
+            uk_stamp(parse_ts("2026-07-01T23:30:00Z").unwrap()),
+            "20260702-0030"
+        );
     }
 
     #[test]

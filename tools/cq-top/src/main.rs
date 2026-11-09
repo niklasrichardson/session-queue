@@ -20,6 +20,7 @@ use serde_json::Value;
 
 mod draw;
 mod html;
+mod report;
 mod screens;
 mod sessions;
 use draw::{THEMES, draw};
@@ -238,7 +239,11 @@ fn main() -> std::io::Result<()> {
              \x20                    it ends in .html or .htm, else to PATH/dashboard.html\n\
              --html-screens DIR   write the four screens as HTML pages (overview.html,\n\
              \x20                    sessions.html, flow.html, rejected.html) to DIR, then exit\n\
-             Neither may point inside the queue root. Message bodies are never exported."
+             --report PATH        write an HTML analysis of the queue's history, then exit: to\n\
+             \x20                    PATH when it ends in .html or .htm, else to\n\
+             \x20                    PATH/cq-report-YYYYMMDD-HHMM.html (UK time)\n\
+             None may point inside the queue root. Message bodies are never exported, and the\n\
+             report shows no subjects either."
         );
         return Ok(());
     }
@@ -270,7 +275,7 @@ fn main() -> std::io::Result<()> {
         eprintln!("cq-top: warning: {w}");
     }
     cq::config::install(config);
-    if exports.html.is_some() || exports.screens.is_some() {
+    if exports != Exports::default() {
         let scan = || sessions::collect_once(sessions::Sources::live(&root));
         if let Err(e) = export(&root, &limits, &exports, scan) {
             eprintln!("cq-top: {e}");
@@ -375,6 +380,7 @@ fn save_view(screen: Screen, theme: usize) {
 struct Exports {
     html: Option<PathBuf>,
     screens: Option<PathBuf>,
+    report: Option<PathBuf>,
 }
 
 fn parse_exports(args: &[String]) -> Result<Exports, String> {
@@ -384,6 +390,7 @@ fn parse_exports(args: &[String]) -> Result<Exports, String> {
         let slot = match a.as_str() {
             "--html" => &mut e.html,
             "--html-screens" => &mut e.screens,
+            "--report" => &mut e.report,
             _ => return Err(format!("unknown argument {a:?}; see --help")),
         };
         let Some(v) = it.next().filter(|v| !v.is_empty()) else {
@@ -425,20 +432,23 @@ fn export_path(root: &Path, path: &Path) -> std::io::Result<PathBuf> {
     Ok(full)
 }
 
-/// The file `--html PATH` writes. A path that ends in `.html` or `.htm` (any case) is the
-/// file. Any other path is a folder, made if it does not exist, and the file is
-/// `dashboard.html` in it: an existing folder, a path that ends in `/` or `\`, or a path with
-/// another extension or none. An existing file without that extension is refused, so it is
-/// never overwritten.
-struct Dashboard {
+/// The file `--html PATH` or `--report PATH` writes. A path that ends in `.html` or `.htm`
+/// (any case) is the file. Any other path is a folder, made if it does not exist, and the
+/// file is the option's own name in it: an existing folder, a path that ends in `/` or `\`,
+/// or a path with another extension or none. An existing file without that extension is
+/// refused, so it is never overwritten.
+struct Target {
+    /// The option, for messages: `--html` or `--report`.
+    flag: &'static str,
     given: PathBuf,
     /// The full path of the file, without the `\\?\` prefix `canonicalize` gives on Windows.
     file: PathBuf,
     as_folder: bool,
 }
 
-impl Dashboard {
-    fn of(given: &Path) -> std::io::Result<Self> {
+impl Target {
+    /// `name` is the file written when `given` is taken as a folder.
+    fn of(flag: &'static str, given: &Path, name: &str) -> std::io::Result<Self> {
         let abs = std::path::absolute(given)?;
         let text = given.as_os_str().to_string_lossy();
         let html_ext = abs
@@ -450,17 +460,14 @@ impl Dashboard {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
-                    "--html {}: a file without an .html or .htm extension exists there; refusing to overwrite it or use it as a folder",
+                    "{flag} {}: a file without an .html or .htm extension exists there; refusing to overwrite it or use it as a folder",
                     given.display()
                 ),
             ));
         }
-        let file = if as_folder {
-            abs.join("dashboard.html")
-        } else {
-            abs
-        };
+        let file = if as_folder { abs.join(name) } else { abs };
         Ok(Self {
+            flag,
             given: given.to_owned(),
             file,
             as_folder,
@@ -470,10 +477,35 @@ impl Dashboard {
     fn taken_as(&self) -> &'static str {
         if self.as_folder { "a folder" } else { "a file" }
     }
+
+    /// Writes `text` to the checked full path `path`, making its folders. A failure names
+    /// the path as given and how it was taken.
+    fn write(&self, path: &Path, text: &str) -> std::io::Result<()> {
+        let failed = |what: &str, err: std::io::Error| {
+            std::io::Error::new(
+                err.kind(),
+                format!(
+                    "{} {}, taken as {}: cannot {what} ({err})",
+                    self.flag,
+                    self.given.display(),
+                    self.taken_as()
+                ),
+            )
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| failed(&format!("create the folder {}", parent.display()), err))?;
+        }
+        fs::write(path, text)
+            .map_err(|err| failed(&format!("write {}", self.file.display()), err))?;
+        println!("wrote {}", self.file.display());
+        Ok(())
+    }
 }
 
 /// Takes one snapshot and writes the exports asked for. Every path is checked before
-/// anything is written, and before `scan` collects the sessions.
+/// anything is written, and before `scan` collects the sessions. The report reads the queue
+/// on its own, so `--report` alone takes no snapshot and scans no sessions.
 fn export(
     root: &cq::Root,
     limits: &Limits,
@@ -485,33 +517,37 @@ fn export(
             .map(|p| export_path(root.path(), p))
             .transpose()
     };
-    let dashboard = e.html.as_deref().map(Dashboard::of).transpose()?;
-    let html = dashboard
-        .as_ref()
-        .map(|d| export_path(root.path(), &d.file))
+    let now = now_epoch();
+    let dashboard = e
+        .html
+        .as_deref()
+        .map(|p| Target::of("--html", p, "dashboard.html"))
         .transpose()?;
+    let report_name = format!("cq-report-{}.html", html::uk_stamp(now));
+    let report = e
+        .report
+        .as_deref()
+        .map(|p| Target::of("--report", p, &report_name))
+        .transpose()?;
+    let target_path = |t: &Option<Target>| {
+        t.as_ref()
+            .map(|t| export_path(root.path(), &t.file))
+            .transpose()
+    };
+    let html = target_path(&dashboard)?;
+    let report_path = target_path(&report)?;
     let screens = check(&e.screens)?;
-    let mut snap = snapshot(root, &mut Beats::new(), limits);
-    snap.sessions = scan();
     // Writes go to the checked full path; messages show the path as given.
+    if let (Some(path), Some(r)) = (report_path, &report) {
+        r.write(&path, &report::page(root, now))?;
+    }
+    if html.is_none() && screens.is_none() {
+        return Ok(());
+    }
+    let mut snap = snapshot_at(root, &mut Beats::new(), now, limits);
+    snap.sessions = scan();
     if let (Some(path), Some(d)) = (html, &dashboard) {
-        let failed = |what: &str, err: std::io::Error| {
-            std::io::Error::new(
-                err.kind(),
-                format!(
-                    "--html {}, taken as {}: cannot {what} ({err})",
-                    d.given.display(),
-                    d.taken_as()
-                ),
-            )
-        };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| failed(&format!("create the folder {}", parent.display()), err))?;
-        }
-        fs::write(&path, html::dashboard(root.path(), &snap))
-            .map_err(|err| failed(&format!("write {}", d.file.display()), err))?;
-        println!("wrote {}", d.file.display());
+        d.write(&path, &html::dashboard(root.path(), &snap))?;
     }
     if let (Some(dir), Some(given)) = (screens, &e.screens) {
         fs::create_dir_all(&dir)?;
@@ -989,7 +1025,7 @@ mod tests {
 
     /// A temporary queue root. `Root` can only be made from `CQ_ROOT`, so tests take a lock
     /// while they set it; the root keeps its own copy of the path afterwards.
-    fn temp_queue() -> (tempfile::TempDir, cq::Root) {
+    pub(crate) fn temp_queue() -> (tempfile::TempDir, cq::Root) {
         static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
@@ -1508,10 +1544,20 @@ mod tests {
     fn export_arguments_parse() {
         let args = |a: &[&str]| parse_exports(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(args(&[]), Ok(Exports::default()));
-        let e = args(&["--html", "a.html", "--html-screens", "shots"]).unwrap();
+        let e = args(&[
+            "--html",
+            "a.html",
+            "--html-screens",
+            "shots",
+            "--report",
+            "r",
+        ])
+        .unwrap();
         assert_eq!(e.html, Some(PathBuf::from("a.html")));
         assert_eq!(e.screens, Some(PathBuf::from("shots")));
+        assert_eq!(e.report, Some(PathBuf::from("r")));
         assert!(args(&["--html"]).is_err());
+        assert!(args(&["--report"]).is_err());
         assert!(args(&["--html", ""]).is_err());
         assert!(args(&["--bogus"]).is_err());
     }
@@ -1543,17 +1589,33 @@ mod tests {
         let e = Exports {
             html: Some(out.path().join("dash.html")),
             screens: Some(r.join("shots")),
+            report: Some(out.path().join("report.html")),
         };
         assert!(export(&root, &Limits::default(), &e, sessions::Report::default).is_err());
         assert!(!out.path().join("dash.html").exists());
+        assert!(!out.path().join("report.html").exists());
         assert!(!r.join("shots").exists());
+
+        // The report is refused inside the root, as a file and as a folder.
+        for inside in [r.join("report.html"), r.join("reports")] {
+            let e = Exports {
+                report: Some(inside.clone()),
+                ..Exports::default()
+            };
+            assert!(
+                export(&root, &Limits::default(), &e, sessions::Report::default).is_err(),
+                "{}",
+                inside.display()
+            );
+            assert!(!inside.exists(), "{}", inside.display());
+        }
     }
 
     /// Runs `--html PATH` alone and returns the result.
     fn export_html(root: &cq::Root, path: PathBuf) -> std::io::Result<()> {
         let e = Exports {
             html: Some(path),
-            screens: None,
+            ..Exports::default()
         };
         export(root, &Limits::default(), &e, sessions::Report::default)
     }
@@ -1579,7 +1641,7 @@ mod tests {
                 .join("dashboard.html")
                 .exists()
         );
-        let d = Dashboard::of(&out.path().join("a.htm")).unwrap();
+        let d = Target::of("--html", &out.path().join("a.htm"), "dashboard.html").unwrap();
         assert_eq!(d.taken_as(), "a file");
     }
 
@@ -1610,7 +1672,7 @@ mod tests {
             assert!(is_dashboard(&dir.join("dashboard.html")), "{given}");
         }
         let trailing = format!("{}/", out.path().join("x.html").display());
-        let d = Dashboard::of(Path::new(&trailing)).unwrap();
+        let d = Target::of("--html", Path::new(&trailing), "dashboard.html").unwrap();
         assert_eq!(d.taken_as(), "a folder");
         assert!(d.file.ends_with("dashboard.html"));
         assert!(d.file.is_absolute());
@@ -1658,6 +1720,49 @@ mod tests {
     }
 
     #[test]
+    fn report_paths_follow_the_html_rules() {
+        let (_dir, root) = temp_queue();
+        let out = tempfile::tempdir().unwrap();
+        let run = |path: PathBuf| {
+            let e = Exports {
+                report: Some(path),
+                ..Exports::default()
+            };
+            export(&root, &Limits::default(), &e, sessions::Report::default)
+        };
+        // A folder gets a time-stamped name, made with its parents.
+        let folder = out.path().join("reports").join("new");
+        run(folder.clone()).unwrap();
+        let names: Vec<String> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1);
+        let name = &names[0];
+        assert!(
+            name.starts_with("cq-report-") && name.ends_with(".html"),
+            "{name}"
+        );
+        let stamp = &name["cq-report-".len()..name.len() - ".html".len()];
+        assert_eq!(stamp.len(), "YYYYMMDD-HHMM".len(), "{name}");
+        assert!(
+            stamp.chars().all(|c| c.is_ascii_digit() || c == '-'),
+            "{name}"
+        );
+        let page = fs::read_to_string(folder.join(name)).unwrap();
+        assert_eq!(page.matches("<script").count(), 1);
+        // A path with .htm is the file itself.
+        let file = out.path().join("Analysis.HTM");
+        run(file.clone()).unwrap();
+        assert!(file.is_file());
+        // An existing file with another extension is refused and kept.
+        let notes = out.path().join("notes.txt");
+        fs::write(&notes, "keep").unwrap();
+        assert!(run(notes.clone()).is_err());
+        assert_eq!(fs::read_to_string(&notes).unwrap(), "keep");
+    }
+
+    #[test]
     fn export_writes_the_dashboard_and_both_screens() {
         let (_dir, root) = temp_queue();
         put(&root.inbox("w1"), "20261027T112500Z-lead-0001", "task");
@@ -1665,6 +1770,7 @@ mod tests {
         let e = Exports {
             html: Some(out.path().join("dash.html")),
             screens: Some(out.path().join("shots")),
+            report: None,
         };
         export(&root, &Limits::default(), &e, sessions::Report::default).unwrap();
         for f in [

@@ -42,15 +42,18 @@ The queue root is `CQ_ROOT`, or the per-user default listed in [Setup](SETUP.md#
 ```bash
 cq-top --html dashboard.html        # a dashboard page
 cq-top --html-screens shots         # shots/overview.html, sessions.html, flow.html and rejected.html
+cq-top --report reports             # reports/cq-report-20261109-1742.html, an analysis of the history
 ```
 
 - `--html PATH` writes one self-contained page: watchers, sessions, counts, messages per 5-minute slice over the last hour, who talks to whom, the worker table (load and median reply time), in flight messages, the 20 newest rejected and dead-lettered messages with their reasons, and recent messages. It has no scripts and loads nothing from the network. It follows the system light or dark setting. Times are UK local time. When PATH ends in `.html` or `.htm` (any case), it is the file. Any other PATH is a folder, and the page is `dashboard.html` in it: an existing folder, a PATH that ends in `\` or `/`, or a PATH with another extension or none. Folders that do not exist yet are created. `cq-top` prints the full path of the file it wrote. It refuses a PATH that is an existing file without an `.html` or `.htm` extension, so it never overwrites that file. An error names PATH and says whether it was taken as a file or a folder.
 - `--html-screens DIR` draws the four screens at 140 x 42 cells, in the saved theme, with one 9 x 18 pixel box per cell. A browser can turn each page into a picture, for example `msedge --headless=new --screenshot=overview.png --window-size=1260,756 file:///.../overview.html`.
-- Both options can be given together. They share one snapshot.
+- `--report PATH` writes one self-contained analysis of the queue's history: headline figures, who talks to whom (chord diagram and sender by recipient matrix), claim wait per recipient, task turnaround and reply rate per worker, states by type, reject reasons, messages in flight, messages by day and hour, a table of sessions with a sparkline of messages sent per day, where the bytes are (treemap), byte anatomy and the 15 biggest messages, watcher exits per day and per session, session-ID restarts per name, the 6 largest threads and orphan links. PATH works as for `--html`; in a folder the file is `cq-report-YYYYMMDD-HHMM.html`, in UK time. The report reads `inbox/`, `.processing/`, `done/`, `rejected/`, `dlq/`, `watch-exits.log` (and `.old`), heartbeats and member records; it ignores `archive/`. `done/` and `rejected/` keep 14 days, so the report covers at most 14 days of finished messages. The heatmap and sparklines show at most the newest 31 days.
+- The report shows metadata and sizes only: no message bodies and no subjects. Body and subject are measured in bytes. A reject reason shows only its first few words, and a watcher exit reason loses its PIDs and times. Session IDs are counted, never shown. The report has about 20 lines of inline script, for tooltips and the chord's hover; it reads fully without them and loads nothing from the network. The `--html` dashboard stays script-free.
+- The options can be given together. `--html` and `--html-screens` share one snapshot; `--report` reads the queue on its own, so `--report` alone does not scan sessions.
 - An export never includes message bodies. Every string from the queue is HTML-escaped.
 - `cq-top` refuses a path that is the queue root or inside it, and then writes nothing (exit 70). A bad argument exits with 64.
-- The output names sessions and shows message subjects, session titles and spend estimates. Keep it out of public places.
-- An export scans sessions once, in the foreground, so it takes a few seconds.
+- The output names sessions. The dashboard and screens also show message subjects, session titles and spend estimates. Keep it out of public places.
+- `--html` and `--html-screens` scan sessions once, in the foreground, so they take a few seconds.
 
 ## Overview screen
 
