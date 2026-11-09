@@ -85,10 +85,22 @@ mod imp {
         }
     }
 
-    fn open(pid: u32, access: u32) -> Option<Handle> {
+    /// The process handle, or the `GetLastError` code of the failed
+    /// `OpenProcess`, read before anything else can change it.
+    fn open_or_error(pid: u32, access: u32) -> std::result::Result<Handle, u32> {
         // SAFETY: plain FFI call; a null result means failure.
         let h = unsafe { OpenProcess(access, 0, pid) };
-        (!h.is_null()).then_some(Handle(h))
+        if h.is_null() {
+            // SAFETY: plain FFI call, right after the failed OpenProcess. No
+            // Handle exists for the null value, so no CloseHandle runs first.
+            Err(unsafe { GetLastError() })
+        } else {
+            Ok(Handle(h))
+        }
+    }
+
+    fn open(pid: u32, access: u32) -> Option<Handle> {
+        open_or_error(pid, access).ok()
     }
 
     /// Bytes waiting in a pipe, or `None` when the pipe is closed and empty
@@ -147,13 +159,11 @@ mod imp {
     /// `Some(true)` while it runs (or exists but may not be opened), and
     /// `None` when Windows does not say.
     pub fn process_alive(pid: u32) -> Option<bool> {
-        let Some(h) = open(pid, PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION) else {
-            // SAFETY: plain FFI call, right after the failed OpenProcess.
-            return match unsafe { GetLastError() } {
-                ERROR_INVALID_PARAMETER => Some(false),
-                ERROR_ACCESS_DENIED => Some(true),
-                _ => None,
-            };
+        let h = match open_or_error(pid, PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION) {
+            Ok(h) => h,
+            Err(ERROR_INVALID_PARAMETER) => return Some(false),
+            Err(ERROR_ACCESS_DENIED) => return Some(true),
+            Err(_) => return None,
         };
         // SAFETY: valid handle with SYNCHRONIZE access; a zero wait only checks.
         match unsafe { WaitForSingleObject(h.0, 0) } {
@@ -727,6 +737,16 @@ mod tests {
         child.wait().unwrap();
         // While `child` holds its handle, Windows does not reuse the ID.
         assert_eq!(process_alive(child.id()), Some(false));
+    }
+
+    /// No process has this ID, so OpenProcess fails. Its error code must reach
+    /// `process_alive` unchanged (an early CloseHandle(NULL) once turned
+    /// ERROR_INVALID_PARAMETER into ERROR_INVALID_HANDLE, which read as "not
+    /// known" and let a dead watcher count as running).
+    #[cfg(windows)]
+    #[test]
+    fn a_pid_that_cannot_be_opened_is_not_alive() {
+        assert_eq!(process_alive(0xFFFF_FFFC), Some(false));
     }
 
     fn ok(theirs: &str, mine: &str) -> bool {
