@@ -184,7 +184,9 @@ fn status_version_outdated_and_stale_target() {
     let status_with = |token: Option<&str>| {
         let mut c = env.cmd(&["status", "--as", "demo-a"]);
         if let Some(t) = token {
-            c.env("CLAUDE_CODE_MESSAGING_SOCKET", "sock-a")
+            // demo-a's own session, as recorded in members/local_aaa.
+            c.env("CLAUDE_CODE_SESSION_ID", "local_aaa")
+                .env("CLAUDE_CODE_MESSAGING_SOCKET", "sock-a")
                 .env("CLAUDE_CODE_MESSAGING_TOKEN", t);
         }
         let out = c.output().unwrap();
@@ -219,6 +221,37 @@ fn status_version_outdated_and_stale_target() {
     let (_, line) = status_with(None);
     assert!(
         line.ends_with(&format!(" mode=inbox version={V}")),
+        "{line}"
+    );
+
+    // Only demo-a's own session compares its inbox. Another session (key
+    // recorded for demo-b) and a caller with an unrecorded key, such as a
+    // coordinator without a watcher, do not.
+    fs::write(
+        env.path("members/local_bbb"),
+        "demo-b\n2026-10-01T00:00:00Z\n/elsewhere\ninbox\n",
+    )
+    .unwrap();
+    let status_as_session = |key: &str| {
+        let out = env
+            .cmd(&["status", "--as", "demo-a"])
+            .env("CLAUDE_CODE_SESSION_ID", key)
+            .env("CLAUDE_CODE_MESSAGING_SOCKET", "sock-b")
+            .env("CLAUDE_CODE_MESSAGING_TOKEN", "token-b")
+            .output()
+            .unwrap();
+        stdout(&out).trim_end().to_owned()
+    };
+    for key in ["local_bbb", "local_new"] {
+        let line = status_as_session(key);
+        assert!(
+            line.ends_with(&format!(" mode=inbox version={V}")),
+            "{key}: {line}"
+        );
+    }
+    let line = status_as_session("local_aaa");
+    assert!(
+        line.ends_with(&format!(" mode=inbox version={V} stale-target")),
         "{line}"
     );
 }

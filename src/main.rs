@@ -895,7 +895,16 @@ fn status(name: &str) -> Result<i32> {
             tags.push_str(" outdated");
         }
         let target = live.record.as_ref().and_then(|r| r.target.as_ref());
+        // The caller's inbox is only comparable when the caller is this
+        // name's session: its session key is recorded for this name (as
+        // `cq session-start` finds it, also after /clear). Any other caller,
+        // such as a coordinator checking a worker, has its own inbox, which
+        // never matches.
+        let own_session = members::session_key()
+            .and_then(|k| members::name_for(&root, &k))
+            .is_some_and(|n| n == name);
         if known_mode == Some(members::Mode::Inbox)
+            && own_session
             && let Some(here) = record::Target::from_env()
             && target != Some(&here)
         {
