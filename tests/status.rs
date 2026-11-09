@@ -221,6 +221,37 @@ fn status_version_outdated_and_stale_target() {
         line.ends_with(&format!(" mode=inbox version={V}")),
         "{line}"
     );
+
+    // Another session checking demo-a: its key is recorded for demo-b, so
+    // its own inbox is not compared. Its own key, or an unrecorded one (as
+    // after /clear), still is.
+    fs::write(
+        env.path("members/local_bbb"),
+        "demo-b\n2026-10-01T00:00:00Z\n/elsewhere\ninbox\n",
+    )
+    .unwrap();
+    let status_as_session = |key: &str| {
+        let out = env
+            .cmd(&["status", "--as", "demo-a"])
+            .env("CLAUDE_CODE_SESSION_ID", key)
+            .env("CLAUDE_CODE_MESSAGING_SOCKET", "sock-b")
+            .env("CLAUDE_CODE_MESSAGING_TOKEN", "token-b")
+            .output()
+            .unwrap();
+        stdout(&out).trim_end().to_owned()
+    };
+    let line = status_as_session("local_bbb");
+    assert!(
+        line.ends_with(&format!(" mode=inbox version={V}")),
+        "{line}"
+    );
+    for key in ["local_aaa", "local_new"] {
+        let line = status_as_session(key);
+        assert!(
+            line.ends_with(&format!(" mode=inbox version={V} stale-target")),
+            "{key}: {line}"
+        );
+    }
 }
 
 #[test]

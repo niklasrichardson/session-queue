@@ -895,7 +895,16 @@ fn status(name: &str) -> Result<i32> {
             tags.push_str(" outdated");
         }
         let target = live.record.as_ref().and_then(|r| r.target.as_ref());
+        // The caller's inbox is only comparable when the caller may be this
+        // name's session. A caller whose session key is recorded for another
+        // name (another session checking this one) has its own inbox, which
+        // never matches. An unrecorded key is still compared: after /clear
+        // the key can change while the old watcher runs on.
+        let other_session = members::session_key()
+            .and_then(|k| members::name_for(&root, &k))
+            .is_some_and(|n| n != name);
         if known_mode == Some(members::Mode::Inbox)
+            && !other_session
             && let Some(here) = record::Target::from_env()
             && target != Some(&here)
         {
