@@ -444,16 +444,23 @@ fn links(recs: &[Rec]) -> Links {
     }
 }
 
-/// Created to claimed, for a message that was claimed.
+/// Created to claimed, for a message that was claimed. Not floored: the log axis clamps
+/// only where it draws a dot.
 fn claim_wait(r: &Rec) -> Option<f64> {
     matches!(r.state, "done" | "rejected" | "claimed")
-        .then(|| ((r.mtime - r.created) as f64).max(0.5))
+        .then(|| ((r.mtime - r.created) as f64).max(0.0))
 }
 
+/// The middle value, or the mean of the two middle values for an even count.
 fn median_f(v: &[f64]) -> Option<f64> {
     let mut v = v.to_vec();
     v.sort_by(f64::total_cmp);
-    v.get(v.len() / 2).copied()
+    let n = v.len();
+    match n {
+        0 => None,
+        _ if n.is_multiple_of(2) => Some((v[n / 2 - 1] + v[n / 2]) / 2.0),
+        _ => Some(v[n / 2]),
+    }
 }
 
 /// `45s`, `3m05s`, `2h10m`, `3d04h`.
@@ -1170,7 +1177,7 @@ fn turnarounds(recs: &[Rec], l: &Links) -> String {
     for t in recs.iter().filter(|r| r.kind == "task") {
         if let Some(&ri) = l.replies.get(&t.id) {
             let reply = &recs[ri];
-            let secs = ((reply.created - t.created) as f64).max(0.5);
+            let secs = ((reply.created - t.created) as f64).max(0.0);
             by_worker.entry(&t.to).or_default().push((
                 secs,
                 status_var(&reply.status),
@@ -1723,13 +1730,30 @@ fn biggest(recs: &[Rec]) -> String {
     out
 }
 
-/// Watcher exits per day by reason, then one row per session.
+/// Watcher exits per day by reason, then one row per session. Only the newest `MAX_DAYS`
+/// days up to `now`, so a stray old or future time cannot stretch the charts.
 fn exits(d: &Data) -> String {
-    if d.exits.is_empty() {
+    let Some(newest) = d.exits.last() else {
         return "<p class=\"sub\">No watcher exits logged.</p>".into();
+    };
+    let last = uk_day(newest.t).min(uk_day(d.now));
+    let days = (last - MAX_DAYS + 1)..=last;
+    let shown: Vec<&ExitLine> = d
+        .exits
+        .iter()
+        .filter(|e| days.contains(&uk_day(e.t)))
+        .collect();
+    let left_out = d.exits.len() - shown.len();
+    let note = if left_out > 0 {
+        format!("<p class=\"sub\">{left_out} exits outside these days are left out.</p>")
+    } else {
+        String::new()
+    };
+    if shown.is_empty() {
+        return note;
     }
     let mut by_reason: BTreeMap<&str, usize> = BTreeMap::new();
-    for e in &d.exits {
+    for e in &shown {
         *by_reason.entry(&e.reason).or_default() += 1;
     }
     let mut reasons: Vec<(&str, usize)> = by_reason.into_iter().collect();
@@ -1755,11 +1779,11 @@ fn exits(d: &Data) -> String {
             .position(|c| c.0 == r)
             .unwrap_or(colours.len() - 1)
     };
-    let (t0, t1) = (d.exits[0].t, d.exits[d.exits.len() - 1].t);
+    let (t0, t1) = (shown[0].t, shown[shown.len() - 1].t);
     let d0 = uk_day(t0);
     let ndays = (uk_day(t1) - d0 + 1) as usize;
     let mut per = vec![vec![0u64; ndays]; colours.len()];
-    for e in &d.exits {
+    for e in &shown {
         per[fold(&e.reason)][(uk_day(e.t) - d0) as usize] += 1;
     }
     let labels: Vec<String> = (0..ndays).map(|i| short_day(d0 + i as i64)).collect();
@@ -1781,8 +1805,7 @@ fn exits(d: &Data) -> String {
         .collect();
     let by_day = stacked_columns(&labels, &series, &tips, "Watcher exits per day by reason");
 
-    let names: Vec<&str> = d
-        .exits
+    let names: Vec<&str> = shown
         .iter()
         .map(|e| e.name.as_str())
         .collect::<BTreeSet<_>>()
@@ -1804,7 +1827,7 @@ fn exits(d: &Data) -> String {
             esc(nm)
         );
     }
-    for e in &d.exits {
+    for e in &shown {
         let row = names.iter().position(|n| *n == e.name).unwrap_or(0);
         let _ = write!(
             out,
@@ -1832,7 +1855,7 @@ fn exits(d: &Data) -> String {
         uk_short(t1)
     );
     let items: Vec<(&str, &str)> = colours.iter().map(|c| (c.0.as_str(), c.1)).collect();
-    legend(&items)
+    note + &legend(&items)
         + &by_day
         + "<h3>Per session</h3>"
         + &svg(w, h, &out, "chart", "Watcher exits per session")
@@ -2145,7 +2168,7 @@ fn sections(d: &Data, head: &str) -> String {
             "health",
             "Health",
             card(
-                "Watcher exits",
+                &format!("Watcher exits, newest {MAX_DAYS} days"),
                 "From watch-exits.log and watch-exits.log.old. Reasons with PIDs and times \
                  removed.",
                 &exits(d),
@@ -2453,6 +2476,105 @@ mod tests {
         // The message files are not counted again as other bytes.
         assert!(!d.other.contains_key("inbox"));
         assert!(d.other.contains_key("rejected"));
+    }
+
+    /// A message with no text fields, for figure tests.
+    fn rec(id: &str, kind: &'static str, state: &'static str, created: i64, mtime: i64) -> Rec {
+        Rec {
+            id: id.into(),
+            from: "lead".into(),
+            to: "w1".into(),
+            kind,
+            parent: None,
+            reply_to: None,
+            status: "ok".into(),
+            hops: 0,
+            created,
+            mtime,
+            size: 100,
+            state,
+            folder: "w1".into(),
+            body_bytes: 0,
+            subject_bytes: 0,
+            session_id: None,
+        }
+    }
+
+    fn data(recs: Vec<Rec>, exits: Vec<ExitLine>) -> Data {
+        Data {
+            root: "/queue".into(),
+            now: NOW,
+            recs,
+            reasons: HashMap::new(),
+            other: BTreeMap::new(),
+            exits,
+            beats: BTreeMap::new(),
+            modes: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn medians_average_the_middle_pair() {
+        assert_eq!(median_f(&[10.0, 1.0, 4.0, 2.0]), Some(3.0));
+        assert_eq!(median_f(&[3.0, 1.0, 2.0]), Some(2.0));
+        assert_eq!(median_f(&[]), None);
+    }
+
+    #[test]
+    fn a_zero_wait_reports_zero_seconds() {
+        let task = rec(
+            "20261027T100000Z-lead-0001",
+            "task",
+            "done",
+            NOW - 60,
+            NOW - 60,
+        );
+        let mut reply = rec(
+            "20261027T100100Z-w1-0002",
+            "result",
+            "done",
+            NOW - 60,
+            NOW - 60,
+        );
+        reply.reply_to = Some(task.id.clone());
+        assert_eq!(claim_wait(&task), Some(0.0));
+        let page = render(&data(vec![task, reply], Vec::new()));
+        assert!(page.contains("waited 0s"));
+        assert!(page.contains("turnaround 0s"));
+        assert!(page.contains("<div class=\"value\">0s</div>"));
+        assert!(!page.contains("waited 1s"));
+    }
+
+    #[test]
+    fn watcher_exits_cover_the_newest_days_only() {
+        let exit = |t: i64| ExitLine {
+            t,
+            name: "w1".into(),
+            mode: "inbox".into(),
+            reason: "--max-seconds reached".into(),
+        };
+        // 1970, three recent days, and one far in the future.
+        let exits = vec![
+            exit(0),
+            exit(NOW - 2 * 86_400),
+            exit(NOW - 3600),
+            exit(NOW),
+            exit(NOW + 400 * 86_400),
+        ];
+        let d = data(
+            vec![rec("20261027T100000Z-lead-0001", "task", "done", NOW, NOW)],
+            exits,
+        );
+        let out = super::exits(&d);
+        assert!(out.contains("2 exits outside these days are left out."));
+        // One column per day from the oldest kept exit: 3 days, not decades.
+        assert_eq!(out.matches("<rect class=\"hit\"").count(), 3);
+        assert!(!out.contains("1 Jan"));
+        // Only exits after now: a note, no chart.
+        let d = data(Vec::new(), vec![exit(NOW + 400 * 86_400)]);
+        let out = super::exits(&d);
+        assert!(out.contains("1 exits outside"));
+        assert!(!out.contains("<svg"));
     }
 
     #[test]
