@@ -402,7 +402,7 @@ enum Cmd {
         name: String,
     },
 
-    /// For a Claude Code SessionStart hook (clear|compact|resume). If this
+    /// For a Claude Code SessionStart hook (startup|clear|compact|resume). If this
     /// session owns a queue name, print a reminder to rejoin as it; else
     /// print nothing. Always exits 0.
     SessionStart {

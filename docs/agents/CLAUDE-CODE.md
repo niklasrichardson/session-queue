@@ -81,11 +81,13 @@ A Claude Code session forgets its queue name after `/clear` or a compaction. The
 
 ```json
 "hooks": {
-  "SessionStart": [{"matcher": "clear|compact|resume", "hooks": [{"type": "command", "command": "cq session-start", "timeout": 10}]}]
+  "SessionStart": [{"matcher": "startup|clear|compact|resume", "hooks": [{"type": "command", "command": "cq session-start", "timeout": 10}]}]
 }
 ```
 
 On macOS, a hook command may not find a bare `cq`: the Rust installer adds `~/.cargo/bin` to `PATH` only through the shell profile, and a hook command may not run through it. If the hook fails there, put the full path in the hook command, for example `/Users/<you>/.cargo/bin/cq session-start`. This was reported in [#1](https://github.com/niklasrichardson/session-queue/issues/1) and is not yet confirmed in a real hook. Keep the bare name `cq` in Bash tool commands, so they match `Bash(cq *)`.
+
+The matcher includes `startup` because `/clear` in the Claude desktop app starts the session fresh: the hook fires with source `startup`, not `clear` (tested 9 Nov 2026). In a new session that owns no queue name, `cq session-start` prints nothing.
 
 Expected result: after `/clear` in a session whose watcher ran, the new context starts with "You are in the cq session queue as NAME". The reminder also says whether the watcher still runs. See [Rejoin after /clear](../PROTOCOL.md#rejoin-after-clear). The hook was tested live after `/clear` only, not after a compaction or a resume.
 
