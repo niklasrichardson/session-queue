@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use common::*;
 
+const V: &str = env!("CARGO_PKG_VERSION");
+
 /// Wait until the watcher has written its first heartbeat.
 fn ready(env: &Env, name: &str) {
     assert!(
@@ -63,7 +65,10 @@ fn status_running_stopped_and_asleep() {
         line.starts_with(&format!("running name=demo-a pid={pid} heartbeat=")),
         "{line}"
     );
-    assert!(line.ends_with("s mode=monitor"), "{line}");
+    assert!(
+        line.ends_with(&format!("s mode=monitor version={V}")),
+        "{line}"
+    );
 
     let out = env.run(
         &["sleep", "--as", "demo-a", "demo-a", "--reason", "done"],
@@ -101,7 +106,7 @@ fn status_stale_heartbeat_and_no_heartbeat() {
     assert_eq!(c, 10, "{line}");
     assert_eq!(
         line,
-        r#"stopped name=demo-a why="no heartbeat" pid=4242 mode=unknown"#
+        r#"stopped name=demo-a why="no heartbeat" pid=4242 mode=unknown version=unknown outdated"#
     );
 
     let old = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(300);
@@ -117,6 +122,105 @@ fn status_stale_heartbeat_and_no_heartbeat() {
         "{line}"
     );
     assert!(line.contains(" pid=4242 heartbeat=30"), "{line}");
+}
+
+/// A pid file whose process has exited reads as stopped at once, even with
+/// a fresh heartbeat.
+#[test]
+fn status_dead_process_is_stopped() {
+    let env = Env::new();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_cq"))
+        .arg("--version")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    fs::write(env.path("heartbeat/demo-a.pid"), format!("{pid}\n")).unwrap();
+    fs::write(
+        env.path("heartbeat/demo-a"),
+        format!("{}\n", cq::timefmt::rfc3339(cq::timefmt::now())),
+    )
+    .unwrap();
+    let (c, line) = status(&env, "demo-a");
+    assert_eq!(c, 10, "{line}");
+    assert!(
+        line.starts_with(&format!(
+            r#"stopped name=demo-a why="process {pid} is not running" pid={pid} heartbeat="#
+        )),
+        "{line}"
+    );
+}
+
+/// `version=` and `outdated` come from the watcher record; `stale-target`
+/// from comparing an inbox watcher's record with the caller's variables.
+#[test]
+fn status_version_outdated_and_stale_target() {
+    let env = Env::new();
+    fs::create_dir_all(env.path("members")).unwrap();
+    fs::write(
+        env.path("members/local_aaa"),
+        "demo-a\n2026-10-01T00:00:00Z\n/somewhere\ninbox\n",
+    )
+    .unwrap();
+    // This test process stands in for the watcher: it is alive.
+    let pid = std::process::id();
+    fs::write(env.path("heartbeat/demo-a.pid"), format!("{pid}\n")).unwrap();
+    fs::write(
+        env.path("heartbeat/demo-a"),
+        format!("{}\n", cq::timefmt::rfc3339(cq::timefmt::now())),
+    )
+    .unwrap();
+    let record = |version: &str, token: &str| {
+        fs::write(
+            env.path("heartbeat/demo-a.watcher"),
+            format!(
+                "pid={pid}\nversion={version}\nsocket=sock-a\ntoken-sha256={}\n",
+                cq::record::token_hash(token.as_bytes())
+            ),
+        )
+        .unwrap();
+    };
+    let status_with = |token: Option<&str>| {
+        let mut c = env.cmd(&["status", "--as", "demo-a"]);
+        if let Some(t) = token {
+            c.env("CLAUDE_CODE_MESSAGING_SOCKET", "sock-a")
+                .env("CLAUDE_CODE_MESSAGING_TOKEN", t);
+        }
+        let out = c.output().unwrap();
+        (code(&out), stdout(&out).trim_end().to_owned())
+    };
+
+    record(V, "token-a");
+    let (c, line) = status_with(Some("token-a"));
+    assert_eq!(c, 0, "{line}");
+    assert!(
+        line.ends_with(&format!(" mode=inbox version={V}")),
+        "{line}"
+    );
+
+    record("1.10.2", "token-a");
+    let (c, line) = status_with(Some("token-a"));
+    assert_eq!(c, 0, "{line}");
+    assert!(
+        line.ends_with(" mode=inbox version=1.10.2 outdated"),
+        "{line}"
+    );
+
+    // A new token in the caller's environment; without the variables there
+    // is nothing to compare.
+    record(V, "token-a");
+    let (c, line) = status_with(Some("token-b"));
+    assert_eq!(c, 0, "{line}");
+    assert!(
+        line.ends_with(&format!(" mode=inbox version={V} stale-target")),
+        "{line}"
+    );
+    let (_, line) = status_with(None);
+    assert!(
+        line.ends_with(&format!(" mode=inbox version={V}")),
+        "{line}"
+    );
 }
 
 #[test]
@@ -136,7 +240,9 @@ fn exit_log_on_max_seconds_and_asleep() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(
         fields(&lines[0]),
-        format!(r#"name=demo-a pid={pid} mode=monitor exit=0 reason="--max-seconds 1 reached""#)
+        format!(
+            r#"name=demo-a pid={pid} mode=monitor version={V} exit=0 reason="--max-seconds 1 reached""#
+        )
     );
 
     let mut w = env.watch("demo-a", &["--max-seconds", "30"]);
@@ -149,7 +255,7 @@ fn exit_log_on_max_seconds_and_asleep() {
     assert_eq!(lines.len(), 2, "{lines:?}");
     assert_eq!(
         fields(&lines[1]),
-        format!(r#"name=demo-a pid={pid} mode=monitor exit=7 reason="asleep""#)
+        format!(r#"name=demo-a pid={pid} mode=monitor version={V} exit=7 reason="asleep""#)
     );
 
     // Asleep at start: the watcher never took the lock, so no line.
@@ -181,13 +287,13 @@ fn exit_log_on_takeover() {
     assert_eq!(
         fields(&lines[0]),
         format!(
-            r#"name=demo-a pid={first_pid} mode=unknown reason="stopped by --takeover from PID {second_pid}""#
+            r#"name=demo-a pid={first_pid} mode=unknown version={V} reason="stopped by --takeover from PID {second_pid}""#
         )
     );
     assert_eq!(
         fields(&lines[1]),
         format!(
-            r#"name=demo-a pid={second_pid} mode=monitor exit=0 reason="--max-seconds 2 reached""#
+            r#"name=demo-a pid={second_pid} mode=monitor version={V} exit=0 reason="--max-seconds 2 reached""#
         )
     );
 }
@@ -213,7 +319,7 @@ fn exit_log_for_a_watcher_that_vanished() {
     assert_eq!(
         fields(&lines[0]),
         format!(
-            r#"name=demo-a pid={first_pid} mode=unknown reason="previous watcher ended without logging (last heartbeat {}); found by PID {second_pid}""#,
+            r#"name=demo-a pid={first_pid} mode=unknown version={V} reason="previous watcher ended without logging (last heartbeat {}); found by PID {second_pid}""#,
             beat.trim()
         )
     );

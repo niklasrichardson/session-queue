@@ -308,14 +308,45 @@ fn missing_variables_exit_64() {
     assert!(!env.path("heartbeat/b").exists(), "the watcher started");
 }
 
-/// `cq session-start` for the session `key`, with no input.
+/// `cq session-start` for the session `key`, with no input and no inbox
+/// variables.
 fn session_start(env: &Env, key: &str) -> Output {
+    session_start_to(env, key, None)
+}
+
+/// `cq session-start` for the session `key`, with no input. With `target`
+/// (an inbox address and a token), the hook sees them as Claude Code's
+/// variables.
+fn session_start_to(env: &Env, key: &str, target: Option<(&OsString, &str)>) -> Output {
     let mut c = env.cmd(&["session-start"]);
     c.env(HOST, key)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some((addr, token)) = target {
+        c.env(SOCKET_VAR, addr).env(TOKEN_VAR, token);
+    }
     c.output().expect("run cq session-start")
+}
+
+/// The session-start text for a running inbox watcher that must be
+/// restarted, because `why`.
+fn restart_reminder(name: &str, why: &str) -> String {
+    format!(
+        "You are in the cq session queue as {name}. Before anything else this turn: re-read {RULES} and follow it as {name} (skip choosing a name). Your inbox watcher still runs, but {why}, so its posts may not reach this session. Restart it in the background with the Bash tool (not the Monitor tool): cq watch --as {name} --to-inbox --takeover 2>&1. Then run cq list --as {name} and handle any UNCLAIMED messages. This reminder is for the main conversation only: a subagent ignores it and does not act as this queue name.\n"
+    )
+}
+
+/// A process that has exited. Keep it until the check is done: on Windows
+/// its handle stops the ID from being reused by the next process.
+fn exited_child() -> std::process::Child {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cq"))
+        .arg("--version")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.wait().unwrap();
+    child
 }
 
 /// Line 4 of `members/<key>`: the watcher's mode.
@@ -331,8 +362,10 @@ fn monitor_reminder(name: &str) -> String {
     )
 }
 
-/// After `/clear`, a session whose inbox watcher still runs is told to keep
-/// it: no Monitor and no `--takeover`.
+/// After `/clear`, a session whose inbox watcher still runs, posts to the
+/// session's own inbox address and token and runs this cq, is told to keep
+/// it: no Monitor and no `--takeover`. Another token or address, or no
+/// variables to compare, asks for a restart with `--takeover`.
 #[test]
 fn session_start_keeps_a_running_inbox_watcher() {
     let env = Env::new();
@@ -347,7 +380,8 @@ fn session_start_keeps_a_running_inbox_watcher() {
     .as_deref()
         == Some("inbox")));
 
-    let out = session_start(&env, "local_aaa");
+    let here = Some((&inbox.addr, TOKEN));
+    let out = session_start_to(&env, "local_aaa", here);
     assert_eq!(code(&out), 0);
     assert_eq!(stderr(&out), "");
     assert_eq!(
@@ -363,7 +397,26 @@ fn session_start_keeps_a_running_inbox_watcher() {
     m.env(HOST, "local_aaa").stdin(Stdio::null());
     assert_eq!(code(&m.output().unwrap()), 5);
     assert_eq!(member_mode(&env, "local_aaa").as_deref(), Some("inbox"));
-    assert!(stdout(&session_start(&env, "local_aaa")).contains("still runs"));
+    assert!(stdout(&session_start_to(&env, "local_aaa", here)).contains("still runs"));
+
+    // Claude Code gave the session a new token: the posts may vanish.
+    let out = session_start_to(&env, "local_aaa", Some((&inbox.addr, "new-token")));
+    assert_eq!(code(&out), 0);
+    assert_eq!(
+        stdout(&out),
+        restart_reminder("b", "it posts to an older inbox address or token")
+    );
+    // A new address.
+    let other = nowhere();
+    assert_eq!(
+        stdout(&session_start_to(&env, "local_aaa", Some((&other, TOKEN)))),
+        restart_reminder("b", "it posts to an older inbox address or token")
+    );
+    // No variables to compare with.
+    assert_eq!(
+        stdout(&session_start(&env, "local_aaa")),
+        restart_reminder("b", "this session's inbox address is not known here")
+    );
 }
 
 /// After `/clear`, a session whose inbox watcher has ended is told to start
@@ -401,23 +454,76 @@ fn session_start_reads_the_heartbeat_not_the_lock() {
         "b\n2026-10-01T00:00:00Z\n/somewhere\ninbox\n",
     )
     .unwrap();
-    let says = |env: &Env| stdout(&session_start(env, "local_aaa"));
+    let addr = nowhere();
+    let says = |env: &Env| stdout(&session_start_to(env, "local_aaa", Some((&addr, TOKEN))));
     let fresh = || format!("{}\n", cq::timefmt::rfc3339(cq::timefmt::now()));
+    // This test process stands in for the watcher: it is alive.
+    let pid = std::process::id();
+    let record = |version: &str| {
+        format!(
+            "pid={pid}\nversion={version}\nsocket={}\ntoken-sha256={}\n",
+            addr.to_string_lossy(),
+            cq::record::token_hash(TOKEN.as_bytes())
+        )
+    };
 
     // No pid file: stopped, even with a fresh heartbeat.
     fs::write(env.path("heartbeat/b"), fresh()).unwrap();
     assert!(says(&env).contains("has stopped"));
 
-    // Pid file and a fresh heartbeat: still runs.
-    fs::write(env.path("heartbeat/b.pid"), "4242\n").unwrap();
+    // A pid file from a cq older than 1.11.0 (no record) and a fresh
+    // heartbeat: it runs, but must be restarted.
+    fs::write(env.path("heartbeat/b.pid"), format!("{pid}\n")).unwrap();
+    assert_eq!(
+        says(&env),
+        restart_reminder(
+            "b",
+            "it was started by an older cq that records no inbox address"
+        )
+    );
+
+    // A record for this target from another cq version.
+    fs::write(env.path("heartbeat/b.watcher"), record("1.10.2")).unwrap();
+    assert_eq!(
+        says(&env),
+        restart_reminder(
+            "b",
+            &format!("it runs cq 1.10.2, not {}", env!("CARGO_PKG_VERSION"))
+        )
+    );
+
+    // Pid file, a matching record and a fresh heartbeat: still runs.
+    fs::write(
+        env.path("heartbeat/b.watcher"),
+        record(env!("CARGO_PKG_VERSION")),
+    )
+    .unwrap();
     assert!(says(&env).contains("still runs"));
 
     // Caught half written: the file's modified time counts.
     fs::write(env.path("heartbeat/b"), "2026-10-").unwrap();
     assert!(says(&env).contains("still runs"));
 
-    // A killed watcher leaves its pid file; 90 seconds without a beat is
-    // stopped.
+    // A record left by an earlier run, for another PID, is ignored.
+    fs::write(
+        env.path("heartbeat/b.watcher"),
+        record(env!("CARGO_PKG_VERSION")).replace(&format!("pid={pid}"), "pid=1"),
+    )
+    .unwrap();
+    assert!(says(&env).contains("records no inbox address"));
+
+    // A killed watcher leaves its pid file. Its process is gone, so it has
+    // stopped at once, with a fresh heartbeat.
+    fs::write(env.path("heartbeat/b"), fresh()).unwrap();
+    let dead = exited_child();
+    fs::write(env.path("heartbeat/b.pid"), format!("{}\n", dead.id())).unwrap();
+    let said = says(&env);
+    assert!(said.contains("has stopped"), "{said}");
+    drop(dead);
+
+    // Where the process cannot be checked (no ID), 90 seconds without a
+    // beat is stopped.
+    fs::write(env.path("heartbeat/b.pid"), "not a pid\n").unwrap();
     let old = cq::timefmt::now() - jiff::SignedDuration::from_secs(91);
     fs::write(
         env.path("heartbeat/b"),
@@ -515,4 +621,48 @@ fn overdue_lines_in_the_stopped_message_are_not_repeated() {
         !lines.iter().any(|l| l.starts_with("CQ-OVERDUE ")),
         "{lines:?}"
     );
+}
+
+/// The watcher records its version and target, with a hash of the token;
+/// no file in the queue root holds the token itself.
+#[test]
+fn the_watcher_record_never_holds_the_token() {
+    let env = Env::new();
+    let inbox = FakeInbox::start();
+    let mut c = watch_to_cmd(&env, "b", &inbox.addr, &[]);
+    c.env(HOST, "local_aaa");
+    let _w = Watcher::spawn(c);
+    let record = env.path("heartbeat/b.watcher");
+    assert!(wait_until(Duration::from_secs(10), || env
+        .path("heartbeat/b.pid")
+        .is_file()));
+    let text = fs::read_to_string(&record).unwrap();
+    assert!(
+        text.contains(&format!("version={}\n", env!("CARGO_PKG_VERSION"))),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("socket={}\n", inbox.addr.to_string_lossy())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "token-sha256={}\n",
+            cq::record::token_hash(TOKEN.as_bytes())
+        )),
+        "{text}"
+    );
+
+    let mut dirs = vec![env.path("")];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if let Ok(bytes) = fs::read(&path) {
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(!text.contains(TOKEN), "{} holds the token", path.display());
+            }
+        }
+    }
 }

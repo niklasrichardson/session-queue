@@ -3,14 +3,17 @@
 //! nobody saw it go.
 //!
 //! ```text
-//! 2026-11-04T09:15:02Z name=demo-a pid=4242 mode=inbox exit=0 reason="--max-seconds 60 reached"
-//! 2026-11-04T09:20:11Z name=demo-a pid=4300 mode=inbox exit=0 signal=SIGTERM reason="stopped by a signal (SIGTERM)"
-//! 2026-11-04T09:31:40Z name=demo-a pid=4400 mode=monitor signal=CTRL_CLOSE_EVENT reason="console event CTRL_CLOSE_EVENT"
-//! 2026-11-04T09:40:00Z name=demo-a pid=4500 mode=inbox reason="stopped by --takeover from PID 4600"
-//! 2026-11-04T09:52:13Z name=demo-a pid=4600 mode=inbox reason="previous watcher ended without logging (last heartbeat 2026-11-04T09:51:50Z); found by PID 4700"
+//! 2026-11-04T09:15:02Z name=demo-a pid=4242 mode=inbox version=1.11.0 exit=0 reason="--max-seconds 60 reached"
+//! 2026-11-04T09:20:11Z name=demo-a pid=4300 mode=inbox version=1.11.0 exit=0 signal=SIGTERM reason="stopped by a signal (SIGTERM)"
+//! 2026-11-04T09:31:40Z name=demo-a pid=4400 mode=monitor version=1.11.0 signal=CTRL_CLOSE_EVENT reason="console event CTRL_CLOSE_EVENT"
+//! 2026-11-04T09:40:00Z name=demo-a pid=4500 mode=inbox version=1.11.0 reason="stopped by --takeover from PID 4600"
+//! 2026-11-04T09:52:13Z name=demo-a pid=4600 mode=inbox version=unknown reason="previous watcher ended without logging (last heartbeat 2026-11-04T09:51:50Z); found by PID 4700"
 //! ```
 //!
-//! `pid` and `mode` are those of the watcher that ended. `exit` is the
+//! `pid`, `mode` and `version` are those of the watcher that ended. A line
+//! written for a predecessor takes its version from its record (see
+//! `record`); a predecessor from a `cq` older than 1.11.0 has none, so
+//! `version=unknown`. `exit` is the
 //! process exit code, when the watcher knows it. The reason is quoted as in
 //! event lines and never holds message text.
 //!
@@ -59,6 +62,8 @@ pub struct Exit<'a> {
     pub pid: u32,
     /// `None` shows as `mode=unknown`.
     pub mode: Option<Mode>,
+    /// `None` shows as `version=unknown`.
+    pub version: Option<&'a str>,
     pub code: Option<i32>,
     pub signal: Option<&'a str>,
     pub reason: &'a str,
@@ -68,11 +73,12 @@ impl Exit<'_> {
     /// The line, without its newline, timed now.
     pub fn line(&self) -> String {
         let mut s = format!(
-            "{} name={} pid={} mode={}",
+            "{} name={} pid={} mode={} version={}",
             rfc3339(timefmt::now()),
             self.name,
             self.pid,
-            self.mode.map_or("unknown", Mode::as_str)
+            self.mode.map_or("unknown", Mode::as_str),
+            self.version.unwrap_or("unknown")
         );
         if let Some(code) = self.code {
             s.push_str(&format!(" exit={code}"));
@@ -243,6 +249,7 @@ fn log_once(code: Option<i32>, signal: Option<&str>, reason: &str) -> bool {
             name: &r.name,
             pid: r.pid,
             mode: Some(r.mode),
+            version: Some(crate::record::VERSION),
             code,
             signal,
             reason,
@@ -268,6 +275,7 @@ mod tests {
             name: "demo-a",
             pid: 42,
             mode: Some(Mode::Inbox),
+            version: Some("1.11.0"),
             code: Some(0),
             signal: Some("SIGTERM"),
             reason: "stopped \"x\"\nCQ-NEW",
@@ -277,19 +285,20 @@ mod tests {
         assert!(timefmt::parse_rfc3339_z(time).is_some(), "{line}");
         assert_eq!(
             rest,
-            r#"name=demo-a pid=42 mode=inbox exit=0 signal=SIGTERM reason="stopped \"x\"CQ-NEW""#
+            r#"name=demo-a pid=42 mode=inbox version=1.11.0 exit=0 signal=SIGTERM reason="stopped \"x\"CQ-NEW""#
         );
         let line = Exit {
             name: "demo-a",
             pid: 42,
             mode: None,
+            version: None,
             code: None,
             signal: None,
             reason: "gone",
         }
         .line();
         assert!(
-            line.ends_with(" name=demo-a pid=42 mode=unknown reason=\"gone\""),
+            line.ends_with(" name=demo-a pid=42 mode=unknown version=unknown reason=\"gone\""),
             "{line}"
         );
     }

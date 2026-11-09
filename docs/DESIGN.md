@@ -101,7 +101,17 @@ A message is read soon after it is sent.
 
 - **A watcher that dies silently.** An inbox watcher posts a stopped message when its name is put to sleep, when it reaches `--max-seconds`, on an error, or (on macOS and Linux) on a signal. A watcher that is killed without warning posts nothing: for example, if the desktop app stops the session's processes. The session is not told, so it does not restart the watcher, and messages wait in its inbox. `cq send` does not warn the sender.
 - **Monitor mode heals itself.** The Monitor expires at least every 30 minutes, and the session re-arms it. So a dead Monitor-mode watcher is replaced within 30 minutes. Inbox mode has no such timer.
-- **How to spot it.** The watcher's heartbeat stops. [cq-top](CQ-TOP.md) shows it as `STALE` after 90 seconds, and `cq status --as NAME` exits 10. After a `/clear`, `cq session-start` also tells the session that its inbox watcher has stopped. To restart it, run `/cq-start` in that session.
+- **How to spot it.** The watcher's heartbeat stops. [cq-top](CQ-TOP.md) shows it as `STALE` after 90 seconds. Since cq 1.11.0, `cq status --as NAME` exits 10 as soon as the process in the pid file no longer runs. After a `/clear`, `cq session-start` also tells the session that its inbox watcher has stopped. To restart it, run `/cq-start` in that session.
+- **A watcher that posts to an old target ([#77](https://github.com/niklasrichardson/session-queue/issues/77)).** A watcher reads the inbox address and token once, at start. Claude Code can give the session a new token (seen after a resume). The old watcher then keeps its heartbeat, `cq status` says `running`, and its posts vanish without an error. The messages still wait in the inbox.
+
+### Watcher record (cq 1.11.0)
+
+- **Decision.** Each watcher and dispatcher writes `heartbeat/NAME.watcher` before its pid file: its process ID, its `cq` version and, in inbox mode, the inbox address and the first 16 hex digits of the SHA-256 of the token. The token itself is never written. A hash prefix is enough to tell two tokens apart, and the queue folder is readable by every session.
+- **Trusted only with its pid file.** The record is used only when its `pid` matches `heartbeat/NAME.pid`. So a record left by an older watcher, or one that a new watcher has not replaced yet, is ignored. A pid file without a matching record means a `cq` older than 1.11.0: its version is `unknown`.
+- **Session-start compares.** In inbox mode, `cq session-start` compares the record with the hook's own `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` and with its own version. Only a full match keeps the "still runs" text. Any difference, a missing record, or a hook without the variables gives the restart text with `--takeover`. A needless restart costs one background command; a stale watcher costs every message until someone notices.
+- **Process check.** `cq status` and `cq session-start` also check that the process in the pid file still runs (`OpenProcess` and `WaitForSingleObject` on Windows, `kill(pid, 0)` elsewhere). Where the check cannot answer, only the heartbeat counts, as before. A reader treats its own process ID as dead, because Windows reuses process IDs at once.
+- **Version as a signal.** `cq status` adds `version=`, `outdated` and `stale-target`, and cq-top shows the version, so a watcher left running across a `cq` upgrade is visible. These words never change an exit code, because sessions act on exit codes.
+- **Unknowns.** Whether every hook gets `CLAUDE_CODE_MESSAGING_TOKEN` as Bash commands do has not been checked in a live hook. If it does not, session-start always asks for a restart, which is safe but costs a turn.
 - **Exit log.** Each watcher that held the lock appends one line to `watch-exits.log` when it ends, with its reason. A watcher killed outright cannot, so the next watcher for the name writes the line for it when it finds the old pid file: a clean exit removes that file, and holding the lock proves the old process is gone, so no process check is needed. This turns a silent death into evidence after the fact. Under a Monitor on macOS and Linux no signal handler is installed: one that writes a file is not async-signal-safe, and catching the signal would change the exit status the Monitor sees (see [Watcher status and exit log](COMMANDS.md#watcher-status-and-exit-log)).
 
 ## Codex wake
@@ -137,7 +147,7 @@ Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7
 
 ## Dependencies
 
-- clap, serde, serde_json, jiff (time zones; the bundled database on Windows), notify, windows-sys (Windows), libc (macOS and Linux). Tests: jsonschema (without default features, to avoid a network client build) and tempfile.
+- clap, serde, serde_json, jiff (time zones; the bundled database on Windows), notify, sha2 (the token hash in the watcher record), windows-sys (Windows), libc (macOS and Linux). Tests: jsonschema (without default features, to avoid a network client build) and tempfile.
 
 ## Codex dispatcher
 

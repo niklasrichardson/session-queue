@@ -124,6 +124,10 @@ pub fn dispatch(root: &Root, opts: &Options) -> Result<()> {
     platform::install_interrupt_handler()?;
     root.ensure_session_dirs(&opts.name)?;
     let (_lock, _) = watch::take_lock(root, &opts.name, false)?;
+    // Its version, for `cq status` and cq-top; nothing depends on it.
+    if let Err(e) = crate::record::Record::this_process(None).write(root, &opts.name) {
+        eprintln!("cq dispatch: could not record the dispatcher: {e}");
+    }
     let pid_file = PidFile {
         path: root.pid_file(&opts.name),
         pid: std::process::id().to_string(),

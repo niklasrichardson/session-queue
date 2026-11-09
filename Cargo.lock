@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "cq"
-version = "1.10.2"
+version = "1.11.0"
 dependencies = [
  "clap",
  "jiff",
@@ -319,6 +319,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml",
  "windows-sys 0.61.2",
@@ -326,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "cq-top"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cq",
  "jiff",

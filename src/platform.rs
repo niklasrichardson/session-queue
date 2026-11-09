@@ -1,5 +1,6 @@
-//! Process helpers: stop an old watcher, check stdin for input without
-//! blocking, and connect to a Claude Code session's inbox.
+//! Process helpers: stop an old watcher, check whether a process still
+//! runs, check stdin for input without blocking, and connect to a Claude
+//! Code session's inbox.
 //!
 //! Windows and macOS are the targets; the Unix version also works on Linux.
 
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use crate::error::{CqError, Result};
 
-pub use imp::{InboxConn, open_inbox, stdin_has_input, terminate};
+pub use imp::{InboxConn, open_inbox, process_alive, stdin_has_input, terminate};
 
 /// How long `stdin_has_input` waits for the first byte on an open, empty
 /// pipe. A pipeline writer (`echo ... | cq done`) can start after `cq`;
@@ -49,7 +50,10 @@ mod imp {
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, GetLastError, HANDLE,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileSizeEx, GetFileType,
     };
@@ -81,10 +85,22 @@ mod imp {
         }
     }
 
-    fn open(pid: u32, access: u32) -> Option<Handle> {
+    /// The process handle, or the `GetLastError` code of the failed
+    /// `OpenProcess`, read before anything else can change it.
+    fn open_or_error(pid: u32, access: u32) -> std::result::Result<Handle, u32> {
         // SAFETY: plain FFI call; a null result means failure.
         let h = unsafe { OpenProcess(access, 0, pid) };
-        (!h.is_null()).then_some(Handle(h))
+        if h.is_null() {
+            // SAFETY: plain FFI call, right after the failed OpenProcess. No
+            // Handle exists for the null value, so no CloseHandle runs first.
+            Err(unsafe { GetLastError() })
+        } else {
+            Ok(Handle(h))
+        }
+    }
+
+    fn open(pid: u32, access: u32) -> Option<Handle> {
+        open_or_error(pid, access).ok()
     }
 
     /// Bytes waiting in a pipe, or `None` when the pipe is closed and empty
@@ -137,6 +153,24 @@ mod imp {
             QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
         };
         (ok != 0).then(|| OsString::from_wide(&buf[..len as usize]))
+    }
+
+    /// `Some(false)` when no process has this ID or it has exited,
+    /// `Some(true)` while it runs (or exists but may not be opened), and
+    /// `None` when Windows does not say.
+    pub fn process_alive(pid: u32) -> Option<bool> {
+        let h = match open_or_error(pid, PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION) {
+            Ok(h) => h,
+            Err(ERROR_INVALID_PARAMETER) => return Some(false),
+            Err(ERROR_ACCESS_DENIED) => return Some(true),
+            Err(_) => return None,
+        };
+        // SAFETY: valid handle with SYNCHRONIZE access; a zero wait only checks.
+        match unsafe { WaitForSingleObject(h.0, 0) } {
+            WAIT_OBJECT_0 => Some(false),
+            WAIT_TIMEOUT => Some(true),
+            _ => None,
+        }
     }
 
     /// Stop the watcher with this process ID and wait up to 5 seconds for it
@@ -321,6 +355,22 @@ mod imp {
     fn alive(pid: libc::pid_t) -> bool {
         // SAFETY: signal 0 only checks; pid is positive.
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// `Some(false)` when no process has this ID, `Some(true)` while one
+    /// exists (signal 0 succeeds, or is refused with EPERM), and `None` for
+    /// an ID that cannot be checked or another error.
+    pub fn process_alive(pid: u32) -> Option<bool> {
+        // 0 and negative values would name process groups.
+        let raw = libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)?;
+        if alive(raw) {
+            return Some(true);
+        }
+        match io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => Some(false),
+            Some(libc::EPERM) => Some(true),
+            _ => None,
+        }
     }
 
     /// Stop the watcher with this process ID: SIGTERM, then SIGKILL if it
@@ -673,8 +723,31 @@ fn install_console_handler() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_cq_name;
+    use super::{is_cq_name, process_alive};
     use std::ffi::OsStr;
+
+    #[test]
+    fn this_process_is_alive_and_an_exited_child_is_not() {
+        assert_eq!(process_alive(std::process::id()), Some(true));
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        // While `child` holds its handle, Windows does not reuse the ID.
+        assert_eq!(process_alive(child.id()), Some(false));
+    }
+
+    /// No process has this ID, so OpenProcess fails. Its error code must reach
+    /// `process_alive` unchanged (an early CloseHandle(NULL) once turned
+    /// ERROR_INVALID_PARAMETER into ERROR_INVALID_HANDLE, which read as "not
+    /// known" and let a dead watcher count as running).
+    #[cfg(windows)]
+    #[test]
+    fn a_pid_that_cannot_be_opened_is_not_alive() {
+        assert_eq!(process_alive(0xFFFF_FFFC), Some(false));
+    }
 
     fn ok(theirs: &str, mine: &str) -> bool {
         is_cq_name(OsStr::new(theirs), OsStr::new(mine))

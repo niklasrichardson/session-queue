@@ -25,7 +25,7 @@ use cq::send::{self, Hops, Outgoing};
 use cq::watch::{
     self, DEFAULT_MAX_SECONDS, DEFAULT_RESCAN_SECONDS, Ended, Lines, Sink, WatchOptions,
 };
-use cq::{Root, claim, idle, list, members, overdue, platform, sleep, timefmt};
+use cq::{Root, claim, idle, list, members, overdue, platform, record, sleep, timefmt};
 
 const EXIT_CODES: &str = "\
 Exit codes:
@@ -653,6 +653,11 @@ fn run(cmd: Cmd) -> Result<i32> {
                 mode,
                 idle_after,
                 idle_every,
+                target: if mode == members::Mode::Inbox {
+                    cq::record::Target::from_env()
+                } else {
+                    None
+                },
             };
             let ended = if let Some(thread) = &to_codex {
                 let check_after = codex_check_seconds.map_or(CHECK_AFTER, Duration::from_secs);
@@ -879,21 +884,41 @@ fn status(name: &str) -> Result<i32> {
     if let Some(age) = live.beat_age() {
         facts.push_str(&format!(" heartbeat={age}s"));
     }
-    let mode = members::mode_of_name(&root, name).map_or("unknown", members::Mode::as_str);
+    let known_mode = members::mode_of_name(&root, name);
+    let mode = known_mode.map_or("unknown", members::Mode::as_str);
+    // What the watcher recorded about itself; only for a pid file.
+    let mut tags = String::new();
+    if live.pid_file {
+        let version = live.version();
+        tags.push_str(&format!(" version={}", version.unwrap_or("unknown")));
+        if record::is_outdated(version) {
+            tags.push_str(" outdated");
+        }
+        let target = live.record.as_ref().and_then(|r| r.target.as_ref());
+        if known_mode == Some(members::Mode::Inbox)
+            && let Some(here) = record::Target::from_env()
+            && target != Some(&here)
+        {
+            tags.push_str(" stale-target");
+        }
+    }
     let (line, code) = match sleep::read(&root, name) {
         Some(rec) => {
             let watcher = if why.is_none() { "running" } else { "stopped" };
             (
                 format!(
-                    "asleep name={name} {} watcher={watcher}{facts} mode={mode}",
+                    "asleep name={name} {} watcher={watcher}{facts} mode={mode}{tags}",
                     rec.describe()
                 ),
                 exit::ASLEEP,
             )
         }
-        None if why.is_none() => (format!("running name={name}{facts} mode={mode}"), exit::OK),
+        None if why.is_none() => (
+            format!("running name={name}{facts} mode={mode}{tags}"),
+            exit::OK,
+        ),
         None => (
-            format!("stopped name={name}{facts} mode={mode}"),
+            format!("stopped name={name}{facts} mode={mode}{tags}"),
             exit::NOT_RUNNING,
         ),
     };
@@ -927,12 +952,26 @@ fn session_start(debug: bool) {
         BUILD_RULES_PATH,
     );
     let rules = rules_ref(&candidates);
+    // A running inbox watcher whose record does not match this session's
+    // inbox address and token, or this cq's version, may post into nothing:
+    // Claude Code can give a resumed session a new token. Hooks get the same
+    // variables as Bash commands.
+    let inbox_live = (mode == members::Mode::Inbox)
+        .then(|| watch::Liveness::read(&root, &name))
+        .filter(watch::Liveness::running);
+    let restart = inbox_live.as_ref().and_then(|live| {
+        record::restart_reason(live.record.as_ref(), record::Target::from_env().as_ref())
+    });
     let text = if let Some(rec) = sleep::read(&root, &name) {
         format!(
             "You are in the cq session queue as {name}, and {name} is asleep ({}). Do not start a watcher. Messages wait in your inbox. To wake, run /cq-start when the user or a coordinator's message asks you to.",
             rec.describe()
         )
-    } else if mode == members::Mode::Inbox && watch::is_running(&root, &name) {
+    } else if let Some(why) = &restart {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Your inbox watcher still runs, but {why}, so its posts may not reach this session. Restart it in the background with the Bash tool (not the Monitor tool): cq watch --as {name} --to-inbox --takeover 2>&1. Then run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else if inbox_live.is_some() {
         format!(
             "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). Your inbox watcher (cq watch --as {name} --to-inbox) still runs and posts queue events into this session's inbox: do not start a watcher Monitor and do not use --takeover. Run cq list --as {name} and handle any UNCLAIMED messages."
         )
