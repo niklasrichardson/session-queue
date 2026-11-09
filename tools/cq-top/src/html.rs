@@ -296,14 +296,14 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
         "<section class=\"card\"><h2>Watchers</h2><div class=\"scroll\"><table>\
          <thead><tr><th>Name</th><th>Heartbeat</th><th>Mode</th><th class=\"n\">Queued</th>\
          <th class=\"n\">Claimed</th><th class=\"n\">Done</th><th class=\"n\">Rejected</th>\
-         <th class=\"n\">Dead</th><th>PID</th><th>Session</th></tr></thead><tbody>"
+         <th class=\"n\">Dead</th><th>PID</th><th>Session</th><th>Version</th></tr></thead><tbody>"
     );
     for w in &s.watchers {
         let _ = write!(
             b,
             "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\">{}</td><td>{}</td>\
              <td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
-             <td class=\"n\">{}</td><td class=\"dim\">{}</td><td class=\"dim\">{}</td></tr>",
+             <td class=\"n\">{}</td><td class=\"dim\">{}</td><td class=\"dim\">{}</td><td class=\"nowrap\">{}</td></tr>",
             esc(&w.name),
             heartbeat_chip(w),
             mode_cell(s, w),
@@ -317,11 +317,19 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
                 "0".into()
             },
             esc(&w.pid),
-            esc(&w.session)
+            esc(&w.session),
+            if w.outdated() {
+                format!(
+                    "<span class=\"critical\">! </span>{} outdated",
+                    esc(w.version_label())
+                )
+            } else {
+                format!("<span class=\"dim\">{}</span>", esc(w.version_label()))
+            }
         );
     }
     if s.watchers.is_empty() {
-        b.push_str("<tr><td colspan=\"10\" class=\"dim\">No watchers.</td></tr>");
+        b.push_str("<tr><td colspan=\"11\" class=\"dim\">No watchers.</td></tr>");
     }
     b.push_str("</tbody></table></div></section>");
 

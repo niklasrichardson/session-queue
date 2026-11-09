@@ -227,33 +227,37 @@ Experimental. `cq watch --as B --to-agy CONVERSATION_ID` wakes an Antigravity CL
 
 ## Watcher status and exit log
 
-`cq status --as B` prints one line from the files of `B`'s watcher or dispatcher. It uses the rule that `cq session-start` and cq-top use: the watcher runs when `heartbeat/B.pid` exists and the heartbeat is less than 90 seconds old. A watcher that was killed counts as running until its heartbeat is 90 seconds old. It never opens the lock file and writes nothing.
+`cq status --as B` prints one line from the files of `B`'s watcher or dispatcher. It uses the rule that `cq session-start` uses: the watcher runs when `heartbeat/B.pid` exists, the heartbeat is less than 90 seconds old, and the process in the pid file still runs. A watcher that was killed counts as stopped at once; where the process cannot be checked, it counts as running until its heartbeat is 90 seconds old. It never opens the lock file and writes nothing.
 
 ```text
-running name=B pid=4242 heartbeat=12s mode=inbox
+running name=B pid=4242 heartbeat=12s mode=inbox version=1.11.0
+running name=B pid=4242 heartbeat=12s mode=inbox version=1.11.0 stale-target
+running name=B pid=4242 heartbeat=12s mode=monitor version=unknown outdated
 stopped name=B why="no pid file" heartbeat=340s mode=inbox
-stopped name=B why="heartbeat 340s old" pid=4242 heartbeat=340s mode=inbox
+stopped name=B why="process 4242 is not running" pid=4242 heartbeat=20s mode=inbox version=1.11.0
+stopped name=B why="heartbeat 340s old" pid=4242 heartbeat=340s mode=inbox version=1.10.2 outdated
 asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" heartbeat=900s mode=inbox
 ```
 
 - The first word is the state; the exit code says the same: 0 `running`, 10 `stopped`, 7 `asleep`. A sleeping name is `asleep` even while its watcher still runs (it stops within 250 ms).
-- `why` is `no pid file`, `no heartbeat` or `heartbeat Ns old`. `pid` is the process ID in the pid file, and `heartbeat` the age of the last heartbeat, when there is one. `mode` is the mode in the `members/` record that names `B` (`monitor`, `inbox`, `codex` or `agy`), or `unknown` without one.
+- `why` is `no pid file`, `no heartbeat`, `heartbeat Ns old` or `process N is not running`. `pid` is the process ID in the pid file, and `heartbeat` the age of the last heartbeat, when there is one. `mode` is the mode in the `members/` record that names `B` (`monitor`, `inbox`, `codex` or `agy`), or `unknown` without one.
+- With a pid file, the line ends with what the watcher or dispatcher recorded in `heartbeat/B.watcher`. `version` is its `cq` version, or `unknown` for one started by a `cq` older than 1.11.0. `outdated` follows when that is not the version of the `cq` that runs `cq status` (`unknown` counts). `stale-target` follows in `inbox` mode when the caller has `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` and the watcher's recorded address or token hash is another, or missing: its posts may not reach the caller's session. Restart it with `cq watch --as B --to-inbox --takeover`. These words do not change the exit code.
 - A bad name exits 5; a root that is not initialised exits 70.
 
 `cq watch` appends one line to `CQ_ROOT/watch-exits.log` when a watcher that held the lock ends. A start refused with exit 5, and a start while the name is asleep, write nothing. The line never holds message text:
 
 ```text
-2026-11-04T09:15:02Z name=B pid=4242 mode=inbox exit=0 reason="--max-seconds 60 reached"
-2026-11-04T09:20:11Z name=B pid=4300 mode=inbox exit=0 signal=SIGTERM reason="stopped by a signal (SIGTERM)"
-2026-11-04T09:25:30Z name=B pid=4350 mode=inbox exit=7 reason="asleep"
-2026-11-04T09:31:40Z name=B pid=4400 mode=monitor signal=CTRL_CLOSE_EVENT reason="console event CTRL_CLOSE_EVENT"
-2026-11-04T09:40:00Z name=B pid=4500 mode=inbox reason="stopped by --takeover from PID 4600"
-2026-11-04T09:52:13Z name=B pid=4600 mode=inbox reason="previous watcher ended without logging (last heartbeat 2026-11-04T09:51:50Z); found by PID 4700"
+2026-11-04T09:15:02Z name=B pid=4242 mode=inbox version=1.11.0 exit=0 reason="--max-seconds 60 reached"
+2026-11-04T09:20:11Z name=B pid=4300 mode=inbox version=1.11.0 exit=0 signal=SIGTERM reason="stopped by a signal (SIGTERM)"
+2026-11-04T09:25:30Z name=B pid=4350 mode=inbox version=1.11.0 exit=7 reason="asleep"
+2026-11-04T09:31:40Z name=B pid=4400 mode=monitor version=1.11.0 signal=CTRL_CLOSE_EVENT reason="console event CTRL_CLOSE_EVENT"
+2026-11-04T09:40:00Z name=B pid=4500 mode=inbox version=1.11.0 reason="stopped by --takeover from PID 4600"
+2026-11-04T09:52:13Z name=B pid=4600 mode=inbox version=unknown reason="previous watcher ended without logging (last heartbeat 2026-11-04T09:51:50Z); found by PID 4700"
 ```
 
-- The fields are the UTC time, the name, the process ID and mode of the watcher that ended, the exit code when the watcher knows it, the signal or console event when there was one, and the reason. An error gives `exit=<code> reason="error: <the cq: message>"`.
+- The fields are the UTC time, the name, the process ID, mode and `cq` version of the watcher that ended, the exit code when the watcher knows it, the signal or console event when there was one, and the reason. An error gives `exit=<code> reason="error: <the cq: message>"`.
 - **Caught.** Every normal exit (`--max-seconds`, asleep, stdout closed, an error after the lock). With `--to-inbox`, `--to-codex` or `--to-agy`: Ctrl+C and Ctrl+Break on Windows, SIGINT, SIGTERM and SIGHUP on macOS and Linux. On Windows in every mode: a console close, logoff or shutdown, and, under a Monitor, Ctrl+C and Ctrl+Break; the line is written, then the process ends as before.
-- **Not caught.** A watcher that is killed outright cannot write its line: `TerminateProcess` on Windows (Task Manager, a stopped Monitor, `--takeover`), SIGKILL, and under a Monitor on macOS and Linux any signal. Its pid file stays; every exit that writes its line removes it. The next watcher for the name finds it and writes the line for it: `stopped by --takeover from PID N` after `--takeover`, else `previous watcher ended without logging (last heartbeat T)`. Holding the lock proves that the old process is gone. The `mode` of such a line is read from the `members/` record before the new watcher writes its own.
+- **Not caught.** A watcher that is killed outright cannot write its line: `TerminateProcess` on Windows (Task Manager, a stopped Monitor, `--takeover`), SIGKILL, and under a Monitor on macOS and Linux any signal. Its pid file stays; every exit that writes its line removes it. The next watcher for the name finds it and writes the line for it: `stopped by --takeover from PID N` after `--takeover`, else `previous watcher ended without logging (last heartbeat T)`. Holding the lock proves that the old process is gone. The `mode` of such a line is read from the `members/` record before the new watcher writes its own, and its `version` from the old watcher's `heartbeat/<name>.watcher`; `version=unknown` when it wrote none (a `cq` older than 1.11.0).
 - **Size.** When the log is over 1 MiB, the next watcher exit renames it to `watch-exits.log.old`, replacing the last one, and starts a new file. Watchers lock `watch-exits.log.lock` around the size check, the rename and the append, so exits at the same time rename once and keep every line. A watcher waits at most 0.5 seconds for the lock. After that it drops its line and writes nothing to either file; its pid file stays, so the next watcher for the name reports the exit as `previous watcher ended without logging`.
 
 ## Exit codes
@@ -291,6 +295,7 @@ CQ_ROOT/
   heartbeat/<name>.lock      locked by the running watcher or dispatcher
   heartbeat/<name>.claim.lock serialises claims for this recipient
   heartbeat/<name>.pid       the running watcher/dispatcher process ID
+  heartbeat/<name>.watcher   its record: pid, cq version and, for --to-inbox, the inbox address and a 16-digit SHA-256 prefix of the token (never the token)
   heartbeat/<name>.overdue   overdue task IDs a coordinator's watcher has reported, one per line
   dispatch/<name>/<id>/       Codex logs and completion state (not auto-pruned)
   members/<key>              the name owned by a session (a Claude Code session, `codex-NAME` for a `--to-codex` watcher, or `agy-NAME` for a `--to-agy` watcher), the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox, codex or agy)

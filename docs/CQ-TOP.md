@@ -44,7 +44,7 @@ cq-top --html dashboard.html        # a dashboard page
 cq-top --html-screens shots         # shots/overview.html, sessions.html, flow.html and rejected.html
 ```
 
-- `--html PATH` writes one self-contained page: watchers, sessions, counts, messages per 5-minute slice over the last hour, who talks to whom, the worker table (load and median reply time), in flight messages, the 20 newest rejected and dead-lettered messages with their reasons, and recent messages. It has no scripts and loads nothing from the network. It follows the system light or dark setting. Times are UK local time.
+- `--html PATH` writes one self-contained page: watchers, sessions, counts, messages per 5-minute slice over the last hour, who talks to whom, the worker table (load and median reply time), in flight messages, the 20 newest rejected and dead-lettered messages with their reasons, and recent messages. It has no scripts and loads nothing from the network. It follows the system light or dark setting. Times are UK local time. When PATH ends in `.html` or `.htm` (any case), it is the file. Any other PATH is a folder, and the page is `dashboard.html` in it: an existing folder, a PATH that ends in `\` or `/`, or a PATH with another extension or none. Folders that do not exist yet are created. `cq-top` prints the full path of the file it wrote. It refuses a PATH that is an existing file without an `.html` or `.htm` extension, so it never overwrites that file. An error names PATH and says whether it was taken as a file or a folder.
 - `--html-screens DIR` draws the four screens at 140 x 42 cells, in the saved theme, with one 9 x 18 pixel box per cell. A browser can turn each page into a picture, for example `msedge --headless=new --screenshot=overview.png --window-size=1260,756 file:///.../overview.html`.
 - Both options can be given together. They share one snapshot.
 - An export never includes message bodies. Every string from the queue is HTML-escaped.
@@ -54,7 +54,7 @@ cq-top --html-screens shots         # shots/overview.html, sessions.html, flow.h
 
 ## Overview screen
 
-- **Watchers.** One row per name: heartbeat age, [mode](#watcher-mode), watcher process ID, Claude Code session, and the number of queued, claimed, done, rejected and dead-lettered messages. A heartbeat older than 90 seconds shows as `STALE`. A name that is asleep (`sleep/<name>` exists) shows `asleep` instead, and gets a row even with no heartbeat.
+- **Watchers.** One row per name: heartbeat age, [mode](#watcher-mode), watcher process ID, Claude Code session, and the number of queued, claimed, done, rejected and dead-lettered messages. A heartbeat older than 90 seconds shows as `STALE`. A name that is asleep (`sleep/<name>` exists) shows `asleep` instead, and gets a row even with no heartbeat. The last column is the watcher's `cq` version, from `heartbeat/<name>.watcher` (`unknown` for a watcher from a `cq` older than 1.11.0, `-` without a pid file). It is red, and in the HTML dashboard marked `outdated`, when it is not the version of the `cq` library that `cq-top` was built with. It is the first column a narrow terminal drops.
 - **In flight.** Queued and claimed messages, oldest first. A message that stays here for a long time is probably stuck. An [overdue](#overdue-tasks) task is drawn in the warning colour, with `▲` before its age.
 - **Recent.** The 40 newest finished, rejected and dead-lettered messages.
 

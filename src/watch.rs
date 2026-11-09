@@ -30,6 +30,10 @@
 //! `codex queue` (see `codex`), and `--to-agy` wakes an Antigravity CLI
 //! conversation with one `agy` turn per batch (see `agy`).
 //!
+//! Before its pid file, each run writes `heartbeat/<name>.watcher` with its
+//! version and, with `--to-inbox`, the inbox address and a hash of the token
+//! it posts with (see `record`).
+//!
 //! Each run that takes the lock writes one line to `watch-exits.log` when
 //! it ends, and one for a predecessor that ended without writing its own
 //! (see `exitlog`).
@@ -58,6 +62,7 @@ use crate::message::{EVENT_SUBJECT_MAX, event_text, header};
 use crate::names::{check_name, is_valid_id};
 use crate::overdue;
 use crate::platform;
+use crate::record::{self, Record};
 use crate::root::{Root, message_file};
 use crate::sleep;
 use crate::timefmt::{self, local_hhmm, rfc3339};
@@ -122,6 +127,9 @@ pub struct WatchOptions {
     pub idle_after: Duration,
     /// The least time between two idle alerts (`--idle-every`).
     pub idle_every: Duration,
+    /// Where `--to-inbox` posts, for the watcher record. `None` records no
+    /// target.
+    pub target: Option<record::Target>,
 }
 
 impl WatchOptions {
@@ -136,6 +144,7 @@ impl WatchOptions {
             mode: members::Mode::Monitor,
             idle_after: idle::DEFAULT_IDLE_AFTER,
             idle_every: idle::DEFAULT_EVERY,
+            target: None,
         }
     }
 }
@@ -211,6 +220,12 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     let pid = std::process::id();
     let exits = exitlog::Guard::arm(root, name, opts.mode);
     log_predecessor(root, name, pid, took_over);
+    // Before the pid file, so a reader that finds this PID finds its record.
+    // Without it, session-start asks for a restart, so a failure only costs
+    // one.
+    if let Err(e) = Record::this_process(opts.target.clone()).write(root, name) {
+        eprintln!("cq watch: could not record the watcher for {name}: {e}");
+    }
     let pid_file = root.pid_file(name);
     if let Err(e) = fsutil::write_atomic(&root.tmp(), &pid_file, format!("{pid}\n").as_bytes()) {
         let e = CqError::io(format!("write {}", pid_file.display()), e);
@@ -492,10 +507,12 @@ pub(crate) fn take_lock(root: &Root, name: &str, takeover: bool) -> Result<(File
 }
 
 /// True while a watcher or dispatcher for `name` looks alive: its pid file
-/// exists and its heartbeat is less than `ALIVE_SECS` old, the rule cq-top
-/// uses. It never opens the lock file, so it cannot stop a watcher that is
-/// starting. A clean exit removes the pid file, so it reads as stopped at
-/// once; a killed watcher still looks alive until its heartbeat is too old.
+/// exists, its heartbeat is less than `ALIVE_SECS` old (the rule cq-top
+/// uses), and the process it names has not gone. It never opens the lock
+/// file, so it cannot stop a watcher that is starting. A clean exit removes
+/// the pid file, and a killed watcher's process is gone, so either reads as
+/// stopped at once. Where the process cannot be checked, only the heartbeat
+/// counts.
 pub fn is_running(root: &Root, name: &str) -> bool {
     Liveness::read(root, name).running()
 }
@@ -510,15 +527,38 @@ pub struct Liveness {
     pub pid: Option<u32>,
     /// The time of the last heartbeat, if any.
     pub beat: Option<jiff::Timestamp>,
+    /// Whether the process in the pid file runs: `None` when it cannot be
+    /// checked, or there is no ID.
+    pub alive: Option<bool>,
+    /// `heartbeat/<name>.watcher`, when it names the same process.
+    pub record: Option<Record>,
 }
 
 impl Liveness {
+    /// For a reader that is not the watcher itself (`cq status`, `cq
+    /// session-start`): a pid file that names this process belongs to a
+    /// dead watcher whose ID was reused, which Windows does at once.
     pub fn read(root: &Root, name: &str) -> Self {
+        let pid = read_pid(root, name);
+        let me = std::process::id();
         Self {
             pid_file: root.pid_file(name).is_file(),
-            pid: read_pid(root, name),
+            pid,
             beat: last_beat(root, name),
+            alive: pid.and_then(|p| {
+                if p == me {
+                    Some(false)
+                } else {
+                    platform::process_alive(p)
+                }
+            }),
+            record: pid.and_then(|p| Record::read_for(root, name, p)),
         }
+    }
+
+    /// The version the watcher recorded; `None` for unknown.
+    pub fn version(&self) -> Option<&str> {
+        self.record.as_ref().and_then(|r| r.version.as_deref())
     }
 
     /// Seconds since the last heartbeat; 0 for one in the future.
@@ -537,7 +577,10 @@ impl Liveness {
             (false, _) => Some("no pid file".to_owned()),
             (true, None) => Some("no heartbeat".to_owned()),
             (true, Some(age)) if age >= ALIVE_SECS => Some(format!("heartbeat {age}s old")),
-            (true, Some(_)) => None,
+            (true, Some(_)) => match (self.pid, self.alive) {
+                (Some(pid), Some(false)) => Some(format!("process {pid} is not running")),
+                _ => None,
+            },
         }
     }
 }
@@ -576,6 +619,8 @@ fn log_predecessor(root: &Root, name: &str, pid: u32, took_over: bool) {
             "previous watcher ended without logging (last heartbeat {beat}); found by PID {pid}"
         )
     };
+    // Read before this watcher writes its own record.
+    let version = Record::read_for(root, name, old).and_then(|r| r.version);
     exitlog::write(
         root,
         &Exit {
@@ -583,6 +628,7 @@ fn log_predecessor(root: &Root, name: &str, pid: u32, took_over: bool) {
             pid: old,
             // Read before this watcher records its own session.
             mode: members::mode_of_name(root, name),
+            version: version.as_deref(),
             code: None,
             signal: None,
             reason: &reason,

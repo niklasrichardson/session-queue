@@ -89,7 +89,7 @@ On macOS, a hook command may not find a bare `cq`: the Rust installer adds `~/.c
 
 Expected result: after `/clear` in a session whose watcher ran, the new context starts with "You are in the cq session queue as NAME". The reminder also says whether the watcher still runs. See [Rejoin after /clear](../PROTOCOL.md#rejoin-after-clear). The hook was tested live after `/clear` only, not after a compaction or a resume.
 
-- The inbox watcher survives `/clear` and compaction, and keeps posting into the same session. After a clear, do not start a second watcher.
+- The inbox watcher survives `/clear` and compaction. It keeps the inbox address and token it read at start. If Claude Code gives the session a new token or address (seen after a resume, and possibly after some clears), the watcher's posts vanish without an error while `cq status` still says `running`. Messages are not lost: they wait in the inbox. Since cq 1.11.0, `cq session-start` compares the watcher's recorded address and token hash, and its version, with the session's own. When they match, it says the watcher still runs: do not start a second one. When they differ, it says to restart the watcher with `cq watch --as NAME --to-inbox --takeover 2>&1`.
 - After a session restarts, or its watcher was down, give the session the [recovery prompt](CLAUDE-SNIPPETS.md#5-recovery-prompt). If the name is asleep, run `/cq-start NAME` instead.
 
 ### Tell a lead when a worker is idle

@@ -155,6 +155,13 @@ impl Root {
         self.path.join("heartbeat").join(format!("{name}.pid"))
     }
 
+    /// What the running watcher or dispatcher records about itself: its
+    /// process ID, version and, for `--to-inbox`, its delivery target (see
+    /// `record`).
+    pub fn watcher_record(&self, name: &str) -> PathBuf {
+        self.path.join("heartbeat").join(format!("{name}.watcher"))
+    }
+
     /// The overdue tasks a coordinator's watcher has reported, one ID per
     /// line, so a restarted watcher does not report them again.
     pub fn overdue_marker(&self, name: &str) -> PathBuf {

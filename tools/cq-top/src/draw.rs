@@ -538,6 +538,22 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
 
     header(f, head, root, s, bodies, Screen::Overview, t);
 
+    let name_w = name_width("watcher", s.watchers.iter().map(|w| w.name.as_str()));
+    // Columns: header, width, priority. The version goes first in a narrow terminal.
+    let cols: [(&str, u16, u8); 11] = [
+        ("watcher", name_w, 0),
+        ("heartbeat", 14, 0),
+        ("mode", 7, 0),
+        ("pid", 8, 0),
+        ("session", 10, 0),
+        ("queued", 7, 0),
+        ("claimed", 8, 0),
+        ("done", 6, 0),
+        ("rejected", 9, 0),
+        ("dead", 5, 0),
+        ("version", 8, 1),
+    ];
+    let keep = fit_columns(&cols, watchers.width.saturating_sub(2));
     let rows = s.watchers.iter().map(|w| {
         let (txt, style) = match w.beat_age {
             _ if w.asleep => ("asleep".into(), t.info),
@@ -551,53 +567,33 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
             }
             None => Cell::from("-").style(t.dim),
         };
-        Row::new(vec![
-            Cell::from(w.name.clone()).style(t.accent),
-            Cell::from(txt).style(style),
-            mode,
-            Cell::from(w.pid.clone()),
-            Cell::from(w.session.clone()),
-            Cell::from(w.queued.to_string()),
-            Cell::from(w.claimed.to_string()),
-            Cell::from(w.done.to_string()),
-            Cell::from(w.rejected.to_string()),
-            Cell::from(w.dead.to_string()).style(if w.dead > 0 { t.bad } else { t.text }),
-        ])
-    });
-    let name_w = name_width("watcher", s.watchers.iter().map(|w| w.name.as_str()));
-    f.render_widget(
-        Table::new(
-            rows,
+        let version = Cell::from(w.version_label().to_owned()).style(if w.outdated() {
+            t.bad
+        } else {
+            t.dim
+        });
+        Row::new(kept(
             [
-                Constraint::Length(name_w),
-                Constraint::Length(14),
-                Constraint::Length(7),
-                Constraint::Length(8),
-                Constraint::Length(10),
-                Constraint::Length(7),
-                Constraint::Length(8),
-                Constraint::Length(6),
-                Constraint::Length(9),
-                Constraint::Length(5),
+                Cell::from(w.name.clone()).style(t.accent),
+                Cell::from(txt).style(style),
+                mode,
+                Cell::from(w.pid.clone()),
+                Cell::from(w.session.clone()),
+                Cell::from(w.queued.to_string()),
+                Cell::from(w.claimed.to_string()),
+                Cell::from(w.done.to_string()),
+                Cell::from(w.rejected.to_string()),
+                Cell::from(w.dead.to_string()).style(if w.dead > 0 { t.bad } else { t.text }),
+                version,
             ],
-        )
-        .header(
-            Row::new([
-                "watcher",
-                "heartbeat",
-                "mode",
-                "pid",
-                "session",
-                "queued",
-                "claimed",
-                "done",
-                "rejected",
-                "dead",
-            ])
-            .style(t.table_header()),
-        )
-        .style(t.text)
-        .block(t.block(" Watchers ")),
+            &keep,
+        ))
+    });
+    f.render_widget(
+        Table::new(rows, kept(cols.map(|c| Constraint::Length(c.1)), &keep))
+            .header(Row::new(kept(cols.map(|c| c.0), &keep)).style(t.table_header()))
+            .style(t.text)
+            .block(t.block(" Watchers ")),
         watchers,
     );
 

@@ -127,6 +127,9 @@ struct Watcher {
     /// record, or for another key, such as one from `CQ_SESSION_ID`, which any agent can set.
     agent: Option<sessions::Agent>,
     pid: String,
+    /// The version in `heartbeat/<name>.watcher`, when that record names the PID in the pid
+    /// file. `None` for a watcher from a cq older than 1.11.0, which writes no record.
+    version: Option<String>,
     session: String,
     queued: usize,
     claimed: usize,
@@ -136,6 +139,20 @@ struct Watcher {
 }
 
 impl Watcher {
+    /// The version column: `-` without a pid file, `unknown` for a watcher with no record.
+    fn version_label(&self) -> &str {
+        match (&self.version, self.pid.is_empty()) {
+            (_, true) => "-",
+            (Some(v), false) => v,
+            (None, false) => "unknown",
+        }
+    }
+
+    /// The watcher runs another version than the cq library cq-top was built with.
+    fn outdated(&self) -> bool {
+        !self.pid.is_empty() && cq::record::is_outdated(self.version.as_deref())
+    }
+
     fn stale(&self) -> bool {
         self.beat_age.is_none_or(|a| a > STALE_AFTER)
     }
@@ -217,7 +234,8 @@ fn main() -> std::io::Result<()> {
              Keys: q quit, b bodies, t next theme, tab, arrows or 1/2/3/4 switch screen\n\
              (1 Overview, 2 Sessions, 3 Flow, 4 Rejected).\n\
              \n\
-             --html PATH          write one snapshot as an HTML dashboard to PATH, then exit\n\
+             --html PATH          write one snapshot as an HTML dashboard, then exit: to PATH when\n\
+             \x20                    it ends in .html or .htm, else to PATH/dashboard.html\n\
              --html-screens DIR   write the four screens as HTML pages (overview.html,\n\
              \x20                    sessions.html, flow.html, rejected.html) to DIR, then exit\n\
              Neither may point inside the queue root. Message bodies are never exported."
@@ -407,6 +425,53 @@ fn export_path(root: &Path, path: &Path) -> std::io::Result<PathBuf> {
     Ok(full)
 }
 
+/// The file `--html PATH` writes. A path that ends in `.html` or `.htm` (any case) is the
+/// file. Any other path is a folder, made if it does not exist, and the file is
+/// `dashboard.html` in it: an existing folder, a path that ends in `/` or `\`, or a path with
+/// another extension or none. An existing file without that extension is refused, so it is
+/// never overwritten.
+struct Dashboard {
+    given: PathBuf,
+    /// The full path of the file, without the `\\?\` prefix `canonicalize` gives on Windows.
+    file: PathBuf,
+    as_folder: bool,
+}
+
+impl Dashboard {
+    fn of(given: &Path) -> std::io::Result<Self> {
+        let abs = std::path::absolute(given)?;
+        let text = given.as_os_str().to_string_lossy();
+        let html_ext = abs
+            .extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| x.eq_ignore_ascii_case("html") || x.eq_ignore_ascii_case("htm"));
+        let as_folder = abs.is_dir() || text.ends_with(['/', '\\']) || !html_ext;
+        if as_folder && abs.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "--html {}: a file without an .html or .htm extension exists there; refusing to overwrite it or use it as a folder",
+                    given.display()
+                ),
+            ));
+        }
+        let file = if as_folder {
+            abs.join("dashboard.html")
+        } else {
+            abs
+        };
+        Ok(Self {
+            given: given.to_owned(),
+            file,
+            as_folder,
+        })
+    }
+
+    fn taken_as(&self) -> &'static str {
+        if self.as_folder { "a folder" } else { "a file" }
+    }
+}
+
 /// Takes one snapshot and writes the exports asked for. Every path is checked before
 /// anything is written, and before `scan` collects the sessions.
 fn export(
@@ -420,13 +485,33 @@ fn export(
             .map(|p| export_path(root.path(), p))
             .transpose()
     };
-    let (html, screens) = (check(&e.html)?, check(&e.screens)?);
+    let dashboard = e.html.as_deref().map(Dashboard::of).transpose()?;
+    let html = dashboard
+        .as_ref()
+        .map(|d| export_path(root.path(), &d.file))
+        .transpose()?;
+    let screens = check(&e.screens)?;
     let mut snap = snapshot(root, &mut Beats::new(), limits);
     snap.sessions = scan();
     // Writes go to the checked full path; messages show the path as given.
-    if let (Some(path), Some(given)) = (html, &e.html) {
-        fs::write(&path, html::dashboard(root.path(), &snap))?;
-        println!("wrote {}", given.display());
+    if let (Some(path), Some(d)) = (html, &dashboard) {
+        let failed = |what: &str, err: std::io::Error| {
+            std::io::Error::new(
+                err.kind(),
+                format!(
+                    "--html {}, taken as {}: cannot {what} ({err})",
+                    d.given.display(),
+                    d.taken_as()
+                ),
+            )
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| failed(&format!("create the folder {}", parent.display()), err))?;
+        }
+        fs::write(&path, html::dashboard(root.path(), &snap))
+            .map_err(|err| failed(&format!("write {}", d.file.display()), err))?;
+        println!("wrote {}", d.file.display());
     }
     if let (Some(dir), Some(given)) = (screens, &e.screens) {
         fs::create_dir_all(&dir)?;
@@ -757,6 +842,11 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64, limits: &Limits) ->
         let pid = fs::read_to_string(root.pid_file(name))
             .map(|t| t.trim().to_string())
             .unwrap_or_default();
+        let version = pid
+            .parse::<u32>()
+            .ok()
+            .and_then(|p| cq::record::Record::read_for(root, name, p))
+            .and_then(|r| r.version);
         let agent = match (modes.get(name), sessions.get(name)) {
             (Some(Mode::Codex), _) => Some(sessions::Agent::Codex),
             (Some(Mode::Agy), _) => Some(sessions::Agent::Gemini),
@@ -776,6 +866,7 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64, limits: &Limits) ->
             mode: modes.get(name).copied(),
             agent,
             pid,
+            version,
             session,
             queued: queued.len(),
             claimed: claimed.len(),
@@ -1040,6 +1131,7 @@ mod tests {
                     mode: Some(Mode::Monitor),
                     agent: Some(sessions::Agent::Claude),
                     pid: "42".into(),
+                    version: Some(cq::record::VERSION.into()),
                     session: "abcd1234".into(),
                     queued: 1,
                     claimed: 1,
@@ -1056,6 +1148,7 @@ mod tests {
                     mode: None,
                     agent: Some(sessions::Agent::Claude),
                     pid: String::new(),
+                    version: None,
                     session: "nap12345".into(),
                     queued: 2,
                     claimed: 0,
@@ -1456,6 +1549,114 @@ mod tests {
         assert!(!r.join("shots").exists());
     }
 
+    /// Runs `--html PATH` alone and returns the result.
+    fn export_html(root: &cq::Root, path: PathBuf) -> std::io::Result<()> {
+        let e = Exports {
+            html: Some(path),
+            screens: None,
+        };
+        export(root, &Limits::default(), &e, sessions::Report::default)
+    }
+
+    fn is_dashboard(path: &Path) -> bool {
+        fs::read_to_string(path).is_ok_and(|t| t.starts_with("<!doctype html>"))
+    }
+
+    #[test]
+    fn html_path_with_an_html_extension_is_a_file() {
+        let (_dir, root) = temp_queue();
+        let out = tempfile::tempdir().unwrap();
+        // Missing folders are made, and the extension is matched in any case.
+        for name in ["dash.html", "DASH.HTM", "Dash.Html"] {
+            let path = out.path().join("new").join("deeper").join(name);
+            export_html(&root, path.clone()).unwrap();
+            assert!(is_dashboard(&path), "{name}");
+        }
+        assert!(
+            !out.path()
+                .join("new")
+                .join("deeper")
+                .join("dashboard.html")
+                .exists()
+        );
+        let d = Dashboard::of(&out.path().join("a.htm")).unwrap();
+        assert_eq!(d.taken_as(), "a file");
+    }
+
+    #[test]
+    fn html_path_without_an_html_extension_is_a_folder() {
+        let (_dir, root) = temp_queue();
+        let out = tempfile::tempdir().unwrap();
+        // A folder that does not exist yet, with no extension or another one.
+        for name in ["cq-html", "report.v2"] {
+            let dir = out.path().join("new").join(name);
+            export_html(&root, dir.clone()).unwrap();
+            assert!(dir.is_dir(), "{name}");
+            assert!(is_dashboard(&dir.join("dashboard.html")), "{name}");
+        }
+        // An existing folder, even one named like a page.
+        let named = out.path().join("pages.html");
+        fs::create_dir(&named).unwrap();
+        export_html(&root, named.clone()).unwrap();
+        assert!(is_dashboard(&named.join("dashboard.html")));
+        // A path that ends with a separator.
+        for sep in ["/", "\\"] {
+            if sep == "\\" && !cfg!(windows) {
+                continue;
+            }
+            let dir = out.path().join(format!("slash{}", sep.len()));
+            let given = format!("{}{sep}", dir.display());
+            export_html(&root, PathBuf::from(&given)).unwrap();
+            assert!(is_dashboard(&dir.join("dashboard.html")), "{given}");
+        }
+        let trailing = format!("{}/", out.path().join("x.html").display());
+        let d = Dashboard::of(Path::new(&trailing)).unwrap();
+        assert_eq!(d.taken_as(), "a folder");
+        assert!(d.file.ends_with("dashboard.html"));
+        assert!(d.file.is_absolute());
+    }
+
+    #[test]
+    fn html_path_that_is_a_file_without_an_html_extension_is_refused() {
+        let (_dir, root) = temp_queue();
+        let out = tempfile::tempdir().unwrap();
+        let file = out.path().join("cq-html");
+        fs::write(&file, "keep").unwrap();
+        let err = export_html(&root, file.clone()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(&file.display().to_string()), "{msg}");
+        assert!(msg.contains("refusing to overwrite it"), "{msg}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+    }
+
+    #[test]
+    fn html_failure_names_the_path_and_how_it_was_taken() {
+        let (_dir, root) = temp_queue();
+        let out = tempfile::tempdir().unwrap();
+        fs::write(out.path().join("file"), "x").unwrap();
+        // A file where a folder must go, for a file path and for a folder path.
+        let as_file = out.path().join("file").join("sub").join("dash.html");
+        let msg = export_html(&root, as_file.clone()).unwrap_err().to_string();
+        assert!(
+            msg.starts_with(&format!(
+                "--html {}, taken as a file: cannot create the folder ",
+                as_file.display()
+            )),
+            "{msg}"
+        );
+        let as_folder = out.path().join("file").join("sub");
+        let msg = export_html(&root, as_folder.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.starts_with(&format!(
+                "--html {}, taken as a folder: cannot create the folder ",
+                as_folder.display()
+            )),
+            "{msg}"
+        );
+    }
+
     #[test]
     fn export_writes_the_dashboard_and_both_screens() {
         let (_dir, root) = temp_queue();
@@ -1578,6 +1779,7 @@ mod tests {
             mode: Some(mode),
             agent,
             pid: String::new(),
+            version: None,
             session: String::new(),
             queued: 1,
             claimed: 0,
@@ -1635,6 +1837,7 @@ mod tests {
             mode: Some(Mode::Agy),
             agent: Some(Agent::Gemini),
             pid: String::new(),
+            version: None,
             session: String::new(),
             queued: 2,
             claimed: 1,

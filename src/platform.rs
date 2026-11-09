@@ -1,5 +1,6 @@
-//! Process helpers: stop an old watcher, check stdin for input without
-//! blocking, and connect to a Claude Code session's inbox.
+//! Process helpers: stop an old watcher, check whether a process still
+//! runs, check stdin for input without blocking, and connect to a Claude
+//! Code session's inbox.
 //!
 //! Windows and macOS are the targets; the Unix version also works on Linux.
 
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use crate::error::{CqError, Result};
 
-pub use imp::{InboxConn, open_inbox, stdin_has_input, terminate};
+pub use imp::{InboxConn, open_inbox, process_alive, stdin_has_input, terminate};
 
 /// How long `stdin_has_input` waits for the first byte on an open, empty
 /// pipe. A pipeline writer (`echo ... | cq done`) can start after `cq`;
@@ -49,7 +50,10 @@ mod imp {
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, GetLastError, HANDLE,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileSizeEx, GetFileType,
     };
@@ -137,6 +141,26 @@ mod imp {
             QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
         };
         (ok != 0).then(|| OsString::from_wide(&buf[..len as usize]))
+    }
+
+    /// `Some(false)` when no process has this ID or it has exited,
+    /// `Some(true)` while it runs (or exists but may not be opened), and
+    /// `None` when Windows does not say.
+    pub fn process_alive(pid: u32) -> Option<bool> {
+        let Some(h) = open(pid, PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION) else {
+            // SAFETY: plain FFI call, right after the failed OpenProcess.
+            return match unsafe { GetLastError() } {
+                ERROR_INVALID_PARAMETER => Some(false),
+                ERROR_ACCESS_DENIED => Some(true),
+                _ => None,
+            };
+        };
+        // SAFETY: valid handle with SYNCHRONIZE access; a zero wait only checks.
+        match unsafe { WaitForSingleObject(h.0, 0) } {
+            WAIT_OBJECT_0 => Some(false),
+            WAIT_TIMEOUT => Some(true),
+            _ => None,
+        }
     }
 
     /// Stop the watcher with this process ID and wait up to 5 seconds for it
@@ -321,6 +345,22 @@ mod imp {
     fn alive(pid: libc::pid_t) -> bool {
         // SAFETY: signal 0 only checks; pid is positive.
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// `Some(false)` when no process has this ID, `Some(true)` while one
+    /// exists (signal 0 succeeds, or is refused with EPERM), and `None` for
+    /// an ID that cannot be checked or another error.
+    pub fn process_alive(pid: u32) -> Option<bool> {
+        // 0 and negative values would name process groups.
+        let raw = libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)?;
+        if alive(raw) {
+            return Some(true);
+        }
+        match io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => Some(false),
+            Some(libc::EPERM) => Some(true),
+            _ => None,
+        }
     }
 
     /// Stop the watcher with this process ID: SIGTERM, then SIGKILL if it
@@ -673,8 +713,21 @@ fn install_console_handler() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_cq_name;
+    use super::{is_cq_name, process_alive};
     use std::ffi::OsStr;
+
+    #[test]
+    fn this_process_is_alive_and_an_exited_child_is_not() {
+        assert_eq!(process_alive(std::process::id()), Some(true));
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        // While `child` holds its handle, Windows does not reuse the ID.
+        assert_eq!(process_alive(child.id()), Some(false));
+    }
 
     fn ok(theirs: &str, mine: &str) -> bool {
         is_cq_name(OsStr::new(theirs), OsStr::new(mine))

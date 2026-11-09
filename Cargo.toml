@@ -1,6 +1,6 @@
 [package]
 name = "cq"
-version = "1.10.2"
+version = "1.11.0"
 edition = "2024"
 description = "File-based message queue for AI coding sessions"
 license = "MIT"
@@ -20,6 +20,8 @@ notify = "8.2.0"
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# A short one-way hash of the inbox token in the watcher record.
+sha2 = "0.10.9"
 # Reads `sqlite_home` from Codex's config.toml, to find that database.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 

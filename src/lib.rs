@@ -21,6 +21,7 @@ pub mod message;
 pub mod names;
 pub mod overdue;
 pub mod platform;
+pub mod record;
 pub mod requeue;
 pub mod root;
 pub mod send;
