@@ -142,12 +142,13 @@ fn a_blocked_notice_does_not_block_the_reject() {
     assert!(env.ids("inbox/alice").is_empty());
     fs::remove_file(env.path("PAUSE")).unwrap();
 
-    // The hop limit: a notice to a message with 4 hops would have 5.
+    // The hop limit: a notice is an answer and may have 5 hops, so a notice
+    // to a message that already has 5 would have 6.
     let deep = fake_id("alice", "4444");
     env.plant(
         "bob",
         &deep,
-        &serde_json::to_vec(&v1(&deep, "alice", "bob", "info", 4)).unwrap(),
+        &serde_json::to_vec(&v1(&deep, "alice", "bob", "info", 5)).unwrap(),
     );
     assert_eq!(code(&env.claim("bob", &deep)), 0);
     let out = reject(&env, "bob", &deep, "no");

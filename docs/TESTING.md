@@ -15,6 +15,14 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Reply and hop limits, and CI, on Windows, 10 November 2026
+
+Three `cq send` and `cq done` changes from a code review. Checked on Windows 11 with Rust 1.98.1: `cargo build`, `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (371 tests, 0 failed). All passed, with the Codex change below included.
+
+- `tests/queue.rs`: `cq send --reply-to` a result or an info exits 5 and writes nothing, and a reply to a task is sent. A task with 4 hops gets its reply, its rejection and a `send --reply-to` result with 5 hops, and nothing can be sent about that answer. `cq done --reply` and `cq done --reject` on a claimed file that is not readable JSON move it and exit 4; plain `cq done` exits 0. Each of the three tests failed before the change.
+- `tests/rejected.rs`: a reject notice to a message with 5 hops is refused, and the reject still succeeds.
+- Not verified: the CI workflow (`.github/workflows/ci.yml`) has not run yet. macOS and Linux were not built for these changes.
+
 ## Codex wake without waiting on Windows, 10 November 2026
 
 `cq watch --to-codex` no longer waits for `codex queue` in the watcher loop. Checked on Windows 11 with `cargo build`, `cargo fmt --all --check`, `cargo clippy -p cq --all-targets -- -D warnings` and `cargo test` (368 tests, 0 failed). All passed.
