@@ -11,6 +11,7 @@ pub mod config;
 pub mod dispatch;
 pub mod done;
 pub mod error;
+pub mod exchange;
 pub mod exitlog;
 pub mod fsutil;
 pub mod idle;
