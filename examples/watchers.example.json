@@ -13,6 +13,15 @@
       "id": "AGY_CONVERSATION_ID",
       "prompt": "Queue check as 'worker-b-agy'. Follow the 'worker-b-agy' section of GEMINI.md. Never start or take over a cq watcher yourself. If there are no UNCLAIMED messages, end with no other work and no update.",
       "enabled": true
+    },
+    {
+      "name": "worker-c-agy",
+      "mode": "agy",
+      "id": "AGY_CONVERSATION_ID",
+      "broker": true,
+      "allow_from": ["lead"],
+      "sandbox_sid": "AGY_SANDBOX_SID",
+      "enabled": false
     }
   ]
 }

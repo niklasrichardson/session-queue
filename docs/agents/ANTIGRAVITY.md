@@ -41,6 +41,34 @@ Each wake is a full model turn. In the hand test, a turn took 4 seconds to about
 
 The watcher drops `CQ-WAKE` and `CQ-OVERDUE` lines ([Commands](../COMMANDS.md#wake-an-antigravity-cli-conversation)). So an Antigravity conversation that is a coordinator gets no wake or overdue alerts. See [Lifecycle by agent](../PROTOCOL.md#lifecycle-by-agent).
 
+## Broker mode
+
+Experimental, cq 1.14.0. On Windows, an `agy` turn runs at Low integrity, so it cannot write the queue root, which is Medium. In broker mode the watcher claims and finishes each message itself, and the turn only reads one request file and writes one reply file. The turn needs no write access to the queue root.
+
+```sh
+cq watch --as NAME --to-agy CONVERSATION_ID --agy-broker --agy-allow-from LEAD --agy-sandbox-sid SID
+```
+
+- **One turn per message**, oldest first: `agy --conversation ID --add-dir JOBDIR -p PROMPT --output-format json`. The prompt holds only the queue name and two paths, never message text.
+- **Allow list.** Repeat `--agy-allow-from NAME` for each sender whose messages get a turn. A task from any other sender is rejected unread; other types are finished unread. Sender names are policy, not authentication.
+- **Exchange folder.** `--agy-exchange DIR`, an absolute path. Default: `CQ_ROOT/agy-exchange/NAME`. It must not be or contain the queue root, and inside the queue root it must be under `agy-exchange/`. The watcher creates it with a Low label and a protected DACL: you and SYSTEM get Full control, the sandbox SID gets Modify. An existing folder must have exactly that access, or the watcher exits 64.
+- **Sandbox SID.** `--agy-sandbox-sid` is required on Windows. cq does not derive it. Whether it stays the same across `agy` versions is not known.
+- **Files.** The job folder `JOBDIR/ID` holds `request.json` ([schema](../../schema/agy-request.v1.json)). The turn writes `reply.json` ([schema](../../schema/agy-reply.v1.json)) with the request's `id` and `nonce`. The watcher reads it only after every process of the turn has stopped.
+- **Outcome.** A valid reply or reject finishes a task with that text. A turn that succeeded without a valid reply gets a `failed` reply that says the task may have partly run. A failed turn without a reply gets a `failed` reply with agy's status. Info and results are finished without a reply.
+- **Job records.** `CQ_ROOT/dispatch/NAME/ID/` holds `state.json`, `completion.json`, `agy.out` and `agy.err`. Records stay after the job.
+- **No retry.** A turn that started is never run again. Only a failed spawn is tried again (after 1, 2 and 4 s).
+
+### Held jobs
+
+The watcher holds a job (phase `needs-review`, exit 11) when it cannot be sure what happened: the turn timed out (30 minutes), the watcher stopped while the turn ran, `agy` answered from another or no conversation, a failed turn still wrote a valid reply, or the watcher restarted while a turn may have run. The message stays claimed. At the next start the watcher refuses (exit 5) until a person has looked. It also refuses a torn record, a claimed message without a record, or more than one unfinished record.
+
+1. Make sure no `agy` from that job runs. For a job held in `launching`, also look for an `agy` process that is suspended or that the watcher did not start in a job, and end it.
+2. Inspect `state.json` (phase, reason, verdict), `completion.json` if present, `agy.out`, `agy.err`, the exchange job folder and the conversation.
+3. Finish the message by hand with `cq done --as NAME ID --reply --status failed` or `--reject`. Do not run the task again unless a person has reviewed its side effects.
+4. Move the record folder out of `dispatch/NAME/`, remove the exchange job folder, and start the watcher again.
+
+Not yet tested with the real `agy`: that the turn's token has the sandbox SID, and that `--add-dir` gives the turn the job folder. Use broker mode only after those live tests.
+
 ## Open conversation
 
 In one live test, a turn ran while the same conversation was also open in an interactive `agy` window. The turn claimed and finished the message, but the open window did not show the turn. About 5 minutes later, the interactive session exited. The cause is not known ([Test status](../TESTING.md#antigravity-cli-live-use-on-windows-6-november-2026)). No way is known to send a prompt into an `agy` session that is already open from outside it ([What else is known](#what-else-is-known)).

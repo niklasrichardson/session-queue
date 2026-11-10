@@ -56,7 +56,7 @@ How a session learns of a message, and what happens when its watcher stops or it
 | Claude Code, [inbox mode](#inbox-mode) | The watcher posts its lines into the session | Delivered | It posts a last `stopped` message, unless it was killed | `/cq-start NAME`, which runs `cq wake` and sends the session a Claude Code message. The session starts its own watcher. |
 | Claude Code, [Monitor mode](#monitor-mode-fallback) | The Monitor shows the watcher's lines | Delivered | The session re-arms the Monitor | As for inbox mode |
 | Codex chat, `--to-codex` | A fixed wake prompt; the chat runs `cq list` | Dropped | The chat is not told | Run `cq wake`, then start the watcher again outside the chat ([Codex setup](agents/CODEX.md#sleep-and-wake)) |
-| Antigravity CLI, `--to-agy` | A fixed wake prompt; the turn runs `cq list` | Dropped | The conversation is not told | Run `cq wake`, then start the watcher again outside the conversation ([Antigravity CLI setup](agents/ANTIGRAVITY.md#sleep-and-wake)) |
+| Antigravity CLI, `--to-agy` | A fixed wake prompt; the turn runs `cq list`. With `--agy-broker`, the watcher claims, and the turn reads one request file and writes one reply file | Dropped | The conversation is not told | Run `cq wake`, then start the watcher again outside the conversation ([Antigravity CLI setup](agents/ANTIGRAVITY.md#sleep-and-wake)) |
 | Polling | Each scheduled run runs `cq list` | None: polling runs no watcher | Not applicable | Run `cq wake`, then resume the scheduler ([Other agents](agents/OTHER-AGENTS.md#sleep-and-wake)) |
 
 The dropped lines are in [Commands](COMMANDS.md#wake-a-codex-chat) and [Commands](COMMANDS.md#wake-an-antigravity-cli-conversation). This limits hand-offs with nobody present:

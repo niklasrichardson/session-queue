@@ -134,6 +134,15 @@ A message is read soon after it is sent.
 - **A turn is a process tree.** `agy` starts helpers and shell commands. Each turn runs in its own Job Object (Windows) or process group (Unix), so the 30-minute limit stops all of it, not only `agy`. The Windows job has no kill-on-close, unlike the dispatcher's: a turn that still runs when the watcher stops must finish on its own. Only the time limit stops a turn.
 - **No session variables.** `agy` gets neither the inbox variables nor the session variables that the dispatcher clears (`CQ_SESSION_ID`, the Codex thread and session IDs, the Claude Code session IDs). One helper, `members::remove_session_vars`, clears them for the dispatcher, `--to-agy` and `--to-codex`.
 
+## Antigravity CLI broker mode
+
+- **The finding.** On Windows, an `agy` turn runs at Low integrity in a sandbox. The queue root is Medium, and Windows does not let a Low process write up. So a turn cannot run `cq claim`, `cq done` or `cq send`.
+- **The root stays Medium.** Lowering the queue root's label would let every Low process on the machine write the queue. Instead, `--agy-broker` makes the watcher, at Medium, claim and finish each message, as `cq dispatch` does for Codex. The turn gets one exchange folder that it can write, through `--add-dir`.
+- **Exchange folder.** A Low label (no write up, inherited) and a protected DACL: the user and SYSTEM get Full control, the sandbox SID gets Modify. An existing folder must match as a set, or the watcher refuses it. cq opens every path relative to a pinned folder handle, refuses reparse points, and reads `reply.json` only as a closed regular file with one link, capped at 64 KB, after every process of the turn has stopped.
+- **One rule for verdicts.** `decide()` maps a turn's verdict to a completion. Normal runs and restart recovery both use it, and `completion.json` must equal its result before `cq done` runs.
+- **No retry and no reattach.** A turn that may have started is never run again, and a restarted watcher does not reattach to a running turn: the job is held for a person. Only a spawn failure is retried, because the child starts suspended and no `agy` code has run.
+- **Not in 1.14.0.** `cq session-start` has no broker variant: the members record has no broker flag, and Antigravity does not run that hook.
+
 ## Sleep
 
 Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7): manual sleep and wake for one session. The protocol is in [Protocol](PROTOCOL.md#sleep-and-wake).

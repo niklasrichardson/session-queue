@@ -57,7 +57,7 @@ if (-not (Get-Command $cq -CommandType Application -ErrorAction SilentlyContinue
 
 # Check each watcher entry.
 if ($cfg.watchers -isnot [array]) { Stop-WithError """watchers"" must be a list in $Config" }
-$allowed = 'name', 'mode', 'id', 'prompt', 'bin', 'enabled'
+$allowed = 'name', 'mode', 'id', 'prompt', 'bin', 'enabled', 'broker', 'allow_from', 'exchange', 'sandbox_sid'
 $names = @{}
 $watchers = [System.Collections.Generic.List[hashtable]]::new()
 $i = 0
@@ -77,6 +77,25 @@ foreach ($w in $cfg.watchers) {
         Stop-WithError "${label}: ""bin"" must be the path to codex or agy, or left out"
     }
     if ($null -ne $w.enabled -and $w.enabled -isnot [bool]) { Stop-WithError "${label}: ""enabled"" must be true or false" }
+    if ($null -ne $w.broker -and $w.broker -isnot [bool]) { Stop-WithError "${label}: ""broker"" must be true or false" }
+    $broker = $w.broker -eq $true
+    if ($broker -and $w.mode -ne 'agy') { Stop-WithError "${label}: ""broker"" is for ""agy"" watchers only" }
+    if (-not $broker -and ($null -ne $w.allow_from -or $null -ne $w.exchange -or $null -ne $w.sandbox_sid)) {
+        Stop-WithError "${label}: ""allow_from"", ""exchange"" and ""sandbox_sid"" need ""broker"": true"
+    }
+    if ($broker) {
+        $from = @($w.allow_from)
+        if ($null -eq $w.allow_from -or $from.Count -eq 0 -or ($from | Where-Object { $_ -isnot [string] -or -not $_.Trim() })) {
+            Stop-WithError "${label}: ""allow_from"" must be a non-empty list of names"
+        }
+        if ($null -ne $w.exchange -and ($w.exchange -isnot [string] -or -not [System.IO.Path]::IsPathRooted($w.exchange))) {
+            Stop-WithError "${label}: ""exchange"" must be an absolute path, or left out"
+        }
+        # cq checks that it is a valid SID.
+        if ($w.sandbox_sid -isnot [string] -or -not $w.sandbox_sid.Trim()) {
+            Stop-WithError "${label}: ""sandbox_sid"" must be the SID of agy's sandbox"
+        }
+    }
     if ($w.enabled -eq $false) { continue }
     if ($names.ContainsKey($w.name)) { Stop-WithError "${label}: the name is used twice; two watchers with --takeover would fight" }
     $names[$w.name] = $true
@@ -84,6 +103,11 @@ foreach ($w in $cfg.watchers) {
     $wargs = @("--to-$($w.mode)", $w.id)
     if ($w.prompt) { $wargs += @("--$($w.mode)-prompt", $w.prompt) }
     if ($w.bin) { $wargs += @("--$($w.mode)-bin", $w.bin) }
+    if ($broker) {
+        $wargs += @('--agy-broker', '--agy-sandbox-sid', $w.sandbox_sid)
+        foreach ($n in $w.allow_from) { $wargs += @('--agy-allow-from', $n) }
+        if ($w.exchange) { $wargs += @('--agy-exchange', $w.exchange) }
+    }
     $watchers.Add(@{ Name = $w.name; Args = $wargs })
 }
 if ($watchers.Count -eq 0) { Stop-WithError "no enabled watchers in $Config" }

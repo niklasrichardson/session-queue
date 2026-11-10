@@ -23,6 +23,16 @@ Tested live in the desktop app on Windows: re-arming after each 30-minute watche
 - `tests/lock.rs`: the same through the `cq` binary, with 16 processes taking one lock at once, 3 rounds; a session refused under another name; orphaned and stale in `status` and `list`, and `CQ_LOCK_STALE_MINUTES`; `cq status` with `locks=`; a coordinator's watcher prints `CQ-LOCK-ORPHAN` and `CQ-LOCK-STALE` once, not again after a restart, and again for a new take; a coordinator's watcher prints `CQ-LOCK-STALE` for its own old lock; a worker's watcher prints none; take, wait, release and status from Git Bash.
 - Not verified: the forms under a Claude Code Monitor or `--to-inbox` in a live session, and the lock under real GUI test use.
 
+## Antigravity CLI broker mode on Windows, 10 November 2026
+
+`cq watch --to-agy --agy-broker` (cq 1.14.0). Checked on Windows 11 with Rust 1.98.1: `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (407 tests, 0 failed). No test ran the real `agy`.
+
+- `src/exchange.rs` (7 tests, on a temp folder): a new exchange folder gets the Low label and the protected DACL, and its children inherit them; a file renamed in keeps its Medium label. An existing folder is compared as a set: reordered entries pass; a missing inherit flag, an extra entry, an unprotected DACL or no label is refused, as is a missing or invalid SID. Junctions at an ancestor, a job folder or `reply.json` are refused, and a junction inside a job folder is deleted, not followed. Pinned folders cannot be renamed. A read is capped, and refuses a file open for writing, a second hard link and a folder.
+- `src/broker.rs` (20 tests, fake turn runner and clock): the verdict table; `reply.json` checks (UTF-8 BOM, UTF-16, NUL, wrong id or nonce, unknown field, field rules per outcome, size); the prompt and log never hold message text; the allow list; spawn retries after 1, 2 and 4 s and exit 11 after 4; timeout and a stop during a turn hold the job; PAUSE; start-up refusals (torn, unknown, missing record, claimed message without a record, two unfinished records, unexpected exchange entry) and recovery from `prepared`, `launching`, `running`, `ended` and `completing`.
+- `tests/agy_broker.rs` (6 tests, fake `agy` binary): reply, reject, read, no reply and wrong nonce end to end; another sender's task is rejected without a turn; a held record stops the next start with exit 5; bad flags exit 64.
+- `examples/start-watchers.ps1` with a fake `cq`: the broker fields become the right flags, and broker fields without `broker` are refused.
+- **Not verified (release gates, live):** that a real turn's token has the sandbox SID and can write the exchange folder, and that `--add-dir` gives the turn the job folder. Unix code paths of the exchange folder were not compiled or run.
+
 ## Reply and hop limits, and CI, on Windows, 10 November 2026
 
 Three `cq send` and `cq done` changes from a code review. Checked on Windows 11 with Rust 1.98.1: `cargo build`, `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (371 tests, 0 failed). All passed, with the Codex change below included.
