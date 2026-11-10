@@ -1,7 +1,9 @@
 //! `cq watch --to-agy --agy-broker` (experimental), end to end, with the
 //! fake `agy` (`tests/support/fake_agy.rs`) in its broker modes. No test
 //! runs the real Antigravity CLI, and the sandbox SID is made up: the
-//! release gates with the real token run live.
+//! release gates with the real token run live. Broker mode is Windows
+//! only, so elsewhere one test checks that it is refused.
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
 mod common;
 
@@ -99,6 +101,7 @@ fn reply(env: &Env) -> serde_json::Value {
     env.read_json(&format!("inbox/boss/{}.json", ids[0]))
 }
 
+#[cfg(windows)]
 #[test]
 fn a_task_gets_the_reply_agy_wrote_and_agy_never_sees_message_text() {
     let env = Env::new();
@@ -134,6 +137,7 @@ fn a_task_gets_the_reply_agy_wrote_and_agy_never_sees_message_text() {
     assert!(lines.iter().all(|l| !l.contains("MARK")), "{lines:?}");
 }
 
+#[cfg(windows)]
 #[test]
 fn info_is_read_and_a_reject_rejects_the_task() {
     let env = Env::new();
@@ -155,6 +159,7 @@ fn info_is_read_and_a_reject_rejects_the_task() {
     assert_eq!(reply(&env)["body"], "BROKER-NO");
 }
 
+#[cfg(windows)]
 #[test]
 fn no_reply_or_a_reply_for_another_nonce_fails_the_task() {
     for mode in ["broker-none", "broker-bad"] {
@@ -183,6 +188,7 @@ fn no_reply_or_a_reply_for_another_nonce_fails_the_task() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn a_task_from_another_sender_is_rejected_without_a_turn() {
     let env = Env::new();
@@ -195,6 +201,7 @@ fn a_task_from_another_sender_is_rejected_without_a_turn() {
     assert_eq!(replies.len(), 1);
 }
 
+#[cfg(windows)]
 #[test]
 fn a_record_that_needs_review_stops_the_next_start() {
     let env = Env::new();
@@ -219,6 +226,7 @@ fn a_record_that_needs_review_stops_the_next_start() {
     assert!(stderr(&out).contains("needs review"), "{}", stderr(&out));
 }
 
+#[cfg(windows)]
 #[test]
 fn bad_broker_flags_are_usage_errors() {
     let env = Env::new();
@@ -276,4 +284,26 @@ fn bad_broker_flags_are_usage_errors() {
         assert!(stderr(&out).contains("--agy-sandbox-sid"));
     }
     assert!(calls(&env).is_empty());
+}
+
+#[cfg(not(windows))]
+#[test]
+fn broker_mode_is_refused_off_windows() {
+    let env = Env::new();
+    let out = env
+        .cmd(&[
+            "watch",
+            "--as",
+            "b",
+            "--to-agy",
+            CONVERSATION,
+            "--agy-broker",
+            "--agy-allow-from",
+            "boss",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 64, "{}", stderr(&out));
+    assert!(stderr(&out).contains("Windows only"), "{}", stderr(&out));
+    assert!(!env.path("agy-exchange").exists());
 }

@@ -258,9 +258,10 @@ enum Cmd {
         /// check prompt. It must not contain anything a queue message wrote.
         #[arg(long, value_name = "TEXT", requires = "to_agy")]
         agy_prompt: Option<String>,
-        /// Experimental. With --to-agy: the watcher claims and finishes each
-        /// message itself, and each agy turn only reads a request file and
-        /// writes a reply file in the exchange folder. One turn per message.
+        /// Experimental, Windows only. With --to-agy: the watcher claims and
+        /// finishes each message itself, and each agy turn only reads a
+        /// request file and writes a reply file in the exchange folder. One
+        /// turn per message.
         #[arg(long, requires = "to_agy")]
         agy_broker: bool,
         /// With --agy-broker: a sender whose messages get an agy turn. Repeat
@@ -819,6 +820,14 @@ fn run(cmd: Cmd) -> Result<i32> {
             {
                 return Err(CqError::usage(
                     "--agy-broker needs --to-agy, and --agy-allow-from, --agy-exchange and --agy-sandbox-sid need --agy-broker",
+                ));
+            }
+            // The Unix trust rule reads only owners and mode bits, so an ACL
+            // (macOS extended ACLs, POSIX ACLs) could still let another user
+            // swap a folder of the exchange path.
+            if agy_broker && !cfg!(windows) {
+                return Err(CqError::usage(
+                    "--agy-broker is supported on Windows only: on Unix the exchange folder needs trust checks that read ACLs (macOS extended ACLs, POSIX ACLs), which cq does not have yet",
                 ));
             }
             let mode = match (&to_codex, &to_agy, to_inbox) {

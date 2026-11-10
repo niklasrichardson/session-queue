@@ -55,7 +55,7 @@ The script finds its config in this order: `-Config PATH`, else the `CQ_WATCHERS
 | `prompt` | The fixed wake prompt, for `--codex-prompt` or `--agy-prompt`. Never put text from a queue message in it. | The watcher's default prompt |
 | `bin` | The Codex or `agy` executable, for `--codex-bin` or `--agy-bin`. | `codex` or `agy` on `PATH` |
 | `enabled` | `false` skips the watcher. | `true` |
-| `broker` | `agy` only: `true` adds `--agy-broker` ([Broker mode](agents/ANTIGRAVITY.md#broker-mode)). | `false` |
+| `broker` | `agy` only, Windows only: `true` adds `--agy-broker` ([Broker mode](agents/ANTIGRAVITY.md#broker-mode)). | `false` |
 | `allow_from` | With `broker`: a non-empty list of sender names, one `--agy-allow-from` each. | None: required with `broker` |
 | `sandbox_sid` | With `broker`: `--agy-sandbox-sid`, the SID of `agy`'s sandbox. | None: required with `broker` |
 | `exchange` | With `broker`: `--agy-exchange`, an absolute path. | `CQ_ROOT/agy-exchange/NAME` |

@@ -1290,6 +1290,13 @@ mod imp {
 
     const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY;
 
+    /// The permission bits of `st`. `st_mode` is u32 on Linux and u16 on
+    /// macOS, so the cast is needed on one and a no-op on the other.
+    #[allow(clippy::unnecessary_cast)]
+    fn mode_bits(st: &libc::stat) -> u32 {
+        st.st_mode as u32 & 0o7777
+    }
+
     fn euid() -> u32 {
         // SAFETY: no arguments.
         unsafe { libc::geteuid() }
@@ -1305,7 +1312,7 @@ mod imp {
     pub fn check_trusted(st: &libc::stat, below: Option<u32>, at: &Path) -> io::Result<()> {
         let me = euid();
         let trusted = |uid: u32| uid == 0 || uid == me;
-        let mode = st.st_mode as u32 & 0o7777;
+        let mode = mode_bits(st);
         let why = if !trusted(st.st_uid) {
             format!("is owned by uid {}", st.st_uid)
         } else if mode & 0o022 == 0 {
@@ -1442,7 +1449,7 @@ mod imp {
         let st = stat(fd)?;
         Ok(Descriptor {
             uid: st.st_uid,
-            mode: st.st_mode as u32 & 0o7777,
+            mode: mode_bits(&st),
         })
     }
 

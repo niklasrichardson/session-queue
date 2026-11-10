@@ -282,11 +282,11 @@ Experimental. `cq watch --as B --to-agy CONVERSATION_ID` wakes an Antigravity CL
 
 ### Broker mode
 
-Experimental, cq 1.14.0. `--agy-broker` changes `--to-agy`: the watcher claims and finishes each message itself, and the `agy` turn only reads `request.json` and writes `reply.json` in an exchange folder. Without `--agy-broker`, `--to-agy` works as above. Setup, the exchange folder's access and the operator steps are in [Broker mode](agents/ANTIGRAVITY.md#broker-mode).
+Experimental, cq 1.14.0, Windows only: on macOS and Linux `--agy-broker` exits 64, because the exchange folder there needs trust checks that read ACLs (macOS extended ACLs, POSIX ACLs), which cq does not have yet. `--agy-broker` changes `--to-agy`: the watcher claims and finishes each message itself, and the `agy` turn only reads `request.json` and writes `reply.json` in an exchange folder. Without `--agy-broker`, `--to-agy` works as above. Setup, the exchange folder's access and the operator steps are in [Broker mode](agents/ANTIGRAVITY.md#broker-mode).
 
 | Flag | Meaning |
 | --- | --- |
-| `--agy-broker` | Broker mode. Needs `--to-agy`. |
+| `--agy-broker` | Broker mode, Windows only (exit 64 elsewhere). Needs `--to-agy`. |
 | `--agy-allow-from NAME` | Repeat for each sender whose messages get a turn. At least one. A task from another sender is rejected unread; other types are finished unread. |
 | `--agy-exchange DIR` | The exchange folder, absolute. Default: `CQ_ROOT/agy-exchange/B`. Not the queue root, not a folder that contains it, and inside it only under `agy-exchange/`. |
 | `--agy-sandbox-sid SID` | The SID of `agy`'s sandbox. Required on Windows. It gets Modify access to the exchange folder. |
