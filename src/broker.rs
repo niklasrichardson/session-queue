@@ -521,6 +521,14 @@ impl TurnRunner for AgyProcess {
     }
 }
 
+/// A runner dropped with a turn still running (a watcher that ends on an
+/// error) stops and reaps the whole tree, on Unix too.
+impl Drop for AgyProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 /// The broker's settings.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -577,6 +585,8 @@ pub struct AgyBroker<R: TurnRunner, C: Clock> {
     retry_at: Option<Instant>,
     error: Option<CqError>,
     timeout: Duration,
+    /// A turn was started and not yet seen to end or stopped.
+    turn_live: bool,
 }
 
 impl AgyBroker<AgyProcess, SystemClock> {
@@ -666,6 +676,7 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
             retry_at: None,
             error: None,
             timeout: TURN_TIMEOUT,
+            turn_live: false,
         })
     }
 
@@ -807,15 +818,15 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
             }
             Stage::Running { started } => {
                 let started = *started;
-                match self.runner.poll() {
+                match self.poll_turn() {
                     None if now >= started + self.timeout => {
-                        self.runner.stop();
+                        self.stop_turn();
                         self.ended(job, Verdict::not_read(End::TimedOut))?;
                         Ok(Step::Next)
                     }
                     None => Ok(Step::Wait),
                     Some(Err(e)) => {
-                        self.runner.stop();
+                        self.stop_turn();
                         Err(self.hold(job, format!("could not wait for agy: {e}")))
                     }
                     Some(Ok(code)) => {
@@ -896,6 +907,7 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
         self.set_phase(job, Phase::Launching)?;
         match self.runner.start(&spec) {
             Ok(pid) => {
+                self.turn_live = true;
                 self.retry_at = None;
                 job.state.pid = pid;
                 self.set_phase(job, Phase::Running)?;
@@ -976,16 +988,51 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
     /// Run the current job until it must wait.
     fn advance(&mut self) -> Result<()> {
         while let Some(mut job) = self.job.take() {
-            match self.step(&mut job)? {
-                Step::Next => self.job = Some(job),
-                Step::Wait => {
+            match self.step(&mut job) {
+                Ok(Step::Next) => self.job = Some(job),
+                Ok(Step::Wait) => {
                     self.job = Some(job);
                     return Ok(());
                 }
-                Step::Finished => self.scan_due = true,
+                Ok(Step::Finished) => self.scan_due = true,
+                Err(e) => {
+                    self.abandon(&mut job);
+                    return Err(e);
+                }
             }
         }
         Ok(())
+    }
+
+    /// After a fatal error in `job`: a turn that may still run is stopped
+    /// and the job held, as its verdict is unknown. The caller keeps the
+    /// original error; a hold that cannot be written leaves the record in
+    /// `launching` or `running`, which the next start holds too.
+    fn abandon(&mut self, job: &mut Job) {
+        if !self.turn_live {
+            return;
+        }
+        self.stop_turn();
+        if job.state.phase != Phase::NeedsReview {
+            let e = self.hold(job, "the watcher failed while the turn ran");
+            eprintln!("cq watch: {e}");
+        }
+    }
+
+    fn poll_turn(&mut self) -> Option<io::Result<Option<i32>>> {
+        let result = self.runner.poll();
+        if result.is_some() {
+            self.turn_live = false;
+        }
+        result
+    }
+
+    /// Stop the turn, once.
+    fn stop_turn(&mut self) {
+        if self.turn_live {
+            self.runner.stop();
+            self.turn_live = false;
+        }
     }
 
     /// Claim the oldest message in the inbox, if it is time to look.
@@ -1137,9 +1184,10 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
             job.state.phase
         ));
         match job.state.phase {
-            Phase::Claimed if claimed => job.stage = Stage::Sort,
-            Phase::Prepared if claimed => {
-                // No turn started: the launch intent is durable before spawn.
+            // No turn started in either: the launch intent is durable before
+            // spawn. A `claimed` record can still have a job folder from a
+            // stop between making it and saving `prepared`.
+            Phase::Claimed | Phase::Prepared if claimed => {
                 if let Some(folder) = job.folder.take()
                     && let Err(e) = self.exchange().remove_job(folder)
                 {
@@ -1149,7 +1197,11 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
                     ));
                 }
                 job.state.nonce = None;
-                job.stage = Stage::Prepare;
+                job.stage = if job.state.phase == Phase::Claimed {
+                    Stage::Sort
+                } else {
+                    Stage::Prepare
+                };
             }
             Phase::Claimed | Phase::Prepared => {
                 return Err(self.hold(&mut job, "the message is no longer claimed"));
@@ -1304,13 +1356,13 @@ impl<R: TurnRunner, C: Clock> Sink for AgyBroker<R, C> {
             return true;
         };
         if let Stage::Running { .. } = job.stage {
-            let result = match self.runner.poll() {
+            let result = match self.poll_turn() {
                 Some(Ok(code)) => {
                     let v = self.read_verdict(&job, code);
                     self.ended(&mut job, v)
                 }
                 _ => {
-                    self.runner.stop();
+                    self.stop_turn();
                     self.ended(&mut job, Verdict::not_read(End::Stopped))
                 }
             };
@@ -1331,6 +1383,9 @@ impl<R: TurnRunner, C: Clock> Sink for AgyBroker<R, C> {
     }
 
     fn failed(&mut self, e: io::Error) -> Result<String> {
+        if let Some(mut job) = self.job.take() {
+            self.abandon(&mut job);
+        }
         Err(self
             .error
             .take()

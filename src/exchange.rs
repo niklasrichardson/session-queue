@@ -72,8 +72,9 @@ impl Exchange {
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| io::Error::other("the exchange folder name is not valid"))?;
-        std::fs::create_dir_all(parent)?;
-        let pins = imp::pin(parent)?;
+        // Missing parents are made in the same handle walk that checks each
+        // component, so nothing is made through a junction.
+        let pins = imp::pin(parent, true)?;
         let parent_dir = pins.last().expect("at least the volume root");
         let dir = match imp::open_dir(parent_dir, leaf)? {
             Some(dir) => {
@@ -167,7 +168,7 @@ mod imp {
 
     use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
     use windows_sys::Wdk::Storage::FileSystem::{
-        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
         FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
     };
     use windows_sys::Win32::Foundation::{
@@ -187,7 +188,7 @@ mod imp {
         LABEL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
         PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR,
         SetSecurityDescriptorControl, SetSecurityDescriptorDacl, SetSecurityDescriptorOwner,
-        TOKEN_QUERY, TOKEN_USER, TokenUser,
+        TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
@@ -424,7 +425,10 @@ mod imp {
 
     /// Open every folder from the volume root to `path`, each relative to
     /// its parent, refusing reparse points. The last handle is `path`.
-    pub fn pin(path: &Path) -> io::Result<Vec<OwnedHandle>> {
+    /// Open each folder of `path`, from the volume root, relative to the one
+    /// before, refusing reparse points. With `create`, a missing folder is
+    /// made (it is opened, not followed, if it is a reparse point).
+    pub fn pin(path: &Path, create: bool) -> io::Result<Vec<OwnedHandle>> {
         let mut parts = path.components();
         let drive = match parts.next() {
             Some(Component::Prefix(p)) => match p.kind() {
@@ -472,9 +476,9 @@ mod imp {
                 pins.last(),
                 &component(name)?,
                 access,
-                0,
+                if create { FILE_ATTRIBUTE_DIRECTORY } else { 0 },
                 PIN_SHARE,
-                FILE_OPEN,
+                if create { FILE_OPEN_IF } else { FILE_OPEN },
                 FILE_DIRECTORY_FILE,
                 null(),
             )
@@ -559,6 +563,24 @@ mod imp {
 
     /// The current user's SID, from the process token.
     pub fn current_user() -> io::Result<String> {
+        let buf = token_info(TokenUser)?;
+        // SAFETY: GetTokenInformation wrote a TOKEN_USER at the start.
+        let user = unsafe { &*(buf.as_ptr() as *const TOKEN_USER) };
+        sid_string(user.User.Sid)
+    }
+
+    /// The owner the process token gives new objects: the user, or
+    /// BUILTIN\Administrators in an elevated token.
+    pub fn token_owner() -> io::Result<String> {
+        let buf = token_info(TokenOwner)?;
+        // SAFETY: GetTokenInformation wrote a TOKEN_OWNER at the start.
+        let owner = unsafe { &*(buf.as_ptr() as *const TOKEN_OWNER) };
+        sid_string(owner.Owner)
+    }
+
+    /// The process token's `class` information, in a buffer that also
+    /// holds the SIDs it points to.
+    fn token_info(class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
         let mut token: HANDLE = null_mut();
         // SAFETY: the pseudo handle needs no closing; `token` is closed below.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
@@ -568,11 +590,11 @@ mod imp {
         let token = unsafe { OwnedHandle::from_raw_handle(token as RawHandle) };
         let mut buf = vec![0u64; 128];
         let mut len = 0u32;
-        // SAFETY: `buf` is 1024 bytes, aligned for TOKEN_USER.
+        // SAFETY: `buf` is 1024 bytes, aligned for the token structures.
         if unsafe {
             GetTokenInformation(
                 raw(&token),
-                TokenUser,
+                class,
                 buf.as_mut_ptr().cast(),
                 (buf.len() * 8) as u32,
                 &mut len,
@@ -581,9 +603,7 @@ mod imp {
         {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: GetTokenInformation wrote a TOKEN_USER at the start.
-        let user = unsafe { &*(buf.as_ptr() as *const TOKEN_USER) };
-        sid_string(user.User.Sid)
+        Ok(buf)
     }
 
     /// An ACL holding `aces`, in a buffer that must outlive its use.
@@ -756,8 +776,15 @@ mod imp {
     }
 
     pub fn check_exchange(h: &OwnedHandle, sid: Option<&str>) -> io::Result<()> {
-        let want = Descriptor::contract(&current_user()?, sandbox(sid)?);
-        if let Some(why) = descriptor(h)?.mismatch(&want) {
+        let mut want = Descriptor::contract(&current_user()?, sandbox(sid)?);
+        let have = descriptor(h)?;
+        // A folder made without an explicit owner gets the token's default
+        // owner, which is BUILTIN\Administrators when elevated. That owner
+        // is this process too, so it is accepted beside the user.
+        if have.owner == token_owner()? {
+            want.owner = have.owner.clone();
+        }
+        if let Some(why) = have.mismatch(&want) {
             return Err(io::Error::other(format!(
                 "the exchange folder does not have the expected access: {why}; delete it and the watcher creates it again"
             )));
@@ -1072,7 +1099,7 @@ mod imp {
     use std::fs::File;
     use std::io::{self, Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::path::{Component, Path};
+    use std::path::{Component, Path, PathBuf};
 
     use super::{CLEANUP_MAX_DEPTH, Entry, FileRead};
 
@@ -1126,30 +1153,69 @@ mod imp {
 
     const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY;
 
-    pub fn pin(path: &Path) -> io::Result<Vec<OwnedFd>> {
+    /// Open each folder of `path` from `/` with no-follow opens, and with
+    /// `create` make missing ones (0700) in the same walk. The part of
+    /// `path` that exists is first resolved once with `realpath`, so a
+    /// symlink there (such as `/var` on macOS) is trusted as it stands at
+    /// startup; a link that appears in the walk after that is refused.
+    pub fn pin(path: &Path, create: bool) -> io::Result<Vec<OwnedFd>> {
         let mut parts = path.components();
         if parts.next() != Some(Component::RootDir) {
             return Err(io::Error::other(
                 "the exchange folder must be an absolute path",
             ));
         }
+        if !parts.all(|p| matches!(p, Component::Normal(_))) {
+            return Err(io::Error::other("the exchange path holds . or .."));
+        }
+        let path = resolve_existing(path)?;
         let mut pins = vec![open_at(libc::AT_FDCWD, c"/", DIR_FLAGS, 0)?];
-        for part in parts {
+        for part in path.components().skip(1) {
             let Component::Normal(name) = part else {
                 return Err(io::Error::other("the exchange path holds . or .."));
             };
             let name = name
                 .to_str()
                 .ok_or_else(|| io::Error::other("the exchange path is not valid Unicode"))?;
-            let fd = open_at(
-                pins.last().expect("root").as_raw_fd(),
-                &name_c(name)?,
-                DIR_FLAGS,
-                0,
-            )?;
+            let parent = pins.last().expect("root").as_raw_fd();
+            let c = name_c(name)?;
+            if create {
+                // SAFETY: `c` is NUL-terminated. mkdirat never follows a
+                // symlink at the last component.
+                if unsafe { libc::mkdirat(parent, c.as_ptr(), 0o700) } != 0 {
+                    let e = io::Error::last_os_error();
+                    if e.kind() != io::ErrorKind::AlreadyExists {
+                        return Err(e);
+                    }
+                }
+            }
+            let fd = open_at(parent, &c, DIR_FLAGS, 0)?;
             pins.push(fd);
         }
         Ok(pins)
+    }
+
+    /// `path` with its longest existing prefix resolved by `realpath` and
+    /// the missing rest appended unchanged.
+    fn resolve_existing(path: &Path) -> io::Result<PathBuf> {
+        let mut base = path;
+        let mut missing = Vec::new();
+        loop {
+            match std::fs::canonicalize(base) {
+                Ok(mut real) => {
+                    real.extend(missing.iter().rev());
+                    return Ok(real);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    let (Some(parent), Some(name)) = (base.parent(), base.file_name()) else {
+                        return Err(e);
+                    };
+                    missing.push(name);
+                    base = parent;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     pub fn open_dir(parent: &OwnedFd, name: &str) -> io::Result<Option<OwnedFd>> {
@@ -1339,6 +1405,34 @@ pub fn valid_sid(sid: &str) -> bool {
     imp::valid_sid(sid)
 }
 
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    use super::Exchange;
+
+    #[test]
+    fn a_symlink_above_the_exchange_folder_is_resolved_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, tmp.path().join("link")).unwrap();
+        // Missing folders below the link are made at its target, 0700.
+        let path = tmp.path().join("link").join("a").join("ex");
+        let ex = Exchange::open_or_create(&path, None).unwrap();
+        let mode = fs::metadata(real.join("a")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        assert!(real.join("a").join("ex").is_dir());
+        ex.create_job("j1").unwrap();
+        assert!(real.join("a").join("ex").join("j1").is_dir());
+        drop(ex);
+        // The exchange folder itself must not be a link.
+        symlink(real.join("a").join("ex"), tmp.path().join("exlink")).unwrap();
+        assert!(Exchange::open_or_create(&tmp.path().join("exlink"), None).is_err());
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use std::fs;
@@ -1474,8 +1568,12 @@ mod tests {
             allow(FILE_ALL_ACCESS, INHERIT_FLAGS, imp::SYSTEM_SID),
             allow(FILE_ALL_ACCESS, INHERIT_FLAGS, &u),
         ];
+        // fs::create_dir gives the token's default owner: the user, or
+        // BUILTIN\Administrators when the tests run elevated.
         folder_with(tmp.path(), "reordered", &good, true, true);
-        Exchange::open_or_create(&tmp.path().join("reordered"), Some(SID)).unwrap();
+        let ex = Exchange::open_or_create(&tmp.path().join("reordered"), Some(SID)).unwrap();
+        let owner = imp::descriptor(&ex.dir).unwrap().owner;
+        assert_eq!(owner, imp::token_owner().unwrap());
 
         let mut missing_flag = good.clone();
         missing_flag[0].flags = OBJECT_INHERIT;
@@ -1531,6 +1629,13 @@ mod tests {
             .expect("an ancestor junction must be refused");
         assert!(e.to_string().contains("reparse point"), "{e}");
         assert!(!real.join("ex").exists());
+        // With missing folders below it: none is made at the target.
+        let deep = tmp.path().join("jn").join("a").join("b").join("ex");
+        let e = Exchange::open_or_create(&deep, Some(SID))
+            .err()
+            .expect("an ancestor junction must be refused");
+        assert!(e.to_string().contains("reparse point"), "{e}");
+        assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
 
         let ex = Exchange::open_or_create(&tmp.path().join("ex"), Some(SID)).unwrap();
         // At a job folder.
@@ -1610,7 +1715,7 @@ mod tests {
     fn the_label_needs_write_owner_and_a_job_folder_needs_a_low_parent() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir(tmp.path().join("plain")).unwrap();
-        let pins = imp::pin(tmp.path()).unwrap();
+        let pins = imp::pin(tmp.path(), false).unwrap();
         let h = imp::open_dir(pins.last().unwrap(), "plain")
             .unwrap()
             .unwrap();

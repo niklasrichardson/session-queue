@@ -23,6 +23,10 @@ struct FakeState {
     hang: bool,
     running: bool,
     stops: u32,
+    /// After the spawn, turn the record's state.json into a folder, so the
+    /// `running` write fails; the old file is kept in `saved_state`.
+    break_state: bool,
+    saved_state: Option<Vec<u8>>,
 }
 
 /// A turn runner that writes agy's stdout and, if set, `reply.json`.
@@ -42,6 +46,8 @@ impl Fake {
             hang: false,
             running: false,
             stops: 0,
+            break_state: false,
+            saved_state: None,
         })))
     }
     fn set(&self, f: impl FnOnce(&mut FakeState)) {
@@ -65,6 +71,12 @@ impl TurnRunner for Fake {
         }
         s.requests.push(req);
         s.running = true;
+        if s.break_state {
+            let state = spec.stdout.with_file_name(STATE);
+            s.saved_state = Some(fs::read(&state)?);
+            fs::remove_file(&state)?;
+            fs::create_dir(&state)?;
+        }
         Ok(Some(42))
     }
 
@@ -706,6 +718,36 @@ fn a_watcher_stopped_during_a_turn_stops_it_and_holds_the_job() {
     assert_eq!(tick_err(&mut env.broker()).code, exit::REFUSED);
 }
 
+#[test]
+fn a_record_write_that_fails_after_the_spawn_stops_the_turn_once() {
+    let env = Env::new();
+    env.fake.set(|s| {
+        s.hang = true;
+        s.break_state = true;
+    });
+    let id = env.send("boss", MsgType::Task);
+    let mut b = env.broker();
+    let e = tick_err(&mut b);
+    // The original error, not the hold that could not be written.
+    assert!(e.message.contains(STATE), "{}", e.message);
+    assert!(!e.message.contains("needs review"), "{}", e.message);
+    assert_eq!(env.fake.0.borrow().stops, 1);
+    assert!(b.stopped("error", Ended::Normal));
+    assert_eq!(env.fake.0.borrow().stops, 1);
+    drop(b);
+    // The record as the failed write left it: `launching`.
+    let state = env.record(&id).join(STATE);
+    fs::remove_dir(&state).unwrap();
+    let saved = env.fake.0.borrow().saved_state.clone().unwrap();
+    fs::write(&state, saved).unwrap();
+    assert_eq!(env.state(&id).phase, Phase::Launching);
+    // The next start holds it and never runs the task again.
+    assert_eq!(tick_err(&mut env.broker()).code, exit::AGY_TURN_FAILED);
+    assert_eq!(env.state(&id).held_in, Some(Phase::Launching));
+    assert_eq!(env.fake.0.borrow().specs.len(), 1);
+    assert!(env.claimed(&id));
+}
+
 // --- Start-up and recovery -------------------------------------------------------
 
 #[test]
@@ -749,6 +791,36 @@ fn a_record_left_prepared_is_prepared_again_with_a_new_nonce() {
     assert_eq!(st.phase, Phase::Completed);
     assert_ne!(st.nonce.as_deref(), Some(old.as_str()));
     assert_eq!(env.fake.0.borrow().requests[0]["nonce"], json!(st.nonce));
+}
+
+#[test]
+fn a_record_left_claimed_with_a_job_folder_is_prepared_again() {
+    // A stop after the job folder (and maybe request.json) was made but
+    // before `prepared` was saved.
+    for keep_request in [true, false] {
+        let env = Env::new();
+        env.fake.set(|s| s.spawn_errors = 1);
+        let id = env.send("boss", MsgType::Task);
+        env.broker().tick().unwrap();
+        let old = env.state(&id).nonce.unwrap();
+        let folder = default_exchange(&env.root, NAME).join(&id);
+        if !keep_request {
+            fs::remove_file(folder.join(REQUEST)).unwrap();
+        }
+        rewrite_state(&env, &id, |v| {
+            v["phase"] = json!("claimed");
+            v["nonce"] = Value::Null;
+        });
+        env.fake
+            .set(|s| s.reply = Some(answer("reply", Some("ok"), Some("ok"))));
+        let mut b = env.broker();
+        b.tick().unwrap();
+        let st = env.state(&id);
+        assert_eq!(st.phase, Phase::Completed, "keep_request={keep_request}");
+        assert_ne!(st.nonce.as_deref(), Some(old.as_str()));
+        assert_eq!(env.fake.0.borrow().requests[0]["nonce"], json!(st.nonce));
+        assert!(!folder.exists());
+    }
 }
 
 #[test]
@@ -854,4 +926,37 @@ fn an_unexpected_exchange_entry_is_refused_and_a_completed_leftover_removed() {
     fs::remove_dir(ex.join("junk")).unwrap();
     fs::write(ex.join("file.txt"), "x").unwrap();
     assert_eq!(tick_err(&mut env.broker()).code, exit::USAGE);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_start_through_a_junction_makes_no_folder_at_its_target() {
+    let env = Env::new();
+    let real = env._dir.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let link = env._dir.path().join("jn");
+    let ok = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(&link)
+        .arg(&real)
+        .output()
+        .unwrap()
+        .status
+        .success();
+    assert!(ok, "mklink /J failed");
+    let mut cfg = env.cfg();
+    cfg.exchange = link.join("missing").join("ex");
+    let mut b = AgyBroker::with(
+        env.root.clone(),
+        cfg,
+        env.fake.clone(),
+        env.clock.clone(),
+        Box::new(env.log.clone()),
+    )
+    .unwrap();
+    let e = tick_err(&mut b);
+    assert_eq!(e.code, exit::USAGE, "{}", e.message);
+    assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
 }
