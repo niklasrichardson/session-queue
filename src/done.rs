@@ -163,9 +163,14 @@ pub fn done(root: &Root, req: DoneRequest) -> Result<DoneReport> {
         note,
     };
     let Some(original) = original else {
+        // The sender and the type are unknown, so nothing can be sent. A
+        // session that asked for a reply or a rejection must not see exit 0.
         if reply.is_some() || req.reject {
-            report.note = Some(format!(
-                "message {id} could not be read, so no result was sent"
+            return Err(CqError::new(
+                exit::REPLY_NOT_SENT,
+                format!(
+                    "message {id} moved to {moved_to}/{name}/, but it could not be read, so no result was sent"
+                ),
             ));
         }
         return Ok(report);

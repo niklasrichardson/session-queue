@@ -268,8 +268,8 @@ asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" 
 | 1 | `claim`: the message is no longer in the inbox (another claim won, or a duplicate event). Ignore it. |
 | 2 | A rename still failed after 3 retries over 1 second. |
 | 3 | `claim`: the message is invalid and went to `dlq/`. The sender was told, when known. |
-| 4 | `done` or `dispatch` completion: the message is finished, but the reply was not sent. |
-| 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. |
+| 4 | `done` or `dispatch` completion: the message is finished, but the reply was not sent. This includes `done --reply` or `done --reject` on a claimed file that cannot be read. |
+| 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` or `send --reply-to` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. |
 | 6 | `done`: the message is not claimed by this session. `requeue`: the message is not in this session's `rejected/` folder. |
 | 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. `status`: the name is asleep. |
 | 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. |

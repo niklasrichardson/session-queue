@@ -1,0 +1,6 @@
+# The toolchain that CI and the documented checks use. A newer Rust can add
+# clippy lints that fail `-D warnings`, so raise this on purpose, in its own
+# change, after the four checks pass on the new version.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

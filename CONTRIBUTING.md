@@ -21,7 +21,7 @@ Do not paste message bodies or paths that contain private information.
 
 ## Building and testing
 
-You need stable Rust.
+You need Rust with `rustup`. `rust-toolchain.toml` pins the version, and `rustup` installs it on first use. CI runs the same four checks on Windows, macOS and Linux (`.github/workflows/ci.yml`); only the Windows result is required for now.
 
 ```bash
 cargo build

@@ -38,8 +38,8 @@ The details are in [Commands](COMMANDS.md#rejections).
 | Limit | Value |
 | --- | --- |
 | Body | 20480 bytes (20 KB) |
-| Hops | refused at 5 |
-| Replies | only `task` messages get replies |
+| Hops | refused at 5. An answer to a task (a reply, a rejection, or a `result` sent with `--reply-to`) may have 5, and nothing can follow it |
+| Replies | only `task` messages get replies: `--reply-to` must name a task |
 | Pair | 20 messages per hour from one sender to one recipient |
 | Recipient | 40 messages per hour to one recipient, from all senders together |
 | Sender | 60 messages per hour from one sender, to all recipients together |

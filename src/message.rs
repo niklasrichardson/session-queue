@@ -15,7 +15,9 @@ pub const SCHEMA_VERSION: u64 = 1;
 
 /// Bodies over 20 KB (20 x 1024 bytes of UTF-8) are refused.
 pub const MAX_BODY_BYTES: usize = 20 * 1024;
-/// `cq send` refuses a message that would have this many hops.
+/// `cq send` refuses a message that would have this many hops. An answer
+/// (what `cq done` and `cq claim` send, and a result that replies to a task)
+/// may have exactly this many, and nothing can follow it.
 pub const MAX_HOPS: u32 = 5;
 /// Messages per `RATE_WINDOW` for one (from, to) pair.
 pub const RATE_LIMIT: usize = 20;
