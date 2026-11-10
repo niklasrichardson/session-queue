@@ -872,9 +872,20 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
     fn launch(&mut self, job: &mut Job, now: Instant) -> Result<Step> {
         let folder = job.folder.as_ref().expect("prepared");
         let dir = folder.path().to_owned();
-        // agy finds the folder by its path: it must still be this one.
-        if let Err(e) = folder.check_path() {
-            return Err(self.hold(job, format!("the exchange job folder moved: {e}")));
+        // agy finds the folder by its path: it must still be this one, and
+        // nobody outside this user and root may be able to change that
+        // before agy opens it (the Unix trust rule).
+        let checked = self
+            .exchange()
+            .check_trust(folder)
+            .map_err(|e| format!("the exchange path is no longer trusted: {e}"))
+            .and_then(|()| {
+                folder
+                    .check_path()
+                    .map_err(|e| format!("the exchange job folder moved: {e}"))
+            });
+        if let Err(why) = checked {
+            return Err(self.hold(job, why));
         }
         let mut args = vec![
             "--conversation".to_owned(),

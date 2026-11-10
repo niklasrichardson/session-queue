@@ -148,6 +148,12 @@ impl Env {
         let dir = tempfile::tempdir().unwrap();
         let root = Root::at(dir.path().join("cq"));
         root.init().unwrap();
+        // Whatever the umask, so the Unix trust rule holds.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
         Env {
             _dir: dir,
             root,
@@ -1067,6 +1073,41 @@ fn an_exchange_path_that_moves_before_the_turn_holds_the_job() {
     let e = tick_err(&mut b);
     assert_eq!(e.code, exit::AGY_TURN_FAILED, "{}", e.message);
     assert!(e.message.contains("moved"), "{}", e.message);
+    assert!(env.fake.0.borrow().specs.is_empty());
+    assert_eq!(env.state(&id).held_in, Some(Phase::Prepared));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_exchange_path_that_others_can_change_is_refused_at_start_and_before_the_turn() {
+    use std::os::unix::fs::PermissionsExt;
+    let chmod = |p: &Path, mode: u32| {
+        fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let env = Env::new();
+    let base = fs::canonicalize(env._dir.path()).unwrap();
+    let outside = base.join("outside");
+    fs::create_dir(&outside).unwrap();
+    chmod(&outside, 0o777);
+    let e = tick_err(&mut env.broker_at(outside.join("ex")));
+    assert_eq!(e.code, exit::USAGE, "{}", e.message);
+    assert!(
+        e.message.contains("writable by group or others"),
+        "{}",
+        e.message
+    );
+    assert!(!outside.join("ex").exists());
+    // Trusted at start; opened to the group before the turn.
+    chmod(&outside, 0o755);
+    env.fake.set(|s| s.spawn_errors = 1);
+    let id = env.send("boss", MsgType::Task);
+    let mut b = env.broker_at(outside.join("ex"));
+    b.tick().unwrap();
+    chmod(&outside, 0o775);
+    env.clock.advance(Duration::from_secs(1));
+    let e = tick_err(&mut b);
+    assert_eq!(e.code, exit::AGY_TURN_FAILED, "{}", e.message);
+    assert!(e.message.contains("no longer trusted"), "{}", e.message);
     assert!(env.fake.0.borrow().specs.is_empty());
     assert_eq!(env.state(&id).held_in, Some(Phase::Prepared));
 }

@@ -49,8 +49,9 @@ pub enum FileRead {
 pub struct Exchange {
     path: PathBuf,
     dir: imp::Dir,
-    /// Every folder above `dir`, held open so none can be renamed.
-    _pins: Vec<imp::Dir>,
+    /// Every folder above `dir`, held open so none can be renamed
+    /// (Windows) and so the trust rule checks the folders in use (Unix).
+    pins: Vec<imp::Dir>,
 }
 
 /// A pinned job folder inside the exchange folder.
@@ -93,11 +94,34 @@ impl Exchange {
             }
             None => imp::create_exchange(parent_dir, leaf, sid)?,
         };
-        Ok(Exchange {
+        let ex = Exchange {
             path: path.to_owned(),
             dir,
-            _pins: pins,
-        })
+            pins,
+        };
+        imp::check_trust(&ex.chain(None), path)?;
+        Ok(ex)
+    }
+
+    /// The pinned folders from the volume root down to `job` (or to the
+    /// exchange folder).
+    fn chain<'a>(&'a self, job: Option<&'a JobDir>) -> Vec<&'a imp::Dir> {
+        self.pins
+            .iter()
+            .chain([&self.dir])
+            .chain(job.map(|j| &j.dir))
+            .collect()
+    }
+
+    /// Unix: fail unless every folder from `/` down to `job`, checked by
+    /// its pinned descriptor now, still meets the trust rule (owned by root
+    /// or this user, and not writable by group or others unless sticky
+    /// with a folder of root or this user in it). Then nobody outside this
+    /// user and root can rename a folder of the path or plant another in
+    /// its place before agy opens it. Windows: always Ok; the pins deny
+    /// delete sharing, so nothing on the path can be renamed.
+    pub fn check_trust(&self, job: &JobDir) -> io::Result<()> {
+        imp::check_trust(&self.chain(Some(job)), &job.path)
     }
 
     pub fn path(&self) -> &Path {
@@ -585,6 +609,12 @@ mod imp {
             info.nFileIndexHigh,
             info.nFileIndexLow,
         ))
+    }
+
+    /// Nothing to check: the pinned handles deny delete sharing, so no
+    /// folder of the path can be renamed while the exchange is open.
+    pub fn check_trust(_dirs: &[&OwnedHandle], _path: &Path) -> io::Result<()> {
+        Ok(())
     }
 
     /// True when `path`, opened by name now, is the folder `h`.
@@ -1260,9 +1290,66 @@ mod imp {
 
     const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY;
 
+    fn euid() -> u32 {
+        // SAFETY: no arguments.
+        unsafe { libc::geteuid() }
+    }
+
+    /// The trust rule, like OpenSSH's StrictModes: only root and this user
+    /// may be able to rename or replace a folder of the exchange path. The
+    /// folder `st` (at `at`) must be owned by root or this user and not
+    /// writable by group or others. A sticky folder (such as `/tmp`) may
+    /// be, when `below`, the owner of the folder in it on the path, is
+    /// root or this user: the sticky bit stops others renaming that
+    /// folder. `below` is `None` for the last folder of the path.
+    pub fn check_trusted(st: &libc::stat, below: Option<u32>, at: &Path) -> io::Result<()> {
+        let me = euid();
+        let trusted = |uid: u32| uid == 0 || uid == me;
+        let mode = st.st_mode as u32 & 0o7777;
+        let why = if !trusted(st.st_uid) {
+            format!("is owned by uid {}", st.st_uid)
+        } else if mode & 0o022 == 0 {
+            return Ok(());
+        } else {
+            match below {
+                Some(uid) if mode & 0o1000 != 0 && trusted(uid) => return Ok(()),
+                Some(uid) if mode & 0o1000 != 0 => format!(
+                    "is sticky and shared (mode {mode:o}), and the folder in it is owned by uid {uid}"
+                ),
+                _ => format!("is writable by group or others (mode {mode:o})"),
+            }
+        };
+        Err(io::Error::other(format!(
+            "{} {why}: each folder of the exchange path must be owned by root or this user and not writable by group or others (a sticky folder such as /tmp may be, when the folder in it is owned by root or this user)",
+            at.display()
+        )))
+    }
+
+    /// Check the trust rule on `dirs`, the pinned folders of `path` from
+    /// `/` down, by their descriptors.
+    pub fn check_trust(dirs: &[&OwnedFd], path: &Path) -> io::Result<()> {
+        let mut names: Vec<&Path> = path.ancestors().collect();
+        names.reverse();
+        if names.len() != dirs.len() {
+            return Err(io::Error::other(
+                "the exchange path does not match its pinned folders",
+            ));
+        }
+        let stats = dirs
+            .iter()
+            .map(|d| stat(d))
+            .collect::<io::Result<Vec<_>>>()?;
+        for (i, (st, at)) in stats.iter().zip(names).enumerate() {
+            check_trusted(st, stats.get(i + 1).map(|s| s.st_uid), at)?;
+        }
+        Ok(())
+    }
+
     /// Open each folder of `path` from `/` with no-follow opens, and with
     /// `create` make missing ones (0700) in the same walk. Any link in the
-    /// walk is refused, so `path` comes from `resolve`.
+    /// walk is refused, so `path` comes from `resolve`. Each folder must
+    /// meet the trust rule (taking the folder below as this user's; the
+    /// caller checks the whole chain) before anything is made in it.
     pub fn pin(path: &Path, create: bool) -> io::Result<Vec<OwnedFd>> {
         let mut parts = path.components();
         if parts.next() != Some(Component::RootDir) {
@@ -1270,7 +1357,10 @@ mod imp {
                 "the exchange folder must be an absolute path",
             ));
         }
-        let mut pins = vec![open_at(libc::AT_FDCWD, c"/", DIR_FLAGS, 0)?];
+        let mut at = PathBuf::from("/");
+        let root = open_at(libc::AT_FDCWD, c"/", DIR_FLAGS, 0)?;
+        check_trusted(&stat(&root)?, Some(euid()), &at)?;
+        let mut pins = vec![root];
         for part in parts {
             let Component::Normal(name) = part else {
                 return Err(io::Error::other("the exchange path holds . or .."));
@@ -1291,6 +1381,8 @@ mod imp {
                 }
             }
             let fd = open_at(parent, &c, DIR_FLAGS, 0)?;
+            at.push(name);
+            check_trusted(&stat(&fd)?, Some(euid()), &at)?;
             pins.push(fd);
         }
         Ok(pins)
@@ -1356,8 +1448,7 @@ mod imp {
 
     pub fn check_exchange(fd: &OwnedFd, _sid: Option<&str>) -> io::Result<()> {
         let d = descriptor(fd)?;
-        // SAFETY: no arguments.
-        let uid = unsafe { libc::geteuid() };
+        let uid = euid();
         if d.uid != uid || d.mode & 0o077 != 0 {
             return Err(io::Error::other(format!(
                 "the exchange folder must be owned by this user with mode 0700 (uid {}, mode {:o}); delete it and the watcher creates it again",
@@ -1529,14 +1620,21 @@ pub fn valid_sid(sid: &str) -> bool {
 mod unix_tests {
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::path::Path;
 
-    use super::Exchange;
+    use super::{Exchange, imp};
+
+    fn chmod(path: &Path, mode: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
 
     #[test]
     fn a_symlink_above_the_exchange_folder_is_resolved_once() {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().join("real");
         fs::create_dir(&real).unwrap();
+        // Whatever the umask, so the trust rule holds.
+        chmod(&real, 0o700);
         symlink(&real, tmp.path().join("link")).unwrap();
         let alias = tmp.path().join("link").join("a").join("ex");
         // The walk itself follows no link.
@@ -1575,6 +1673,89 @@ mod unix_tests {
         fs::remove_dir_all(base.join("a")).unwrap();
         symlink(base.join("b"), base.join("a")).unwrap();
         job.check_path().unwrap();
+    }
+
+    #[test]
+    fn a_folder_above_the_exchange_that_others_can_write_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let shared = base.join("shared");
+        fs::create_dir(&shared).unwrap();
+        for mode in [0o770, 0o707, 0o777] {
+            chmod(&shared, mode);
+            let e = Exchange::open_or_create(&shared.join("a").join("ex"), None)
+                .err()
+                .expect("refused");
+            assert!(e.to_string().contains("writable by group or others"), "{e}");
+            // Refused before anything is made in it.
+            assert!(!shared.join("a").exists());
+        }
+        // Not writable by others: accepted.
+        chmod(&shared, 0o755);
+        Exchange::open_or_create(&shared.join("a").join("ex"), None).unwrap();
+    }
+
+    #[test]
+    fn a_sticky_shared_folder_with_a_folder_of_this_user_in_it_is_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let sticky = base.join("sticky");
+        fs::create_dir(&sticky).unwrap();
+        chmod(&sticky, 0o1777);
+        let ex = Exchange::open_or_create(&sticky.join("a").join("ex"), None).unwrap();
+        let job = ex.create_job("j1").unwrap();
+        ex.check_trust(&job).unwrap();
+        // Sticky, but the folder in it is another user's: refused. (Only
+        // root can make such a folder, so the stat is made up.)
+        // SAFETY: no arguments.
+        let me = unsafe { libc::geteuid() };
+        let other = if me == 4242 { 4243 } else { 4242 };
+        // SAFETY: an all-zero stat is a valid value.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        st.st_uid = me;
+        st.st_mode = libc::S_IFDIR | 0o1777;
+        imp::check_trusted(&st, Some(me), &sticky).unwrap();
+        imp::check_trusted(&st, Some(0), &sticky).unwrap();
+        let e = imp::check_trusted(&st, Some(other), &sticky).unwrap_err();
+        assert!(e.to_string().contains("sticky"), "{e}");
+        // The last folder of the path may not be shared, sticky or not.
+        assert!(imp::check_trusted(&st, None, &sticky).is_err());
+        // A folder owned by another user is refused whatever its mode.
+        st.st_uid = other;
+        st.st_mode = libc::S_IFDIR | 0o755;
+        assert!(imp::check_trusted(&st, Some(me), &sticky).is_err());
+    }
+
+    /// Holding descriptors does not stop renames on Unix. A folder above
+    /// the job folder that others can write would let them swap the path
+    /// after the identity check and before agy opens the request; the
+    /// check before each turn refuses that setup.
+    #[test]
+    fn an_ancestor_opened_to_others_after_start_fails_the_turn_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let ex = Exchange::open_or_create(&base.join("a").join("ex"), None).unwrap();
+        let job = ex.create_job("j1").unwrap();
+        ex.check_trust(&job).unwrap();
+        for mode in [0o770, 0o777] {
+            chmod(&base.join("a"), mode);
+            let e = ex.check_trust(&job).unwrap_err();
+            assert!(e.to_string().contains("writable by group or others"), "{e}");
+        }
+        // Sticky with this user's folder in it: no one else can rename it.
+        chmod(&base.join("a"), 0o1777);
+        ex.check_trust(&job).unwrap();
+        // The check reads the pinned folders, not the names: a folder that
+        // others could write and that moved away is still caught.
+        chmod(&base.join("a"), 0o777);
+        fs::rename(base.join("a"), base.join("b")).unwrap();
+        fs::create_dir_all(base.join("a").join("ex").join("j1")).unwrap();
+        assert!(ex.check_trust(&job).is_err());
+        // The job folder itself is checked too.
+        chmod(&base.join("b"), 0o700);
+        ex.check_trust(&job).unwrap();
+        chmod(&base.join("b").join("ex").join("j1"), 0o770);
+        assert!(ex.check_trust(&job).is_err());
     }
 }
 
