@@ -5,6 +5,7 @@
 //! check the message validator directly.
 
 pub mod agy;
+pub mod broker;
 pub mod claim;
 pub mod codex;
 pub mod config;
