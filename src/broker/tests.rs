@@ -170,9 +170,15 @@ impl Env {
     }
 
     fn broker(&self) -> Broker {
+        self.broker_at(default_exchange(&self.root, NAME))
+    }
+
+    fn broker_at(&self, exchange: PathBuf) -> Broker {
+        let mut cfg = self.cfg();
+        cfg.exchange = exchange;
         AgyBroker::with(
             self.root.clone(),
-            self.cfg(),
+            cfg,
             self.fake.clone(),
             self.clock.clone(),
             Box::new(self.log.clone()),
@@ -517,14 +523,14 @@ fn the_exchange_path_rules() {
         "/q/root"
     }));
     let p = |s: &str| root.path().join(s);
-    assert!(check_exchange_path(&root, NAME, Path::new("rel/ex")).is_err());
-    assert!(check_exchange_path(&root, NAME, root.path()).is_err());
-    assert!(check_exchange_path(&root, NAME, root.path().parent().unwrap()).is_err());
-    assert!(check_exchange_path(&root, NAME, &p("inbox")).is_err());
-    assert!(check_exchange_path(&root, NAME, &p("agy-exchange")).is_err());
-    assert!(check_exchange_path(&root, NAME, &default_exchange(&root, NAME)).is_ok());
+    assert!(check_exchange_path(root.path(), NAME, Path::new("rel/ex")).is_err());
+    assert!(check_exchange_path(root.path(), NAME, root.path()).is_err());
+    assert!(check_exchange_path(root.path(), NAME, root.path().parent().unwrap()).is_err());
+    assert!(check_exchange_path(root.path(), NAME, &p("inbox")).is_err());
+    assert!(check_exchange_path(root.path(), NAME, &p("agy-exchange")).is_err());
+    assert!(check_exchange_path(root.path(), NAME, &default_exchange(&root, NAME)).is_ok());
     let outside = root.path().parent().unwrap().join("ex");
-    assert!(check_exchange_path(&root, NAME, &outside).is_ok());
+    assert!(check_exchange_path(root.path(), NAME, &outside).is_ok());
 }
 
 // --- Jobs ---------------------------------------------------------------------
@@ -946,17 +952,121 @@ fn a_start_through_a_junction_makes_no_folder_at_its_target() {
         .status
         .success();
     assert!(ok, "mklink /J failed");
+    let e = tick_err(&mut env.broker_at(link.join("missing").join("ex")));
+    assert_eq!(e.code, exit::USAGE, "{}", e.message);
+    assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
+}
+
+/// The 8.3 short form of `path`, if the volume keeps short names.
+#[cfg(windows)]
+fn short_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: `wide` is NUL-terminated and `buf` holds `buf.len()` units.
+    let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+    assert!(
+        n > 0 && (n as usize) < buf.len(),
+        "GetShortPathNameW failed"
+    );
+    buf.truncate(n as usize);
+    PathBuf::from(std::ffi::OsString::from_wide(&buf))
+}
+
+#[cfg(windows)]
+#[test]
+fn a_short_name_alias_into_the_queue_root_is_refused() {
+    let env = Env::new();
+    let short = short_path(env.root.path());
+    if short == env.root.path() {
+        eprintln!("no 8.3 names on this volume; only the plain path is checked");
+    }
     let mut cfg = env.cfg();
-    cfg.exchange = link.join("missing").join("ex");
-    let mut b = AgyBroker::with(
+    cfg.exchange = short.join("dispatch").join("ex");
+    // Without 8.3 names the plain spelling is refused before the start.
+    let e = match AgyBroker::with(
         env.root.clone(),
         cfg,
         env.fake.clone(),
         env.clock.clone(),
         Box::new(env.log.clone()),
-    )
-    .unwrap();
-    let e = tick_err(&mut b);
+    ) {
+        Ok(mut b) => tick_err(&mut b),
+        Err(e) => e,
+    };
     assert_eq!(e.code, exit::USAGE, "{}", e.message);
-    assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
+    assert!(!env.root.path().join("dispatch").join("ex").exists());
+    // Through the alias into agy-exchange/: agy gets the resolved path.
+    env.fake
+        .set(|s| s.reply = Some(answer("reply", Some("ok"), Some("ok"))));
+    let id = env.send("boss", MsgType::Task);
+    let mut b = env.broker_at(short.join("agy-exchange").join(NAME));
+    b.tick().unwrap();
+    assert_eq!(env.state(&id).phase, Phase::Completed);
+    let real = crate::exchange::Exchange::resolve(&env.root.path().join("agy-exchange"))
+        .unwrap()
+        .join(NAME)
+        .join(&id);
+    assert_eq!(env.fake.0.borrow().specs[0].dir, real);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_alias_into_the_queue_root_is_refused_and_agy_gets_the_resolved_path() {
+    use std::os::unix::fs::symlink;
+    let env = Env::new();
+    let outer = env._dir.path();
+    symlink(env.root.path().join("dispatch"), outer.join("link")).unwrap();
+    let e = tick_err(&mut env.broker_at(outer.join("link").join("ex")));
+    assert_eq!(e.code, exit::USAGE, "{}", e.message);
+    assert!(!env.root.path().join("dispatch").join("ex").exists());
+    // An alias of the root, outside agy-exchange/.
+    symlink(env.root.path(), outer.join("rootlink")).unwrap();
+    let e = tick_err(&mut env.broker_at(outer.join("rootlink").join("ex")));
+    assert_eq!(e.code, exit::USAGE, "{}", e.message);
+    assert!(!env.root.path().join("ex").exists());
+    // Through the alias into agy-exchange/: allowed, with resolved paths.
+    env.fake
+        .set(|s| s.reply = Some(answer("reply", Some("ok"), Some("ok"))));
+    let id = env.send("boss", MsgType::Task);
+    let mut b = env.broker_at(outer.join("rootlink").join("agy-exchange").join(NAME));
+    b.tick().unwrap();
+    assert_eq!(env.state(&id).phase, Phase::Completed);
+    let real = fs::canonicalize(env.root.path())
+        .unwrap()
+        .join("agy-exchange")
+        .join(NAME)
+        .join(&id);
+    let s = env.fake.0.borrow();
+    assert_eq!(s.specs[0].dir, real);
+    let dir = real.display().to_string();
+    assert!(
+        s.specs[0]
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--add-dir" && w[1] == dir)
+    );
+    assert!(s.specs[0].args.iter().all(|a| !a.contains("rootlink")));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_exchange_path_that_moves_before_the_turn_holds_the_job() {
+    let env = Env::new();
+    env.fake.set(|s| s.spawn_errors = 1);
+    let base = fs::canonicalize(env._dir.path()).unwrap();
+    let ex = base.join("outside").join("ex");
+    let id = env.send("boss", MsgType::Task);
+    let mut b = env.broker_at(ex.clone());
+    // Prepared; the spawn fails and is tried again after 1 s.
+    b.tick().unwrap();
+    fs::rename(base.join("outside"), base.join("moved")).unwrap();
+    fs::create_dir_all(ex.join(&id)).unwrap();
+    env.clock.advance(Duration::from_secs(1));
+    let e = tick_err(&mut b);
+    assert_eq!(e.code, exit::AGY_TURN_FAILED, "{}", e.message);
+    assert!(e.message.contains("moved"), "{}", e.message);
+    assert!(env.fake.0.borrow().specs.is_empty());
+    assert_eq!(env.state(&id).held_in, Some(Phase::Prepared));
 }

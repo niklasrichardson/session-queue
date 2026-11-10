@@ -61,9 +61,19 @@ pub struct JobDir {
 }
 
 impl Exchange {
-    /// Pin `path` and check its descriptor, or create it with the contract
-    /// above when it does not exist. `sid` is the sandbox SID (Windows).
-    /// Its parent folders are created first if needed.
+    /// The location `path` names: the part that exists, resolved once from
+    /// its folder handle (Unix: symlinks; Windows: 8.3 names, case and
+    /// `subst` drives, with junctions refused), and the missing rest
+    /// appended. Check this location, then give it to `open_or_create` and
+    /// use it in every path given to agy.
+    pub fn resolve(path: &Path) -> io::Result<PathBuf> {
+        imp::resolve(path)
+    }
+
+    /// Pin `path` (a location from `resolve`) and check its descriptor, or
+    /// create it with the contract above when it does not exist. `sid` is
+    /// the sandbox SID (Windows). Its parent folders are created first if
+    /// needed. The walk follows no link.
     pub fn open_or_create(path: &Path, sid: Option<&str>) -> io::Result<Exchange> {
         let parent = path
             .parent()
@@ -140,6 +150,19 @@ impl JobDir {
         &self.path
     }
 
+    /// Fail unless the folder's path, looked up by name now, still leads
+    /// to the pinned folder: the path agy is given must be this folder.
+    pub fn check_path(&self) -> io::Result<()> {
+        if imp::same_folder(&self.dir, &self.path)? {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "{} now leads to another folder",
+                self.path.display()
+            )))
+        }
+    }
+
     /// Create the file `name` (failing if it exists) with `bytes`, flushed.
     pub fn write_new(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         imp::write_new(&self.dir, name, bytes)
@@ -163,7 +186,7 @@ mod imp {
     use std::io::{self, Read, Write};
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-    use std::path::{Component, Path, Prefix};
+    use std::path::{Component, Path, PathBuf, Prefix};
     use std::ptr::{null, null_mut};
 
     use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -189,6 +212,10 @@ mod imp {
         PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR,
         SetSecurityDescriptorControl, SetSecurityDescriptorDacl, SetSecurityDescriptorOwner,
         TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_NAME_NORMALIZED,
+        GetFileInformationByHandle, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
@@ -423,8 +450,6 @@ mod imp {
 
     const PIN_SHARE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE;
 
-    /// Open every folder from the volume root to `path`, each relative to
-    /// its parent, refusing reparse points. The last handle is `path`.
     /// Open each folder of `path`, from the volume root, relative to the one
     /// before, refusing reparse points. With `create`, a missing folder is
     /// made (it is opened, not followed, if it is a reparse point).
@@ -489,6 +514,88 @@ mod imp {
             pins.push(h);
         }
         Ok(pins)
+    }
+
+    /// `path` with its existing part replaced by the final path of its
+    /// pinned handle, and the missing rest appended.
+    pub fn resolve(path: &Path) -> io::Result<PathBuf> {
+        let mut base = path;
+        let mut missing = Vec::new();
+        loop {
+            match pin(base, false) {
+                Ok(pins) => {
+                    let mut real = final_path(pins.last().expect("the volume root"))?;
+                    real.extend(missing.iter().rev());
+                    return Ok(real);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    let (Some(parent), Some(name)) = (base.parent(), base.file_name()) else {
+                        return Err(e);
+                    };
+                    missing.push(name);
+                    base = parent;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// The normalised drive-letter path of the folder `h`.
+    fn final_path(h: &OwnedHandle) -> io::Result<PathBuf> {
+        let mut buf = vec![0u16; 1024];
+        loop {
+            // SAFETY: `buf` holds `buf.len()` UTF-16 units.
+            let n = unsafe {
+                GetFinalPathNameByHandleW(
+                    raw(h),
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+                )
+            } as usize;
+            if n == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if n < buf.len() {
+                buf.truncate(n);
+                break;
+            }
+            // Too small: `n` is the size needed, with the NUL.
+            buf.resize(n, 0);
+        }
+        let text = String::from_utf16(&buf)
+            .map_err(|_| io::Error::other("the exchange path is not valid Unicode"))?;
+        let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+        if !matches!(text.as_bytes(), [d, b':', b'\\', ..] if d.is_ascii_alphabetic()) {
+            return Err(io::Error::other(format!(
+                "the exchange folder must be on a drive letter path, not {text}"
+            )));
+        }
+        Ok(PathBuf::from(text))
+    }
+
+    fn file_id(h: &OwnedHandle) -> io::Result<(u32, u32, u32)> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: `info` is valid output space.
+        if unsafe { GetFileInformationByHandle(raw(h), &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        ))
+    }
+
+    /// True when `path`, opened by name now, is the folder `h`.
+    pub fn same_folder(h: &OwnedHandle, path: &Path) -> io::Result<bool> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let f = std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        Ok(file_id(&OwnedHandle::from(f))? == file_id(h)?)
     }
 
     const DIR_ACCESS: u32 = FILE_LIST_DIRECTORY
@@ -1154,10 +1261,8 @@ mod imp {
     const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY;
 
     /// Open each folder of `path` from `/` with no-follow opens, and with
-    /// `create` make missing ones (0700) in the same walk. The part of
-    /// `path` that exists is first resolved once with `realpath`, so a
-    /// symlink there (such as `/var` on macOS) is trusted as it stands at
-    /// startup; a link that appears in the walk after that is refused.
+    /// `create` make missing ones (0700) in the same walk. Any link in the
+    /// walk is refused, so `path` comes from `resolve`.
     pub fn pin(path: &Path, create: bool) -> io::Result<Vec<OwnedFd>> {
         let mut parts = path.components();
         if parts.next() != Some(Component::RootDir) {
@@ -1165,12 +1270,8 @@ mod imp {
                 "the exchange folder must be an absolute path",
             ));
         }
-        if !parts.all(|p| matches!(p, Component::Normal(_))) {
-            return Err(io::Error::other("the exchange path holds . or .."));
-        }
-        let path = resolve_existing(path)?;
         let mut pins = vec![open_at(libc::AT_FDCWD, c"/", DIR_FLAGS, 0)?];
-        for part in path.components().skip(1) {
+        for part in parts {
             let Component::Normal(name) = part else {
                 return Err(io::Error::other("the exchange path holds . or .."));
             };
@@ -1196,8 +1297,19 @@ mod imp {
     }
 
     /// `path` with its longest existing prefix resolved by `realpath` and
-    /// the missing rest appended unchanged.
-    fn resolve_existing(path: &Path) -> io::Result<PathBuf> {
+    /// the missing rest appended unchanged. A symlink there (such as `/var`
+    /// on macOS) is trusted as it stands now; `JobDir::check_path` catches
+    /// a later change before each turn.
+    pub fn resolve(path: &Path) -> io::Result<PathBuf> {
+        let mut parts = path.components();
+        if parts.next() != Some(Component::RootDir) {
+            return Err(io::Error::other(
+                "the exchange folder must be an absolute path",
+            ));
+        }
+        if !parts.all(|p| matches!(p, Component::Normal(_))) {
+            return Err(io::Error::other("the exchange path holds . or .."));
+        }
         let mut base = path;
         let mut missing = Vec::new();
         loop {
@@ -1216,6 +1328,14 @@ mod imp {
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    /// True when `path`, looked up by name now, is the folder `fd`.
+    pub fn same_folder(fd: &OwnedFd, path: &Path) -> io::Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+        let by_path = std::fs::metadata(path)?;
+        let pinned = File::from(fd.try_clone()?).metadata()?;
+        Ok(by_path.dev() == pinned.dev() && by_path.ino() == pinned.ino())
     }
 
     pub fn open_dir(parent: &OwnedFd, name: &str) -> io::Result<Option<OwnedFd>> {
@@ -1418,9 +1538,16 @@ mod unix_tests {
         let real = tmp.path().join("real");
         fs::create_dir(&real).unwrap();
         symlink(&real, tmp.path().join("link")).unwrap();
+        let alias = tmp.path().join("link").join("a").join("ex");
+        // The walk itself follows no link.
+        assert!(Exchange::open_or_create(&alias, None).is_err());
+        assert!(!real.join("a").exists());
         // Missing folders below the link are made at its target, 0700.
-        let path = tmp.path().join("link").join("a").join("ex");
+        let path = Exchange::resolve(&alias).unwrap();
+        let canonical_real = fs::canonicalize(&real).unwrap();
+        assert_eq!(path, canonical_real.join("a").join("ex"));
         let ex = Exchange::open_or_create(&path, None).unwrap();
+        assert_eq!(ex.path(), path.as_path());
         let mode = fs::metadata(real.join("a")).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
         assert!(real.join("a").join("ex").is_dir());
@@ -1429,7 +1556,25 @@ mod unix_tests {
         drop(ex);
         // The exchange folder itself must not be a link.
         symlink(real.join("a").join("ex"), tmp.path().join("exlink")).unwrap();
-        assert!(Exchange::open_or_create(&tmp.path().join("exlink"), None).is_err());
+        let exlink = fs::canonicalize(tmp.path()).unwrap().join("exlink");
+        assert!(Exchange::open_or_create(&exlink, None).is_err());
+    }
+
+    #[test]
+    fn a_job_folder_path_that_leads_elsewhere_is_caught() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let ex = Exchange::open_or_create(&base.join("a").join("ex"), None).unwrap();
+        let job = ex.create_job("j1").unwrap();
+        job.check_path().unwrap();
+        // The pinned folder moves away and another takes its path.
+        fs::rename(base.join("a"), base.join("b")).unwrap();
+        fs::create_dir_all(base.join("a").join("ex").join("j1")).unwrap();
+        assert!(job.check_path().is_err());
+        // A link back to the pinned folder still leads to it.
+        fs::remove_dir_all(base.join("a")).unwrap();
+        symlink(base.join("b"), base.join("a")).unwrap();
+        job.check_path().unwrap();
     }
 }
 
@@ -1615,6 +1760,25 @@ mod tests {
         let mut two = want.clone();
         two.label.push(low_label(INHERIT_FLAGS));
         assert!(two.mismatch(&want).is_some());
+    }
+
+    #[test]
+    fn resolve_gives_the_real_long_name_and_makes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("Long Folder Name");
+        fs::create_dir(&real).unwrap();
+        let want = Exchange::resolve(&real).unwrap();
+        assert!(want.ends_with("Long Folder Name"), "{}", want.display());
+        assert!(!want.to_string_lossy().starts_with(r"\\?\"));
+        let other_case = tmp.path().join("LONG FOLDER NAME").join("a").join("ex");
+        assert_eq!(
+            Exchange::resolve(&other_case).unwrap(),
+            want.join("a").join("ex")
+        );
+        assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
+        // A junction is refused, not resolved.
+        junction(&tmp.path().join("jn"), &real);
+        assert!(Exchange::resolve(&tmp.path().join("jn").join("ex")).is_err());
     }
 
     #[test]

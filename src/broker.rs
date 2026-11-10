@@ -645,7 +645,7 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
                 "with --agy-broker, --agy-prompt must contain {request} and {reply}",
             ));
         }
-        check_exchange_path(&root, &cfg.name, &cfg.exchange)?;
+        check_exchange_path(root.path(), &cfg.name, &cfg.exchange)?;
         if cfg!(windows) {
             match &cfg.sandbox_sid {
                 None => {
@@ -870,11 +870,12 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
     }
 
     fn launch(&mut self, job: &mut Job, now: Instant) -> Result<Step> {
-        let dir = job
-            .folder
-            .as_ref()
-            .map(|f| f.path().to_owned())
-            .expect("prepared");
+        let folder = job.folder.as_ref().expect("prepared");
+        let dir = folder.path().to_owned();
+        // agy finds the folder by its path: it must still be this one.
+        if let Err(e) = folder.check_path() {
+            return Err(self.hold(job, format!("the exchange job folder moved: {e}")));
+        }
         let mut args = vec![
             "--conversation".to_owned(),
             self.cfg.conversation.clone(),
@@ -1087,15 +1088,33 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
     /// The checks before the first job: the exchange folder, every record,
     /// the claimed messages, and recovery of the one unfinished record.
     fn startup(&mut self) -> Result<()> {
-        let exchange =
-            Exchange::open_or_create(&self.cfg.exchange, self.cfg.sandbox_sid.as_deref()).map_err(
-                |e| {
-                    CqError::usage(format!(
-                        "agy exchange folder {}: {e}",
-                        self.cfg.exchange.display()
-                    ))
-                },
-            )?;
+        // The path rules again, on the resolved locations, before anything
+        // is made: an alias must not lead into the queue root. From here on
+        // only the resolved location is used, in agy's paths too.
+        // The root exists, and any link in its path counts: its real place.
+        let root = fs::canonicalize(self.root.path())
+            .map_err(|e| CqError::io("resolve the queue root", e))?;
+        let root = match root.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            Some(s) => PathBuf::from(s),
+            None => root,
+        };
+        let path = Exchange::resolve(&self.cfg.exchange).map_err(|e| {
+            CqError::usage(format!(
+                "agy exchange folder {}: {e}",
+                self.cfg.exchange.display()
+            ))
+        })?;
+        check_exchange_path(&root, &self.cfg.name, &path).map_err(|e| {
+            CqError::usage(format!(
+                "agy exchange folder {} (resolved to {}): {}",
+                self.cfg.exchange.display(),
+                path.display(),
+                e.message
+            ))
+        })?;
+        let exchange = Exchange::open_or_create(&path, self.cfg.sandbox_sid.as_deref())
+            .map_err(|e| CqError::usage(format!("agy exchange folder {}: {e}", path.display())))?;
+        self.cfg.exchange = path;
         self.exchange = Some(exchange);
         let records = self.records();
         fs::create_dir_all(&records)
@@ -1301,12 +1320,12 @@ pub fn read_record(dir: &Path) -> Result<JobState> {
 
 /// The exchange folder must be absolute, must not be or contain the queue
 /// root, and is inside the queue root only under `agy-exchange/`.
-pub fn check_exchange_path(root: &Root, _name: &str, exchange: &Path) -> Result<()> {
+pub fn check_exchange_path(root: &Path, _name: &str, exchange: &Path) -> Result<()> {
     if !exchange.is_absolute() {
         return Err(CqError::usage("--agy-exchange must be an absolute path"));
     }
     let lower = |p: &Path| slashes(p).trim_end_matches('/').to_lowercase();
-    let (ex, root_path) = (lower(exchange), lower(root.path()));
+    let (ex, root_path) = (lower(exchange), lower(root));
     if ex == root_path || root_path.starts_with(&format!("{ex}/")) {
         return Err(CqError::usage(
             "--agy-exchange must not be or contain the queue root",

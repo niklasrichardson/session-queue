@@ -45,7 +45,9 @@ fn main() {
             .append(true)
             .open(path)
             .unwrap();
-        writeln!(calls, "{args:?}").unwrap();
+        // One write of the whole line, so a reader never sees half of it
+        // (writeln! writes the parts one by one).
+        calls.write_all(format!("{args:?}\n").as_bytes()).unwrap();
     }
     if let Some(path) = env::var_os("CQ_FAKE_ENV") {
         let seen: Vec<&str> = SEEN

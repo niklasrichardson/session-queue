@@ -70,8 +70,14 @@ fn allowed(env: &Env, mode: &str) -> Watcher {
 }
 
 fn calls(env: &Env) -> Vec<String> {
+    // Only whole lines: the fake may be writing the last one.
     fs::read_to_string(env.path("calls.txt"))
-        .map(|t| t.lines().map(str::to_owned).collect())
+        .map(|t| {
+            t.split_inclusive('\n')
+                .filter(|l| l.ends_with('\n'))
+                .map(|l| l.trim_end_matches(['\r', '\n']).to_owned())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
