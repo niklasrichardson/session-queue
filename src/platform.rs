@@ -582,7 +582,15 @@ pub fn stop_agent(agent: &mut Agent) -> Result<()> {
         // SAFETY: spawn_agent made this child's PID its process group ID.
         if unsafe { libc::kill(-(agent.child.id() as i32), libc::SIGKILL) } != 0 {
             let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
+            let gone = match error.raw_os_error() {
+                Some(libc::ESRCH) => true,
+                // macOS gives EPERM, not ESRCH, for a group whose only
+                // process has exited and is not reaped yet. A group with a
+                // live process would have taken the signal.
+                Some(libc::EPERM) => matches!(agent.child.try_wait(), Ok(Some(_))),
+                _ => false,
+            };
+            if !gone {
                 return Err(CqError::io("stop agent process group", error));
             }
         }

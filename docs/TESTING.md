@@ -21,7 +21,8 @@ Three `cq send` and `cq done` changes from a code review. Checked on Windows 11 
 
 - `tests/queue.rs`: `cq send --reply-to` a result or an info exits 5 and writes nothing, and a reply to a task is sent. A task with 4 hops gets its reply, its rejection and a `send --reply-to` result with 5 hops, and nothing can be sent about that answer. `cq done --reply` and `cq done --reject` on a claimed file that is not readable JSON move it and exit 4; plain `cq done` exits 0. Each of the three tests failed before the change.
 - `tests/rejected.rs`: a reject notice to a message with 5 hops is refused, and the reject still succeeds.
-- Not verified: the CI workflow (`.github/workflows/ci.yml`) has not run yet. macOS and Linux were not built for these changes.
+- First CI run (`.github/workflows/ci.yml`, GitHub runners): Windows and Linux (`ubuntu-latest`) passed all four checks. This is the first Linux build and test run. macOS built and passed clippy, and failed one test: `stopping_an_agent_that_is_exiting_is_successful` in `tests/dispatch.rs`, with `stop agent process group: Operation not permitted (os error 1)`.
+- After that run, `stop_agent` in `src/platform.rs` treats `EPERM` as "already gone" when the child has exited. Not verified: this macOS fix, until CI runs again. Nothing was run live on macOS or Linux.
 
 ## Codex wake without waiting on Windows, 10 November 2026
 
