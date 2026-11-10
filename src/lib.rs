@@ -15,6 +15,7 @@ pub mod exitlog;
 pub mod fsutil;
 pub mod idle;
 pub mod inbox;
+pub mod job;
 pub mod list;
 pub mod lock;
 pub mod members;

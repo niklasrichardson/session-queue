@@ -106,6 +106,68 @@ pub fn write_atomic(tmp_dir: &Path, dst: &Path, bytes: &[u8]) -> io::Result<()> 
     }
 }
 
+/// Write a small file so that it survives a crash or power cut once this
+/// returns: a temporary file in the same folder, flushed, then renamed over
+/// `dst`. On Windows the rename is one `MoveFileExW` call with
+/// `MOVEFILE_WRITE_THROUGH`; on Unix it is `rename`, then a flush of the
+/// folder. Readers see the old file or the new one, never part of one.
+/// Used for the `--agy-broker` job record; `write_atomic` is unchanged.
+pub fn write_durable(dst: &Path, bytes: &[u8]) -> io::Result<()> {
+    let dir = dst
+        .parent()
+        .ok_or_else(|| io::Error::other("no parent folder"))?;
+    let stem = dst
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = write_tmp(dir, &format!(".{stem}"), bytes)?;
+    let mut attempt = 0;
+    loop {
+        match replace_durable(&tmp, dst) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt >= RETRIES => {
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+            Err(_) => {
+                attempt += 1;
+                sleep(RETRY_DELAY);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn replace_durable(src: &Path, dst: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() };
+    let (src, dst) = (wide(src), wide(dst));
+    // SAFETY: both are NUL-terminated UTF-16 strings that live for the call.
+    if unsafe {
+        MoveFileExW(
+            src.as_ptr(),
+            dst.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn replace_durable(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::rename(src, dst)?;
+    let dir = dst
+        .parent()
+        .ok_or_else(|| io::Error::other("no parent folder"))?;
+    File::open(dir)?.sync_all()
+}
+
 /// Set a file's modified time to now.
 pub fn touch(path: &Path) -> io::Result<()> {
     let f = OpenOptions::new().write(true).open(path)?;

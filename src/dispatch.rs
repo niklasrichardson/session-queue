@@ -10,11 +10,12 @@ use clap::ValueEnum;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::done::{self, DoneRequest};
-use crate::error::{CqError, Result, exit};
-use crate::message::{DoneInput, MAX_BODY_BYTES, Message, MsgType, Status};
+use crate::done;
+use crate::error::{CqError, Result};
+use crate::job::{self, Finish};
+use crate::message::{MAX_BODY_BYTES, Message, MsgType, Status};
 use crate::names::{check_name, is_valid_id};
-use crate::{Root, claim, fsutil, members, platform, watch};
+use crate::{Root, fsutil, members, platform, watch};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Sandbox {
@@ -147,7 +148,7 @@ pub fn dispatch(root: &Root, opts: &Options) -> Result<()> {
     heartbeat.tick();
 
     // A dispatcher deliberately has no takeover flag. Never stop another worker automatically.
-    let jobs = root.path().join("dispatch").join(&opts.name);
+    let jobs = job::records(root, &opts.name);
     fs::create_dir_all(&jobs).map_err(|e| io("create dispatch directory", e))?;
     if !fsutil::json_stems(&root.processing(&opts.name), is_valid_id).is_empty() {
         return Err(CqError::refused(
@@ -205,24 +206,10 @@ fn handle(
     id: &str,
     heartbeat: &mut Heartbeat<'_>,
 ) -> Result<()> {
-    let job = jobs.join(id);
-    fs::create_dir(&job).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            CqError::refused(format!("dispatch job {} already exists; message {id} was not claimed; inspect the existing record", job.display()))
-        } else { io("reserve dispatch job; message was not claimed", e) }
-    })?;
-    let bytes = match claim::claim(root, &opts.name, id) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            let _ = fs::remove_dir(&job); // Only the empty directory reserved above.
-            if e.code == exit::GONE || e.code == exit::INVALID {
-                return Ok(());
-            }
-            return Err(e);
-        }
+    let Some((job, message)) = job::reserve_and_claim(root, &opts.name, jobs, id, "dispatch")?
+    else {
+        return Ok(());
     };
-    let message: Message = serde_json::from_slice(&bytes)
-        .map_err(|e| CqError::error(format!("read claimed message: {e}")))?;
     state(root, &job, "claimed", "No automatic task replay")?;
     let answer = if message.kind != MsgType::Task {
         None
@@ -262,26 +249,17 @@ fn handle(
         "completing",
         "Check done/rejected before resending or rerunning",
     )?;
-    let rejected = answer
-        .as_ref()
-        .is_some_and(|a| a.status == Status::Rejected);
-    let request = DoneRequest {
-        name: opts.name.clone(),
-        id: id.into(),
-        status: answer.as_ref().filter(|_| !rejected).map(|a| a.status),
-        reply: answer.is_some() && !rejected,
-        reject: rejected,
-        input: DoneInput {
-            reply: answer
-                .as_ref()
-                .filter(|_| !rejected)
-                .map(|a| a.reply.clone()),
-            reason: answer
-                .as_ref()
-                .filter(|_| rejected)
-                .map(|a| a.reply.clone()),
+    let finish = match &answer {
+        None => Finish::Done,
+        Some(a) if a.status == Status::Rejected => Finish::Reject {
+            text: a.reply.clone(),
+        },
+        Some(a) => Finish::Reply {
+            status: a.status,
+            text: a.reply.clone(),
         },
     };
+    let request = job::done_request(&opts.name, id, &finish);
     while root.pause().exists() {
         heartbeat.tick();
         if platform::interrupted() {
@@ -319,18 +297,9 @@ fn handle(
 }
 
 fn failed(reply: impl Into<String>) -> Answer {
-    let mut reply = reply.into();
-    if reply.len() > MAX_BODY_BYTES {
-        let mut end = MAX_BODY_BYTES - 32;
-        while !reply.is_char_boundary(end) {
-            end -= 1;
-        }
-        reply.truncate(end);
-        reply.push_str("\n[truncated; see dispatch logs]");
-    }
     Answer {
         status: Status::Failed,
-        reply,
+        reply: job::fit_reply(reply),
     }
 }
 
