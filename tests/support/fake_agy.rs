@@ -9,6 +9,12 @@
 //! variables it got. A prompt `tree MARKER` starts a descendant that writes
 //! `MARKER` 3 s later, writes `MARKER.ready`, then waits 8 s and succeeds:
 //! a turn whose helpers must end with it.
+//!
+//! Broker modes (`cq watch --agy-broker`) read `request.json` in the
+//! `--add-dir` folder: `broker` writes a valid `reply.json` (`read` when
+//! that is the only outcome, else a reply with status ok and text
+//! `BROKER-DONE`), `broker-reject` rejects, `broker-none` writes nothing,
+//! `broker-bad` writes a reply with another nonce. Each then succeeds.
 use std::{
     env, fs,
     io::Write,
@@ -72,7 +78,13 @@ fn main() {
             "{{\n  \"conversation_id\": \"{conversation}\",\n  \"status\": \"{status}\",\n  \"response\": \"RESPONSE-MARK\",\n  \"duration_seconds\": 4.2,\n  \"num_turns\": 2,\n  \"usage\": {{}}\n}}"
         );
     };
-    match env::var("CQ_FAKE_MODE").unwrap_or_default().as_str() {
+    let mode = env::var("CQ_FAKE_MODE").unwrap_or_default();
+    if let Some(kind) = mode.strip_prefix("broker") {
+        broker(&args, kind);
+        result(&args[1], "SUCCESS");
+        return;
+    }
+    match mode.as_str() {
         "fail" => {
             eprintln!("Error: conversation not found (synthetic)");
             std::process::exit(1);
@@ -85,4 +97,36 @@ fn main() {
         "other" => result("another-conversation", "SUCCESS"),
         _ => result(&args[1], "SUCCESS"),
     }
+}
+
+/// The first string value of `key` in `json` (enough for request.json, whose
+/// top-level keys sort before `message`).
+fn string_field(json: &str, key: &str) -> String {
+    let start = json.find(&format!("\"{key}\": \"")).unwrap() + key.len() + 5;
+    let end = start + json[start..].find('"').unwrap();
+    json[start..end].to_owned()
+}
+
+fn broker(args: &[String], kind: &str) {
+    let at = args.iter().position(|a| a == "--add-dir").unwrap();
+    let dir = std::path::Path::new(&args[at + 1]);
+    let request = fs::read_to_string(dir.join("request.json")).unwrap();
+    let id = string_field(&request, "id");
+    let mut nonce = string_field(&request, "nonce");
+    let read_only = !request.contains("\"reply\"");
+    let tail = match kind {
+        "-none" => return,
+        "-bad" => {
+            nonce = "0".repeat(32);
+            r#""outcome": "reply", "status": "ok", "text": "BROKER-DONE""#
+        }
+        "-reject" => r#""outcome": "reject", "text": "BROKER-NO""#,
+        _ if read_only => r#""outcome": "read""#,
+        _ => r#""outcome": "reply", "status": "ok", "text": "BROKER-DONE""#,
+    };
+    fs::write(
+        dir.join("reply.json"),
+        format!("{{\"id\": \"{id}\", \"nonce\": \"{nonce}\", {tail}}}"),
+    )
+    .unwrap();
 }
