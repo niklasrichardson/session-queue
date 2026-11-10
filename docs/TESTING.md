@@ -15,6 +15,23 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Reply and hop limits, and CI, on Windows, 10 November 2026
+
+Three `cq send` and `cq done` changes from a code review. Checked on Windows 11 with Rust 1.98.1: `cargo build`, `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (371 tests, 0 failed). All passed, with the Codex change below included.
+
+- `tests/queue.rs`: `cq send --reply-to` a result or an info exits 5 and writes nothing, and a reply to a task is sent. A task with 4 hops gets its reply, its rejection and a `send --reply-to` result with 5 hops, and nothing can be sent about that answer. `cq done --reply` and `cq done --reject` on a claimed file that is not readable JSON move it and exit 4; plain `cq done` exits 0. Each of the three tests failed before the change.
+- `tests/rejected.rs`: a reject notice to a message with 5 hops is refused, and the reject still succeeds.
+- First CI run (`.github/workflows/ci.yml`, GitHub runners): Windows and Linux (`ubuntu-latest`) passed all four checks. This is the first Linux build and test run. macOS built and passed clippy, and failed one test: `stopping_an_agent_that_is_exiting_is_successful` in `tests/dispatch.rs`, with `stop agent process group: Operation not permitted (os error 1)`.
+- After that run, `stop_agent` in `src/platform.rs` treats `EPERM` as "already gone" when the child has exited. Not verified: this macOS fix, until CI runs again. Nothing was run live on macOS or Linux.
+
+## Codex wake without waiting on Windows, 10 November 2026
+
+`cq watch --to-codex` no longer waits for `codex queue` in the watcher loop. Checked on Windows 11 with `cargo build`, `cargo fmt --all --check`, `cargo clippy -p cq --all-targets -- -D warnings` and `cargo test` (368 tests, 0 failed). All passed.
+
+- Unit tests in `src/codex.rs` use a fake runner whose call can hang, and the fake clock. They check: no tick waits; a hung call is killed after 60 seconds and tried again with the lines that arrived meanwhile; retries start 1, 2 and 4 seconds later, not 1 ms before; a success resets the failure count; sleep kills a running call at once and reports the lines as not delivered; a normal stop waits for a running call, keeps the gap and the retries, and kills a hung call after 60 seconds.
+- `tests/to_codex.rs`: with a fake `codex queue` that hangs and starts a helper, `cq sleep` stops the watcher with exit 7 within 5 seconds, and neither the call nor its helper runs on. Before the change, this test failed: the watcher did not exit.
+- Not verified: the heartbeat during a hung call (the loop that writes it is the same one that noticed sleep, but no test waits 30 seconds for it); a real `codex queue`; macOS and Linux at run time.
+
 ## cq-top Antigravity desktop app rows on Windows, 7 November 2026
 
 The Sessions screen reads the Antigravity desktop app's conversations (issue #71, see [cq-top](CQ-TOP.md#codex-and-antigravity-rows)). Checked on Windows 11 with `cargo test --workspace` (336 tests, 0 failed; 68 in cq-top), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`. All passed.

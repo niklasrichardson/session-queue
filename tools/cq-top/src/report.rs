@@ -2329,7 +2329,7 @@ mod tests {
         fs::create_dir_all(dir).unwrap();
         let text = format!(
             r#"{{"schema_version":1,"id":"{id}","from":"{from}","to":"{to}","type":"{kind}","subject":"{SUBJECT}","body":"{BODY}","hops":0,"created":"{}"{extra}}}"#,
-            &id[..16].replacen('T', "-", 0)
+            &id[..16]
         );
         fs::write(dir.join(format!("{id}.json")), text).unwrap();
     }

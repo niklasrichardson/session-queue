@@ -979,3 +979,169 @@ fn invalid_messages_go_to_the_dlq() {
     assert!(r["reason"].as_str().unwrap().contains("schema_version 2"));
     assert!(env.ids("inbox/b/.processing").is_empty());
 }
+
+/// A claimed file that cannot be read: `done` still moves it, but with
+/// `--reply` or `--reject` nothing can be sent, so the exit code is 4.
+#[test]
+fn done_reply_on_an_unreadable_message_exits_4() {
+    let env = Env::new();
+    let claimed = env.path("inbox/b/.processing");
+    fs::create_dir_all(&claimed).unwrap();
+    let plant = |hex: &str| {
+        let id = fake_id("a", hex);
+        fs::write(claimed.join(format!("{id}.json")), b"not json").unwrap();
+        id
+    };
+
+    let id = plant("00a1");
+    let out = env.run(
+        &["done", "--as", "b", &id, "--reply"],
+        Some(r#"{"reply":"done"}"#),
+    );
+    assert_eq!(code(&out), 4, "{}", stderr(&out));
+    assert!(stderr(&out).contains("could not be read"));
+    assert_eq!(env.ids("done/b"), vec![id]);
+
+    let id = plant("00a2");
+    let out = env.run(
+        &["done", "--as", "b", &id, "--reject"],
+        Some(r#"{"reason":"broken"}"#),
+    );
+    assert_eq!(code(&out), 4, "{}", stderr(&out));
+    assert_eq!(env.ids("rejected/b"), vec![id]);
+
+    // Without --reply or --reject nothing was asked for: exit 0.
+    let id = plant("00a3");
+    let out = env.run(&["done", "--as", "b", &id], None);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(env.ids("inbox/a").is_empty(), "nothing was sent");
+}
+
+/// `cq send --reply-to` names a task: a reply to a result or an info is
+/// refused with exit 5 and writes nothing.
+#[test]
+fn send_reply_to_a_result_or_info_is_refused() {
+    let env = Env::new();
+    for kind in ["info", "result"] {
+        let flags: &[&str] = if kind == "result" {
+            &[
+                "--from", "a", "--to", "b", "--type", "result", "--status", "ok",
+            ]
+        } else {
+            &["--from", "a", "--to", "b", "--type", "info"]
+        };
+        let out = env.send_raw(flags, "s", "b");
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        let id = stdout(&out).trim().to_owned();
+        assert_eq!(code(&env.claim("b", &id)), 0);
+        for reply in [
+            &["--type", "result", "--status", "ok"][..],
+            &["--type", "info"][..],
+        ] {
+            let mut flags = vec!["--from", "b", "--to", "a", "--reply-to", id.as_str()];
+            flags.extend_from_slice(reply);
+            let out = env.send_raw(&flags, "re", "b");
+            assert_eq!(code(&out), 5, "{kind} {reply:?}: {}", stderr(&out));
+            assert!(stderr(&out).contains("only task messages get replies"));
+        }
+        // It may still be the parent of a new message.
+        let out = env.send_raw(
+            &[
+                "--from", "b", "--to", "c", "--type", "info", "--parent", &id,
+            ],
+            "s",
+            "b",
+        );
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+    }
+    assert!(env.ids("inbox/a").is_empty(), "a got no reply");
+
+    // A reply to a claimed task is sent.
+    let task = env.send("a", "b", "task", "do it", "please");
+    assert_eq!(code(&env.claim("b", &task)), 0);
+    let out = env.send_raw(
+        &[
+            "--from",
+            "b",
+            "--to",
+            "a",
+            "--type",
+            "result",
+            "--status",
+            "ok",
+            "--reply-to",
+            &task,
+        ],
+        "re",
+        "b",
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+}
+
+/// A task with the highest stored hop count can still be answered: its
+/// reply, its rejection and a `send --reply-to` result get one hop more.
+/// Nothing can follow such an answer.
+#[test]
+fn a_task_at_the_hop_limit_can_be_answered() {
+    let env = Env::new();
+    let plant = |hex: &str| {
+        let id = fake_id("x", hex);
+        env.plant(
+            "a",
+            &id,
+            v1(&id, "x", "a", "task", 4).to_string().as_bytes(),
+        );
+        assert_eq!(code(&env.claim("a", &id)), 0);
+        id
+    };
+
+    let task = plant("0041");
+    let out = env.run(
+        &["done", "--as", "a", &task, "--reply"],
+        Some(r#"{"reply":"done"}"#),
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let reply = env.ids("inbox/x")[0].clone();
+    assert_eq!(env.read_json(&format!("inbox/x/{reply}.json"))["hops"], 5);
+
+    let task = plant("0042");
+    let out = env.run(
+        &["done", "--as", "a", &task, "--reject"],
+        Some(r#"{"reason":"no"}"#),
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(env.ids("inbox/x").len(), 2);
+
+    let task = plant("0043");
+    let out = env.send_raw(
+        &[
+            "--from",
+            "a",
+            "--to",
+            "x",
+            "--type",
+            "result",
+            "--status",
+            "ok",
+            "--reply-to",
+            &task,
+        ],
+        "re",
+        "b",
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out).trim().to_owned();
+    assert_eq!(env.read_json(&format!("inbox/x/{id}.json"))["hops"], 5);
+
+    // The answer ends the chain: x cannot send anything about it.
+    assert_eq!(code(&env.claim("x", &reply)), 0);
+    let out = env.send_raw(
+        &[
+            "--from", "x", "--to", "a", "--type", "info", "--parent", &reply,
+        ],
+        "s",
+        "b",
+    );
+    assert_eq!(code(&out), 5, "{}", stderr(&out));
+    assert!(stderr(&out).contains("hop limit"));
+}

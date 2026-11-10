@@ -73,13 +73,21 @@ pub fn send(root: &Root, out: Outgoing, hops: Hops) -> Result<String> {
         )));
     }
 
-    let hops = match hops {
-        Hops::After(h) => h.saturating_add(1),
-        Hops::Lookup => lookup_hops(root, &out.from, [&out.reply_to, &out.parent])?,
+    // An answer ends its chain, so it may have one hop more than any other
+    // message. Otherwise a task with the highest stored count could never
+    // be answered. Answers are what `cq done` and `cq claim` send, and a
+    // result that replies to a task.
+    let (hops, highest) = match hops {
+        Hops::After(h) => (h.saturating_add(1), MAX_HOPS),
+        Hops::Lookup => {
+            let hops = lookup_hops(root, &out.from, &out.reply_to, &out.parent)?;
+            let answer = out.kind == MsgType::Result && out.reply_to.is_some();
+            (hops, if answer { MAX_HOPS } else { MAX_HOPS - 1 })
+        }
     };
-    if hops >= MAX_HOPS {
+    if hops > highest {
         return Err(CqError::refused(format!(
-            "hop limit reached: this message would have {hops} hops (limit {MAX_HOPS})"
+            "hop limit reached: this message would have {hops} hops (at most {highest} allowed)"
         )));
     }
 
@@ -172,10 +180,17 @@ pub fn send(root: &Root, out: Outgoing, hops: Hops) -> Result<String> {
 }
 
 /// 1 + the highest `hops` of the named messages, read from the sender's
-/// `.processing/` or `done/`; 0 when none is named.
-fn lookup_hops(root: &Root, from: &str, ids: [&Option<String>; 2]) -> Result<u32> {
+/// `.processing/` or `done/`; 0 when none is named. Refuses a `reply_to`
+/// that does not name a task: only task messages get replies.
+fn lookup_hops(
+    root: &Root,
+    from: &str,
+    reply_to: &Option<String>,
+    parent: &Option<String>,
+) -> Result<u32> {
     let mut hops = None;
-    for id in ids.into_iter().flatten() {
+    for (id, is_reply) in [(reply_to, true), (parent, false)] {
+        let Some(id) = id else { continue };
         let found = [root.processing(from), root.done(from)]
             .into_iter()
             .map(|d| message_file(&d, id))
@@ -187,10 +202,18 @@ fn lookup_hops(root: &Root, from: &str, ids: [&Option<String>; 2]) -> Result<u32
         };
         let bytes = fsutil::read_with_retry(&path)
             .map_err(|e| CqError::io(format!("read {}", path.display()), e))?;
-        let h = serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|v| v.get("hops").and_then(Value::as_u64))
+        let value = serde_json::from_slice::<Value>(&bytes).ok();
+        let field = |key: &str| value.as_ref().and_then(|v| v.get(key));
+        let h = field("hops")
+            .and_then(Value::as_u64)
             .ok_or_else(|| CqError::refused(format!("message {id} has no readable hops")))?;
+        let kind = field("type").and_then(Value::as_str);
+        if is_reply && kind != Some(MsgType::Task.as_str()) {
+            return Err(CqError::refused(format!(
+                "--reply-to refused: {id} is a {}, and only task messages get replies. Use --parent to send a new message about it",
+                kind.unwrap_or("message of unknown type")
+            )));
+        }
         let h = u32::try_from(h).unwrap_or(u32::MAX);
         hops = Some(hops.map_or(h, |m: u32| m.max(h)));
     }

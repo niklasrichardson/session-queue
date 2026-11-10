@@ -33,9 +33,10 @@ Exit codes:
   1   claim: the message is no longer in the inbox (already handled); ignore it
   2   a rename still failed after 3 retries
   3   claim: the message is invalid and went to the dead letter queue
-  4   done: the message is finished, but the reply was not sent
-  5   refused (name, size, hop or send limit, PAUSE, missing parent, watcher
-      running, sleeping another name without being a coordinator)
+  4   done or dispatch: the message is finished, but the reply was not sent
+  5   refused (name, size, hop or send limit, PAUSE, missing parent, a reply
+      to a result or info, watcher running, sleeping another name without
+      being a coordinator)
   6   done: the message is not claimed by this session; requeue: the
       message is not in this session's rejected/
   7   watch: the name is asleep; do not re-arm. status: the name is asleep
@@ -92,8 +93,9 @@ fn send_help() -> String {
     format!(
         "Limits (each refusal exits 5 and writes nothing):
   body             at most {MAX_BODY_BYTES} bytes
-  hops             refused at {MAX_HOPS} (from --parent and --reply-to)
-  replies          only task messages get replies
+  hops             refused at {MAX_HOPS} (from --parent and --reply-to); a result that
+                   replies to a task may have {MAX_HOPS}, and nothing can follow it
+  replies          only task messages get replies (--reply-to must name a task)
   pair             at most {RATE_LIMIT} messages from one sender to one recipient per {minutes} minutes
   recipient        at most {RECIPIENT_LIMIT} messages to one recipient, all senders, per {minutes} minutes
   sender           at most {SENDER_LIMIT} messages from one sender, all recipients, per {minutes} minutes
