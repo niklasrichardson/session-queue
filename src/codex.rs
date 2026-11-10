@@ -24,12 +24,21 @@
 //! reaches someone when nobody reads the watcher's output. A check queued
 //! only for such warnings sends none of its own: two coordinators that are
 //! both unloaded Codex chats would otherwise warn each other in a loop.
+//!
+//! The watcher never waits for `codex queue`, as with `--to-agy`: it starts
+//! the call and looks on each tick whether it has exited, so a slow or hung
+//! call cannot stop the heartbeat or the checks for sleep, `PAUSE` and
+//! signals. One call runs at a time. Lines that arrive during a call, or
+//! while a failed call waits to be tried again, go into the next call. Each
+//! call runs in its own Job Object (Windows) or process group (Unix): a
+//! call past `QUEUE_TIMEOUT`, or one that still runs when the name falls
+//! asleep, is stopped with every process it started.
 
 use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,6 +51,7 @@ use crate::inbox::{
 use crate::members;
 use crate::message::MsgType;
 use crate::names::is_valid_id;
+use crate::platform::{self, Agent};
 use crate::root::Root;
 use crate::send::{self, Hops, Outgoing};
 use crate::sleep;
@@ -62,6 +72,15 @@ pub const CHECK_AFTER: Duration = Duration::from_secs(60);
 pub const QUEUE_DB: &str = "queue_1.sqlite";
 /// A look-up in the queue database waits no longer than this for a lock.
 const DB_BUSY: Duration = Duration::from_secs(1);
+/// A watcher that stops waits no longer than this for its last check to be
+/// queued: one call's time limit, so a hung call is stopped as during the
+/// run, and calls that fail at once still get every try (1 + 2 + 4 s).
+pub const EXIT_WAIT: Duration = QUEUE_TIMEOUT;
+/// How often a watcher that stops looks whether its last call has ended.
+const EXIT_POLL: Duration = Duration::from_millis(50);
+/// How long to wait for a call's output after it exits: a process it
+/// started could keep a pipe open.
+const PIPE_WAIT: Duration = Duration::from_secs(1);
 
 /// The message queued into the chat when `--codex-prompt` is not given.
 pub fn default_prompt(name: &str) -> String {
@@ -70,70 +89,144 @@ pub fn default_prompt(name: &str) -> String {
     )
 }
 
-/// Runs `codex queue` once. Tests use a fake.
+/// Runs `codex queue`, one call at a time. Tests use a fake.
 pub trait Runner {
-    /// Queue `message` into `thread`. Returns the line Codex printed.
-    fn queue(&mut self, thread: &str, message: &str) -> io::Result<String>;
+    /// Start queuing `message` into `thread`. Returns at once.
+    fn start(&mut self, thread: &str, message: &str) -> io::Result<()>;
+    /// `None` while the call runs. Then, once, its result: the line Codex
+    /// printed.
+    fn poll(&mut self) -> Option<io::Result<String>>;
+    /// Stop the running call, with every process it started.
+    fn kill(&mut self);
+}
+
+/// A child's pipe, read to the end on its own thread.
+struct Pipe {
+    rx: mpsc::Receiver<Vec<u8>>,
+    got: Option<Vec<u8>>,
+}
+
+impl Pipe {
+    fn new(pipe: Option<impl Read + Send + 'static>) -> Self {
+        let (tx, rx) = mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = pipe.read_to_end(&mut buf);
+                let _ = tx.send(buf);
+            });
+        }
+        Self { rx, got: None }
+    }
+
+    /// True once the pipe has been read to the end. Never waits.
+    fn done(&mut self) -> bool {
+        if self.got.is_none() {
+            match self.rx.try_recv() {
+                Ok(buf) => self.got = Some(buf),
+                Err(mpsc::TryRecvError::Disconnected) => self.got = Some(Vec::new()),
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        self.got.is_some()
+    }
+
+    /// What was read, so far.
+    fn text(&self) -> String {
+        String::from_utf8_lossy(self.got.as_deref().unwrap_or_default()).into_owned()
+    }
+}
+
+/// A call of the real `codex queue`: the process tree, its output, and
+/// when it exited.
+struct Call {
+    agent: Agent,
+    out: Pipe,
+    err: Pipe,
+    exited: Option<(ExitStatus, Instant)>,
 }
 
 /// The real Codex executable, run without a shell.
-pub struct CodexBin(OsString);
+pub struct CodexBin {
+    bin: OsString,
+    call: Option<Call>,
+}
 
 impl Runner for CodexBin {
-    fn queue(&mut self, thread: &str, message: &str) -> io::Result<String> {
-        let mut child = members::remove_session_vars(&mut Command::new(&self.0))
+    fn start(&mut self, thread: &str, message: &str) -> io::Result<()> {
+        let mut command = Command::new(&self.bin);
+        members::remove_session_vars(&mut command)
             .args(["queue", "--thread", thread, "--message", message])
             .env_remove(SOCKET_VAR)
             .env_remove(TOKEN_VAR)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let out = read_all(child.stdout.take());
-        let err = read_all(child.stderr.take());
-        let deadline = Instant::now() + QUEUE_TIMEOUT;
-        let status = loop {
-            if let Some(s) = child.try_wait()? {
-                break s;
+            .stderr(Stdio::piped());
+        // Its own tree, so that `kill` stops every process it started. A
+        // process left when the call exits is left alone, as before.
+        let mut agent = platform::spawn_tree(&mut command)?;
+        let out = Pipe::new(agent.child.stdout.take());
+        let err = Pipe::new(agent.child.stderr.take());
+        self.call = Some(Call {
+            agent,
+            out,
+            err,
+            exited: None,
+        });
+        Ok(())
+    }
+
+    fn poll(&mut self) -> Option<io::Result<String>> {
+        let call = self.call.as_mut()?;
+        if call.exited.is_none() {
+            match call.agent.child.try_wait() {
+                Ok(None) => return None,
+                Ok(Some(status)) => call.exited = Some((status, Instant::now())),
+                Err(e) => {
+                    self.kill();
+                    return Some(Err(e));
+                }
             }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!("codex queue took over {}s", QUEUE_TIMEOUT.as_secs()),
-                ));
-            }
-            thread::sleep(Duration::from_millis(50));
-        };
-        // A grandchild could keep a pipe open: do not wait for it long.
-        let out = out.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
-        let err = err.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
-        let out = String::from_utf8_lossy(&out);
-        let err = String::from_utf8_lossy(&err);
-        match out.lines().find(|l| l.contains(QUEUED)) {
-            Some(line) if status.success() => Ok(line.trim().to_owned()),
-            _ => {
-                let said = last_line(&err)
-                    .or_else(|| last_line(&out))
-                    .unwrap_or("no output");
-                Err(io::Error::other(format!("codex queue {status}: {said}")))
-            }
+        }
+        let (status, at) = call.exited?;
+        // A process the call started could keep a pipe open: do not wait
+        // for it long.
+        if !(call.out.done() & call.err.done()) && at.elapsed() < PIPE_WAIT {
+            return None;
+        }
+        let call = self.call.take()?;
+        Some(outcome(status, &call.out.text(), &call.err.text()))
+    }
+
+    fn kill(&mut self) {
+        if let Some(mut call) = self.call.take()
+            && platform::stop_agent(&mut call.agent).is_err()
+        {
+            let _ = call.agent.child.kill();
+            let _ = call.agent.child.wait();
         }
     }
 }
 
-/// Read a child's pipe to the end on its own thread.
-fn read_all(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
-    let (tx, rx) = mpsc::channel();
-    if let Some(mut pipe) = pipe {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = pipe.read_to_end(&mut buf);
-            let _ = tx.send(buf);
-        });
+impl Drop for CodexBin {
+    /// A call that still runs when the watcher ends on an error is stopped.
+    fn drop(&mut self) {
+        self.kill();
     }
-    rx
+}
+
+/// The result of a call that has exited: the `Queued message` line, or why
+/// it failed.
+fn outcome(status: ExitStatus, out: &str, err: &str) -> io::Result<String> {
+    match out.lines().find(|l| l.contains(QUEUED)) {
+        Some(line) if status.success() => Ok(line.trim().to_owned()),
+        _ => {
+            let said = last_line(err)
+                .or_else(|| last_line(out))
+                .unwrap_or("no output");
+            Err(io::Error::other(format!("codex queue {status}: {said}")))
+        }
+    }
 }
 
 /// The last non-empty line, cut to 200 characters.
@@ -290,6 +383,14 @@ struct Check {
     alerts_only: bool,
 }
 
+/// The call that runs: when it started, and the lines it is for.
+struct Posting {
+    started: Instant,
+    lines: usize,
+    /// How many of the `lines` are "has not taken" warnings.
+    alerts: usize,
+}
+
 /// A `Sink` that wakes a Codex chat once per batch of new messages.
 pub struct CodexQueue<R: Runner, C: Clock> {
     name: String,
@@ -306,6 +407,11 @@ pub struct CodexQueue<R: Runner, C: Clock> {
     /// When the batch in `held` started.
     batch_start: Option<Instant>,
     last_post: Option<Instant>,
+    posting: Option<Posting>,
+    /// Failed calls in a row.
+    failures: u32,
+    /// When to try a failed call again.
+    retry_at: Option<Instant>,
     /// Codex's queue database; `None` turns the look-ups off.
     db: Option<PathBuf>,
     /// How long after a queued check to look it up.
@@ -348,7 +454,7 @@ impl CodexQueue<CodexBin, SystemClock> {
             name,
             thread,
             prompt,
-            CodexBin(bin),
+            CodexBin { bin, call: None },
             SystemClock,
             Box::new(io::stdout()),
         )
@@ -400,6 +506,9 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
             held_alerts: 0,
             batch_start: None,
             last_post: None,
+            posting: None,
+            failures: 0,
+            retry_at: None,
             db: None,
             check_after: CHECK_AFTER,
             checks: VecDeque::new(),
@@ -499,53 +608,116 @@ impl<R: Runner, C: Clock> CodexQueue<R, C> {
         }
     }
 
-    /// Queue the prompt once for every held line: wait for `MIN_GAP`, then
-    /// try up to `POST_TRIES` times with a doubling wait between tries.
-    fn post(&mut self) -> io::Result<()> {
-        let n = std::mem::take(&mut self.held);
-        let alerts_only = std::mem::take(&mut self.held_alerts) == n;
+    /// Start a call for every held line.
+    fn begin(&mut self) -> io::Result<()> {
+        let lines = std::mem::take(&mut self.held);
+        let alerts = std::mem::take(&mut self.held_alerts);
         self.batch_start = None;
-        let mut wait = RETRY_FIRST;
-        let mut tries = 0;
-        loop {
-            let now = self.clock.now();
-            if let Some(t) = self.last_post
-                && now < t + MIN_GAP
-            {
-                self.clock.sleep(t + MIN_GAP - now);
+        self.retry_at = None;
+        let started = self.clock.now();
+        match self.runner.start(&self.thread, &self.prompt) {
+            Ok(()) => {
+                self.posting = Some(Posting {
+                    started,
+                    lines,
+                    alerts,
+                });
+                Ok(())
             }
-            tries += 1;
-            match self.runner.queue(&self.thread, &self.prompt) {
-                Ok(said) => {
-                    self.last_post = Some(self.clock.now());
-                    // The log is for a person watching; never stop for it.
-                    let _ = writeln!(
-                        self.log,
-                        "cq watch ({}): {} queued a check for {n} new message(s): {said}",
-                        self.name,
-                        rfc3339(timefmt::now())
-                    );
-                    let _ = self.log.flush();
-                    if self.db.is_some() {
-                        match queued_item(&said) {
-                            Some(item) => self.checks.push_back(Check {
-                                at: self.clock.now() + self.check_after,
-                                item: item.to_owned(),
-                                alerts_only,
-                            }),
-                            None => self.skip("codex queue printed no item ID"),
-                        }
-                    }
-                    return Ok(());
-                }
-                Err(e) if tries >= POST_TRIES => return Err(e),
-                Err(e) => {
-                    eprintln!("cq watch: codex queue failed, trying again ({e})");
-                    self.clock.sleep(wait);
-                    wait *= 2;
-                }
+            Err(e) => self.fail(lines, alerts, e),
+        }
+    }
+
+    /// Look whether the running call has ended, and stop one that has run
+    /// past `QUEUE_TIMEOUT`. Never waits.
+    fn check(&mut self) -> io::Result<()> {
+        let Some(posting) = &self.posting else {
+            return Ok(());
+        };
+        let now = self.clock.now();
+        let result = match self.runner.poll() {
+            Some(result) => result,
+            None if now >= posting.started + QUEUE_TIMEOUT => {
+                self.runner.kill();
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("codex queue took over {}s", QUEUE_TIMEOUT.as_secs()),
+                ))
+            }
+            None => return Ok(()),
+        };
+        let Some(posting) = self.posting.take() else {
+            return Ok(());
+        };
+        match result {
+            Ok(said) => {
+                self.failures = 0;
+                self.queued(posting.lines, posting.alerts == posting.lines, &said);
+                Ok(())
+            }
+            Err(e) => self.fail(posting.lines, posting.alerts, e),
+        }
+    }
+
+    /// A call that succeeded: log it, and look it up `check_after` later.
+    fn queued(&mut self, n: usize, alerts_only: bool, said: &str) {
+        self.last_post = Some(self.clock.now());
+        // The log is for a person watching; never stop for it.
+        let _ = writeln!(
+            self.log,
+            "cq watch ({}): {} queued a check for {n} new message(s): {said}",
+            self.name,
+            rfc3339(timefmt::now())
+        );
+        let _ = self.log.flush();
+        if self.db.is_some() {
+            match queued_item(said) {
+                Some(item) => self.checks.push_back(Check {
+                    at: self.clock.now() + self.check_after,
+                    item: item.to_owned(),
+                    alerts_only,
+                }),
+                None => self.skip("codex queue printed no item ID"),
             }
         }
+    }
+
+    /// A failed call: hold its lines again and try again 1, 2 and 4 s
+    /// later, or give up after `POST_TRIES` calls in a row.
+    fn fail(&mut self, lines: usize, alerts: usize, e: io::Error) -> io::Result<()> {
+        self.failures += 1;
+        if self.failures >= POST_TRIES {
+            return Err(e);
+        }
+        eprintln!("cq watch: codex queue failed, trying again ({e})");
+        let now = self.clock.now();
+        if self.held == 0 {
+            self.batch_start = Some(now);
+        }
+        self.held += lines;
+        self.held_alerts += alerts;
+        self.retry_at = Some(now + RETRY_FIRST * 2u32.pow(self.failures - 1));
+        Ok(())
+    }
+
+    /// Start a call once none runs, the batch window has closed and the
+    /// gap since the last queued check has passed; a retry waits for its
+    /// own time instead.
+    fn start_due(&mut self) -> io::Result<()> {
+        let now = self.clock.now();
+        let ready = match self.retry_at {
+            Some(at) => now >= at,
+            None => {
+                self.batch_start.is_some_and(|t| now >= t + BATCH_WINDOW)
+                    && self.last_post.is_none_or(|p| now >= p + MIN_GAP)
+            }
+        };
+        if self.posting.is_none() && self.held > 0 && ready {
+            self.begin()?;
+            // A call that ends at once is seen in this tick.
+            self.check()?;
+        }
+        Ok(())
     }
 }
 
@@ -564,39 +736,68 @@ impl<R: Runner, C: Clock> Sink for CodexQueue<R, C> {
         Ok(())
     }
 
-    /// Queue once the batch window has closed and the gap since the last
-    /// queue has passed. Never waits.
+    /// Look whether the running call has ended, start the next one when it
+    /// is due, and look up queued checks. Never waits.
     fn tick(&mut self) -> io::Result<()> {
-        let now = self.clock.now();
-        let due = self.batch_start.is_some_and(|t| {
-            now >= t + BATCH_WINDOW && self.last_post.is_none_or(|p| now >= p + MIN_GAP)
-        });
-        if due {
-            self.post()?;
-        }
+        self.check()?;
+        self.start_due()?;
         self.look();
         Ok(())
     }
 
+    /// A line in a call that still runs has not been delivered yet.
     fn holding(&self) -> bool {
-        self.held > 0
+        self.held > 0 || self.posting.is_some()
     }
 
     /// Queue what is held, unless the name is asleep: then the messages
-    /// wait until it wakes.
+    /// wait until it wakes, and a call that still runs is stopped. Keeps
+    /// the gap and the retries, but waits at most `EXIT_WAIT` in all.
     fn stopped(&mut self, _reason: &str, ended: Ended) -> bool {
-        if self.held == 0 {
-            return true;
-        }
         if ended != Ended::Normal {
-            return false;
-        }
-        match self.post() {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!("cq watch: could not queue the last check into the Codex chat ({e})");
-                false
+            let running = self.posting.take().is_some();
+            if running {
+                self.runner.kill();
+                eprintln!(
+                    "cq watch: stopped the codex queue that still ran; the messages wait in the queue"
+                );
             }
+            return self.held == 0 && !running;
+        }
+        let deadline = self.clock.now() + EXIT_WAIT;
+        loop {
+            if let Err(e) = self.check() {
+                eprintln!("cq watch: could not queue the last check into the Codex chat ({e})");
+                return false;
+            }
+            if self.posting.is_none() {
+                if self.held == 0 {
+                    return true;
+                }
+                let now = self.clock.now();
+                if self.retry_at.is_none_or(|at| now >= at)
+                    && self.last_post.is_none_or(|p| now >= p + MIN_GAP)
+                {
+                    if let Err(e) = self.begin() {
+                        eprintln!(
+                            "cq watch: could not queue the last check into the Codex chat ({e})"
+                        );
+                        return false;
+                    }
+                    continue;
+                }
+            }
+            if self.clock.now() >= deadline {
+                if self.posting.take().is_some() {
+                    self.runner.kill();
+                }
+                eprintln!(
+                    "cq watch: could not queue the last check into the Codex chat (not done after {} s)",
+                    EXIT_WAIT.as_secs()
+                );
+                return false;
+            }
+            self.clock.sleep(EXIT_POLL);
         }
     }
 
@@ -620,29 +821,52 @@ mod tests {
     use super::*;
     use crate::inbox::fake_clock::FakeClock;
 
-    /// Records each call's thread and message. Fails the next `fail` calls.
+    /// Records each call's thread and message. A call ends at its first
+    /// poll, and the next `fail` calls fail; while `hang` is set, a call
+    /// runs until it is killed.
     #[derive(Clone, Default)]
     struct FakeRunner {
         calls: Rc<RefCell<Vec<(String, String)>>>,
         fail: Rc<RefCell<u32>>,
         /// The queued item ID Codex prints; `q1` when `None`.
         item: Option<&'static str>,
+        hang: Rc<RefCell<bool>>,
+        running: Rc<RefCell<bool>>,
+        killed: Rc<RefCell<u32>>,
     }
 
     impl Runner for FakeRunner {
-        fn queue(&mut self, thread: &str, message: &str) -> io::Result<String> {
+        fn start(&mut self, thread: &str, message: &str) -> io::Result<()> {
             self.calls
                 .borrow_mut()
                 .push((thread.to_owned(), message.to_owned()));
+            *self.running.borrow_mut() = true;
+            Ok(())
+        }
+        fn poll(&mut self) -> Option<io::Result<String>> {
+            if !*self.running.borrow() || *self.hang.borrow() {
+                return None;
+            }
+            *self.running.borrow_mut() = false;
             let mut fail = self.fail.borrow_mut();
             if *fail > 0 {
                 *fail -= 1;
-                return Err(io::Error::other("exit code: 1: thread not found"));
+                return Some(Err(io::Error::other("exit code: 1: thread not found")));
             }
-            Ok(format!(
+            Some(Ok(format!(
                 "Queued message {} for thread t1.",
                 self.item.unwrap_or("q1")
-            ))
+            )))
+        }
+        fn kill(&mut self) {
+            *self.running.borrow_mut() = false;
+            *self.killed.borrow_mut() += 1;
+        }
+    }
+
+    impl FakeRunner {
+        fn calls(&self) -> usize {
+            self.calls.borrow().len()
         }
     }
 
@@ -717,6 +941,24 @@ mod tests {
         assert_eq!(r.calls.borrow().len(), 1, "queued with nothing held");
     }
 
+    /// Let `wait` pass, and check that the next try starts then, not 1 ms
+    /// before. Returns what the tick that starts it returned.
+    fn retry_after(
+        q: &mut CodexQueue<FakeRunner, FakeClock>,
+        r: &FakeRunner,
+        c: &FakeClock,
+        wait: Duration,
+    ) -> io::Result<()> {
+        let before = r.calls();
+        c.advance(wait - Duration::from_millis(1));
+        q.tick().unwrap();
+        assert_eq!(r.calls(), before, "tried again before {wait:?}");
+        c.advance(Duration::from_millis(1));
+        let result = q.tick();
+        assert_eq!(r.calls(), before + 1, "no retry after {wait:?}");
+        result
+    }
+
     #[test]
     fn a_failed_call_is_retried_then_fails_with_exit_9() {
         let (mut q, r, c) = sink();
@@ -724,19 +966,116 @@ mod tests {
         q.line(NEW).unwrap();
         c.advance(BATCH_WINDOW);
         q.tick().unwrap();
-        assert_eq!(r.calls.borrow().len(), 3);
-        assert_eq!(*c.slept.borrow(), [1, 2].map(Duration::from_secs));
+        for wait in [1, 2] {
+            assert!(q.holding(), "the lines were dropped");
+            retry_after(&mut q, &r, &c, Duration::from_secs(wait)).unwrap();
+        }
+        assert_eq!(r.calls(), 3);
+        assert!(!q.holding());
+        assert_eq!(q.failures, 0, "a success did not reset the count");
 
         let (mut q, r, c) = sink();
         *r.fail.borrow_mut() = u32::MAX;
         q.line(NEW).unwrap();
         c.advance(BATCH_WINDOW);
-        let e = q.tick().unwrap_err();
-        assert_eq!(r.calls.borrow().len(), POST_TRIES as usize);
-        assert_eq!(*c.slept.borrow(), [1, 2, 4].map(Duration::from_secs));
+        q.tick().unwrap();
+        for wait in [1, 2] {
+            retry_after(&mut q, &r, &c, Duration::from_secs(wait)).unwrap();
+        }
+        let e = retry_after(&mut q, &r, &c, Duration::from_secs(4)).unwrap_err();
+        assert_eq!(r.calls(), POST_TRIES as usize);
+        assert!(c.slept.borrow().is_empty(), "tick waited");
         let err = q.failed(e).unwrap_err();
         assert_eq!(err.code, exit::CODEX_QUEUE_FAILED);
         assert!(err.message.contains("thread t1"), "{}", err.message);
+    }
+
+    /// A call that never ends does not stop the ticks: the watcher goes on
+    /// with its heartbeat and its sleep and `PAUSE` checks. After
+    /// `QUEUE_TIMEOUT` it is killed and tried again, with the lines that
+    /// arrived meanwhile.
+    #[test]
+    fn a_hung_call_never_holds_up_a_tick() {
+        let log = Log::default();
+        let r = FakeRunner::default();
+        let c = FakeClock::new();
+        let mut q =
+            CodexQueue::with("w", "t1", None, r.clone(), c.clone(), Box::new(log.clone())).unwrap();
+        *r.hang.borrow_mut() = true;
+        q.line(NEW).unwrap();
+        c.advance(BATCH_WINDOW);
+        q.tick().unwrap();
+        assert_eq!(r.calls(), 1);
+        assert!(q.holding(), "a running call's lines count as delivered");
+        q.line(NEW).unwrap();
+        c.advance(QUEUE_TIMEOUT - Duration::from_secs(1));
+        q.tick().unwrap();
+        assert_eq!((r.calls(), *r.killed.borrow()), (1, 0));
+        c.advance(Duration::from_secs(1));
+        q.tick().unwrap();
+        assert_eq!(*r.killed.borrow(), 1, "not stopped after the time limit");
+        assert!(q.holding());
+        *r.hang.borrow_mut() = false;
+        retry_after(&mut q, &r, &c, RETRY_FIRST).unwrap();
+        assert!(!q.holding());
+        let lines = log.lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("queued a check for 2 new message(s)"),
+            "{}",
+            lines[0]
+        );
+        assert!(c.slept.borrow().is_empty(), "tick waited");
+    }
+
+    #[test]
+    fn falling_asleep_stops_a_running_call_at_once() {
+        let (mut q, r, c) = sink();
+        *r.hang.borrow_mut() = true;
+        q.line(NEW).unwrap();
+        c.advance(BATCH_WINDOW);
+        q.tick().unwrap();
+        assert!(!q.stopped("asleep", Ended::Asleep), "said it was delivered");
+        assert_eq!(*r.killed.borrow(), 1);
+        assert!(c.slept.borrow().is_empty(), "waited");
+        assert!(q.stopped("again", Ended::Asleep), "nothing is held now");
+    }
+
+    /// A normal stop waits for a call that still runs, tries again as
+    /// during the run, and gives up after `EXIT_WAIT`.
+    #[test]
+    fn a_normal_stop_waits_for_the_last_check_at_most_exit_wait() {
+        let slept = |c: &FakeClock| c.slept.borrow().iter().sum::<Duration>();
+
+        // A call that ends while the watcher stops is waited for.
+        let (mut q, r, c) = sink();
+        *r.hang.borrow_mut() = true;
+        q.line(NEW).unwrap();
+        c.advance(BATCH_WINDOW);
+        q.tick().unwrap();
+        *r.hang.borrow_mut() = false;
+        assert!(q.stopped("stopped by a signal", Ended::Normal));
+        assert_eq!(r.calls(), 1);
+
+        // A failed try is tried again 1 s later, after the gap.
+        let (mut q, r, c) = sink();
+        q.line(NEW).unwrap();
+        c.advance(BATCH_WINDOW);
+        q.tick().unwrap();
+        *r.fail.borrow_mut() = 1;
+        q.line(NEW).unwrap();
+        assert!(q.stopped("stopped by a signal", Ended::Normal));
+        assert_eq!(r.calls(), 3);
+        assert!(slept(&c) >= MIN_GAP + RETRY_FIRST, "{:?}", slept(&c));
+
+        // A call that never ends is killed after EXIT_WAIT.
+        let (mut q, r, c) = sink();
+        *r.hang.borrow_mut() = true;
+        q.line(NEW).unwrap();
+        assert!(!q.stopped("stopped by a signal", Ended::Normal));
+        assert_eq!((r.calls(), *r.killed.borrow()), (1, 1));
+        assert!(slept(&c) >= EXIT_WAIT, "{:?}", slept(&c));
+        assert!(slept(&c) <= EXIT_WAIT + EXIT_POLL, "{:?}", slept(&c));
     }
 
     #[test]

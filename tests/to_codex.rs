@@ -128,6 +128,34 @@ fn one_call_per_batch_with_the_fixed_prompt_then_asleep_stops() {
     assert!(env.pid_of_watcher("b").is_none());
 }
 
+/// A `codex queue` that never answers does not stop the watcher loop:
+/// `cq sleep` still stops the watcher within seconds, and the hung call is
+/// stopped with every process it started.
+#[test]
+fn a_hung_codex_does_not_keep_an_asleep_watcher_running() {
+    let env = Env::new();
+    env.send("a", "b", "task", SUBJECT, BODY);
+    let mut w = Watcher::spawn(watch_cmd(&env, "b", "hang", &[]));
+    assert!(wait_until(Duration::from_secs(10), || env
+        .path("calls.txt.hung")
+        .exists()));
+    let out = env.run(&["sleep", "--as", "b", "b"], None);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(exit_code(&mut w, Duration::from_secs(5)), 7);
+    let err = w.stderr_text();
+    assert!(
+        err.contains("stopped the codex queue that still ran"),
+        "{err}"
+    );
+    // Both write a file 3 s after the call started, unless stopped.
+    std::thread::sleep(Duration::from_secs(4));
+    for who in ["codex", "helper"] {
+        let file = env.path(&format!("calls.txt.{who}-ran-on"));
+        assert!(!file.exists(), "the hung call's {who} ran on");
+    }
+    assert_eq!(calls(&env).len(), 1);
+}
+
 #[test]
 fn asleep_at_start_exits_7_without_a_call() {
     let env = Env::new();
