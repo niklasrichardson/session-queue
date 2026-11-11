@@ -5,8 +5,15 @@
 //! handles, never a path: the folders from the volume root to the exchange
 //! folder are opened one by one, each relative to its parent, refusing any
 //! reparse point, and held without delete sharing for the watcher's life.
+//! The held handles also have no delete access, so agy's sandboxed shell
+//! can open the folders of its `--add-dir` path to change their DACL.
 //! Job folders and files are then created, opened, listed and deleted
 //! relative to those handles.
+//!
+//! When agy's shell starts, it adds an entry that gives the sandbox SID
+//! traverse and synchronize to each folder of the job folder's path where
+//! the SID lacks that access. On the exchange folder that entry, and only
+//! that one, is accepted beside the contract below.
 //!
 //! On Windows the exchange folder gets the descriptor that the design calls
 //! the "descendant access contract": owner the current user; a protected
@@ -628,13 +635,19 @@ mod imp {
         Ok(file_id(&OwnedHandle::from(f))? == file_id(h)?)
     }
 
+    /// The access of the held exchange and job folder handles. No DELETE:
+    /// when agy's sandboxed shell starts, it opens each folder of the
+    /// `--add-dir` path without delete sharing to add an entry for the
+    /// sandbox SID, and a held handle with DELETE access makes that fail
+    /// with a sharing violation. The handles still deny delete sharing,
+    /// so the folders cannot be renamed; `remove_dir` opens a folder with
+    /// DELETE only to delete it.
     const DIR_ACCESS: u32 = FILE_LIST_DIRECTORY
         | FILE_TRAVERSE
         | FILE_ADD_FILE
         | FILE_ADD_SUBDIRECTORY
         | FILE_READ_ATTRIBUTES
-        | READ_CONTROL
-        | DELETE;
+        | READ_CONTROL;
 
     /// Open the folder `name` in `parent`. `None` when it does not exist.
     pub fn open_dir(parent: &OwnedHandle, name: &str) -> io::Result<Option<OwnedHandle>> {
@@ -912,9 +925,28 @@ mod imp {
         Ok(sid)
     }
 
+    /// What agy's sandbox adds for its SID on each folder of an `--add-dir`
+    /// path when its shell starts: traverse and synchronize.
+    pub const TRAVERSE_GRANT: u32 = FILE_TRAVERSE | SYNCHRONIZE;
+
+    /// True for an entry that agy's sandbox adds: allow, at most traverse
+    /// and synchronize, for `sandbox`, and neither inheritable nor
+    /// inherited. It gives the sandbox less than its Modify entry and
+    /// reaches nothing below the folder.
+    fn is_traverse_grant(ace: &Ace, sandbox: &str) -> bool {
+        ace.kind == ACCESS_ALLOWED_ACE_TYPE
+            && ace.flags == 0
+            && ace.mask & !TRAVERSE_GRANT == 0
+            && ace.sid == sandbox
+    }
+
     pub fn check_exchange(h: &OwnedHandle, sid: Option<&str>) -> io::Result<()> {
-        let mut want = Descriptor::contract(&current_user()?, sandbox(sid)?);
-        let have = descriptor(h)?;
+        let sandbox = sandbox(sid)?;
+        let mut want = Descriptor::contract(&current_user()?, sandbox);
+        let mut have = descriptor(h)?;
+        if let Some(dacl) = &mut have.dacl {
+            dacl.retain(|a| !is_traverse_grant(a, sandbox));
+        }
         // A folder made without an explicit owner gets the token's default
         // owner, which is BUILTIN\Administrators when elevated. That owner
         // is this process too, so it is accepted beside the user.
@@ -978,7 +1010,7 @@ mod imp {
                 None => Ok(()),
             });
         if let Err(e) = checked {
-            let _ = delete(&h);
+            let _ = remove_dir(parent, name, h);
             return Err(e);
         }
         Ok(h)
@@ -999,14 +1031,14 @@ mod imp {
         match descriptor(&h) {
             Ok(d) if d.is_low() => Ok(h),
             Ok(d) => {
-                let _ = delete(&h);
+                let _ = remove_dir(exchange, name, h);
                 Err(io::Error::other(format!(
                     "job folder {name} did not inherit the Low label (label {:?})",
                     d.label
                 )))
             }
             Err(e) => {
-                let _ = delete(&h);
+                let _ = remove_dir(exchange, name, h);
                 Err(e)
             }
         }
@@ -1223,10 +1255,32 @@ mod imp {
         Ok(())
     }
 
-    /// Delete the empty folder `dir` (named `_name` in `_parent`) by its
-    /// own handle.
-    pub fn remove_dir(_parent: &OwnedHandle, _name: &str, dir: OwnedHandle) -> io::Result<()> {
-        delete(&dir)
+    /// Delete the empty folder `dir`, named `name` in `parent`. `dir` has
+    /// no DELETE access (see `DIR_ACCESS`) and denies delete sharing, so it
+    /// is closed first. The folder is then opened again by name with
+    /// DELETE, still without delete sharing, and deleted only if it is the
+    /// same folder (volume serial and file index).
+    pub fn remove_dir(parent: &OwnedHandle, name: &str, dir: OwnedHandle) -> io::Result<()> {
+        let id = file_id(&dir)?;
+        drop(dir);
+        let h = nt_create(
+            Some(parent),
+            &component(name)?,
+            DELETE | FILE_READ_ATTRIBUTES,
+            0,
+            PIN_SHARE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE,
+            null(),
+        )
+        .map_err(nt_error)?;
+        refuse_reparse(&h, name)?;
+        if file_id(&h)? != id {
+            return Err(io::Error::other(format!(
+                "{name} is now another folder; not deleted"
+            )));
+        }
+        delete(&h)
     }
 }
 
@@ -1774,7 +1828,8 @@ mod tests {
     use std::process::Command;
 
     use super::imp::{
-        self, Ace, Descriptor, INHERIT_FLAGS, INHERITED_FLAG, MODIFY, allow, low_label,
+        self, Ace, Descriptor, INHERIT_FLAGS, INHERITED_FLAG, MODIFY, TRAVERSE_GRANT, allow,
+        low_label,
     };
     use super::{Exchange, FileRead};
     use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
@@ -1916,7 +1971,31 @@ mod tests {
         folder_with(tmp.path(), "extra", &extra, true, true);
         folder_with(tmp.path(), "unprotected", &good, false, true);
         folder_with(tmp.path(), "nolabel", &good, true, false);
-        for name in ["flag", "extra", "unprotected", "nolabel"] {
+
+        // The entry agy's sandbox adds when its shell starts is accepted;
+        // anything wider, inheritable or for another SID is not.
+        let with = |name: &str, ace: Ace| {
+            let mut dacl = good.to_vec();
+            dacl.push(ace);
+            folder_with(tmp.path(), name, &dacl, true, true);
+        };
+        with("traverse", allow(TRAVERSE_GRANT, 0, SID));
+        Exchange::open_or_create(&tmp.path().join("traverse"), Some(SID)).unwrap();
+        with("traverse-other", allow(TRAVERSE_GRANT, 0, "S-1-1-0"));
+        with(
+            "traverse-inherit",
+            allow(TRAVERSE_GRANT, INHERIT_FLAGS, SID),
+        );
+        with("traverse-read", allow(TRAVERSE_GRANT | 1, 0, SID));
+        for name in [
+            "flag",
+            "extra",
+            "unprotected",
+            "nolabel",
+            "traverse-other",
+            "traverse-inherit",
+            "traverse-read",
+        ] {
             let e = Exchange::open_or_create(&tmp.path().join(name), Some(SID))
                 .err()
                 .unwrap_or_else(|| panic!("{name} accepted"));
@@ -2023,6 +2102,96 @@ mod tests {
         drop(job);
         drop(ex);
         fs::rename(&mid, tmp.path().join("mid2")).unwrap();
+    }
+
+    /// agy's sandboxed shell opens each folder of its `--add-dir` path
+    /// without delete sharing and adds an entry to its DACL. The held
+    /// handles must not make that fail, and the exchange folder must still
+    /// be accepted afterwards.
+    #[test]
+    fn the_agy_sandbox_can_add_its_entry_to_pinned_folders() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ADD_FILE, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let mid = tmp.path().join("mid");
+        let ex = Exchange::open_or_create(&mid.join("ex"), Some(SID)).unwrap();
+        let job = ex.create_job("j1").unwrap();
+        let open = |path: &Path| {
+            fs::OpenOptions::new()
+                .access_mode(FILE_LIST_DIRECTORY | FILE_ADD_FILE | READ_CONTROL | WRITE_DAC)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .map(OwnedHandle::from)
+        };
+        for path in [job.path(), ex.path(), &mid] {
+            open(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        }
+        let mut dacl = Descriptor::contract(&user(), SID).dacl.unwrap();
+        dacl.push(allow(TRAVERSE_GRANT, 0, SID));
+        imp::set_dacl(&open(ex.path()).unwrap(), &dacl, true).unwrap();
+        imp::set_dacl(&open(job.path()).unwrap(), &dacl, false).unwrap();
+        // Still pinned: no folder of the path can be renamed.
+        assert!(fs::rename(job.path(), ex.path().join("j1x")).is_err());
+        assert!(fs::rename(ex.path(), mid.join("ex2")).is_err());
+        ex.remove_job(job).unwrap();
+        assert!(!ex.path().join("j1").exists());
+        drop(ex);
+        Exchange::open_or_create(&mid.join("ex"), Some(SID)).unwrap();
+    }
+
+    /// The same with the real `agy`: its shell starts in a pinned job
+    /// folder. A live test, run by hand: set `CQ_LIVE_AGY_BASE` to an
+    /// empty scratch folder and `CQ_LIVE_AGY_SID` to the sandbox SID, then
+    /// `cargo test --lib live_agy -- --ignored --nocapture`. Each run is
+    /// one agy print turn.
+    #[test]
+    #[ignore = "runs the real agy"]
+    fn live_agy_shell_starts_in_a_pinned_job_folder() {
+        let (Ok(base), Ok(sid)) = (
+            std::env::var("CQ_LIVE_AGY_BASE"),
+            std::env::var("CQ_LIVE_AGY_SID"),
+        ) else {
+            eprintln!("CQ_LIVE_AGY_BASE or CQ_LIVE_AGY_SID not set; skipped");
+            return;
+        };
+        let path = Exchange::resolve(&Path::new(&base).join("ex")).unwrap();
+        let ex = Exchange::open_or_create(&path, Some(&sid)).unwrap();
+        let job = ex.create_job("j1").unwrap();
+        job.write_new("request.json", b"{}").unwrap();
+        let dir = job.path().display().to_string();
+        let out = Command::new("agy")
+            .current_dir(job.path())
+            .args(["--add-dir", &dir, "-p"])
+            .arg(format!(
+                "Use only your shell tool, not a file tool: in {dir} run a command that creates shell.txt containing hi. If the shell tool fails, quote its error exactly and create nothing."
+            ))
+            .args(["--output-format", "json"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        eprintln!("{text}");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !text.contains("exebox"),
+            "the sandboxed shell did not start"
+        );
+        assert!(job.path().join("shell.txt").exists());
+        eprintln!(
+            "exchange folder after the turn: {:?}",
+            imp::descriptor(&ex.dir)
+        );
+        eprintln!("job folder after the turn: {:?}", job.descriptor());
+        ex.remove_job(job).unwrap();
+        drop(ex);
+        Exchange::open_or_create(&path, Some(&sid)).unwrap();
     }
 
     #[test]

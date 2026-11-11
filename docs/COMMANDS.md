@@ -282,7 +282,7 @@ Experimental. `cq watch --as B --to-agy CONVERSATION_ID` wakes an Antigravity CL
 
 ### Broker mode
 
-Experimental, cq 1.14.0, Windows only: on macOS and Linux `--agy-broker` exits 64, because the exchange folder there needs trust checks that read ACLs (macOS extended ACLs, POSIX ACLs), which cq does not have yet. `--agy-broker` changes `--to-agy`: the watcher claims and finishes each message itself, and the `agy` turn only reads `request.json` and writes `reply.json` in an exchange folder. Without `--agy-broker`, `--to-agy` works as above. Setup, the exchange folder's access and the operator steps are in [Broker mode](agents/ANTIGRAVITY.md#broker-mode).
+Experimental, cq 1.15.0, Windows only: on macOS and Linux `--agy-broker` exits 64, because the exchange folder there needs trust checks that read ACLs (macOS extended ACLs, POSIX ACLs), which cq does not have yet. `--agy-broker` changes `--to-agy`: the watcher claims and finishes each message itself, and the `agy` turn only reads `request.json` and writes `reply.json` in an exchange folder. Without `--agy-broker`, `--to-agy` works as above. Setup, the exchange folder's access and the operator steps are in [Broker mode](agents/ANTIGRAVITY.md#broker-mode).
 
 | Flag | Meaning |
 | --- | --- |
