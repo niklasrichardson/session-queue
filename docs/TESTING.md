@@ -24,7 +24,7 @@ Tested live in the desktop app on Windows: re-arming after each 30-minute watche
 - **After the fix.** `live_agy_shell_starts_in_a_pinned_job_folder` (ignored by default; runs one real print turn) held the exchange and job folders through cq's exchange code, as the watcher does, with the job folder as agy's current folder and `--add-dir`. The shell started and wrote a file. agy added no entry to the exchange or job folder, where the sandbox SID already has Modify; the folders above them got the traverse entry. The exchange folder was accepted again afterwards.
 - `src/exchange.rs`: a test opens the job folder, the exchange folder and a folder above them without delete sharing while they are held, adds the traverse entry, and checks that the folders still cannot be renamed, that the job folder is deleted, and that the exchange folder is accepted again. Without the fix, the open fails. The set comparison accepts the traverse entry for the sandbox SID and refuses it for another SID, with inherit flags, or with more access.
 - The turn prompt now says that the turn may write `reply.json` with its shell or its file tool.
-- Checked on Windows 11 with Rust 1.98.1: `cargo build`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (413 tests, 0 failed, 1 ignored).
+- Checked on Windows 11 with Rust 1.98.1: `cargo build`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (440 tests, 0 failed, 1 ignored), after a rebase onto cq 1.14.0 (`cq lock`).
 - **Not verified:** a full `cq watch --agy-broker` turn that uses the shell after the fix. Whether agy adds the traverse entry to an exchange folder when the configured sandbox SID is not the shell's SID.
 
 ## Named locks on Windows, 11 November 2026
