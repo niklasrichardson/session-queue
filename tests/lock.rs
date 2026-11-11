@@ -486,6 +486,30 @@ fn a_coordinators_watcher_reports_each_take_once() {
     );
 }
 
+/// A coordinator's own old lock is stale to its own watcher: the pid file
+/// that names the watcher's process is that watcher, not a reused PID.
+#[test]
+fn a_coordinators_watcher_reports_its_own_stale_lock() {
+    let env = Env::new();
+    fs::write(env.path("coordinators"), "lead\n").unwrap();
+    assert_eq!(take(&env, "monitor", "lead").0, 0);
+    age_hold(&env, "monitor", 180);
+    let mut c = env.cmd(&["watch", "--as", "lead", "--max-seconds", "3"]);
+    c.env("CQ_LOCK_STALE_MINUTES", "2")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let w = Watcher::spawn(c);
+    let lines = lock_lines(&w, Duration::from_secs(5));
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("CQ-LOCK-STALE ")
+            && lines[0].contains(" lock=monitor holder=lead since=")
+            && lines[0].ends_with(" stale"),
+        "{lines:?}"
+    );
+}
+
 /// A worker's watcher does not report locks.
 #[test]
 fn a_workers_watcher_reports_no_locks() {

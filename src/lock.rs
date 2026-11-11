@@ -10,10 +10,12 @@
 //!
 //! Release and break read the holder and remove the file while they hold
 //! the OS lock on `locks/<lock>.guard`, so neither removes a lock that was
-//! broken and taken again in between. Take needs no guard: the exclusive
-//! create decides. A reader can find a file that its taker is still writing,
-//! so a hold that does not parse is read again for a short while before it
-//! counts as unreadable.
+//! broken and taken again in between. Take creates, writes and, when the
+//! write fails, removes its file under the same guard, so it never removes
+//! a replacement hold; the exclusive create still decides which take wins.
+//! A reader can find a file that its taker is still writing, so a hold that
+//! does not parse is read again for a short while before it counts as
+//! unreadable.
 //!
 //! A held lock is **orphaned** when its holder's watcher is stopped and the
 //! last sign of life (the heartbeat, or the take itself) is at least
@@ -46,6 +48,7 @@ use crate::members;
 use crate::message::{EVENT_SUBJECT_MAX, event_text};
 use crate::names::{check_name, is_valid_id, is_valid_name};
 use crate::overdue;
+use crate::platform;
 use crate::root::Root;
 use crate::sleep as coordinators;
 use crate::timefmt::{self, local_hhmm, rfc3339};
@@ -136,6 +139,9 @@ pub struct Lock {
     pub health: Health,
     /// Why the holder's watcher counts as stopped, for an orphaned lock.
     pub why: Option<String>,
+    /// For an unreadable file: which file it is (`file_generation`), so a
+    /// file made again under the same name is a new take.
+    pub file: Option<String>,
 }
 
 impl Lock {
@@ -192,9 +198,14 @@ impl Lock {
         ))
     }
 
-    /// The take this lock is: its ID, or `-` for an unreadable file.
+    /// The take this lock is: its ID; for an unreadable file, which file it
+    /// is, or `-` when that cannot be read.
     fn take_id(&self) -> &str {
-        self.hold.as_ref().map_or("-", |h| h.id.as_str())
+        match (&self.hold, &self.file) {
+            (Some(h), _) => &h.id,
+            (None, Some(f)) => f,
+            (None, None) => "-",
+        }
     }
 
     /// `<orphaned|stale> <lock> <take ID>`: what a coordinator's watcher
@@ -211,10 +222,42 @@ pub fn is_alert_key(line: &str) -> bool {
         (Some(kind), Some(lock), Some(id), None) => {
             matches!(kind, "orphaned" | "stale")
                 && is_valid_name(lock)
-                && (id == "-" || is_valid_id(id))
+                && (id == "-" || is_valid_id(id) || is_file_generation(id))
         }
         _ => false,
     }
+}
+
+/// True for a value `file_generation` makes.
+fn is_file_generation(s: &str) -> bool {
+    s.strip_prefix("file-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest.len() <= 80
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b'.' || b == b'-')
+    })
+}
+
+/// Which file `path` is, as `file-<volume>.<index>-<modified>-<size>` in
+/// hex: the volume and file index (Windows) or device and inode (Unix),
+/// the modified time in nanoseconds, and the size. A file removed and made
+/// again under the same name differs in its index or its modified time,
+/// even where the creation time is kept (NTFS tunnelling) or the inode is
+/// reused. `None` when the file cannot be opened.
+fn file_generation(path: &Path) -> Option<String> {
+    let f = fs::File::open(path).ok()?;
+    let meta = f.metadata().ok()?;
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    let (volume, index) = platform::file_id(&f).unwrap_or((0, 0));
+    Some(format!(
+        "file-{volume:x}.{index:x}-{modified:x}-{:x}",
+        meta.len()
+    ))
 }
 
 /// `<lock> <take ID>` of an alert key, to match it with a held lock.
@@ -280,6 +323,24 @@ fn check_owner(root: &Root, actor: &str, owner: bool) -> Result<()> {
 /// under `PAUSE`, for a bad name, an over-long `--for`, or `--owner` from a
 /// name that is not a coordinator.
 pub fn take(root: &Root, lock: &str, actor: &str, owner: bool, purpose: &str) -> Result<Taken> {
+    take_with(root, lock, actor, owner, purpose, &write_synced)
+}
+
+/// Write `bytes` to a new hold file and flush them to disk.
+fn write_synced(f: &mut fs::File, bytes: &[u8]) -> io::Result<()> {
+    f.write_all(bytes).and_then(|()| f.sync_all())
+}
+
+/// `take`, writing the new hold with `write`, so a test can make the write
+/// fail.
+fn take_with(
+    root: &Root,
+    lock: &str,
+    actor: &str,
+    owner: bool,
+    purpose: &str,
+    write: &dyn Fn(&mut fs::File, &[u8]) -> io::Result<()>,
+) -> Result<Taken> {
     check_name("LOCK", lock)?;
     check_actor(root, actor)?;
     check_owner(root, actor, owner)?;
@@ -329,7 +390,11 @@ pub fn take(root: &Root, lock: &str, actor: &str, owner: bool, purpose: &str) ->
             b"\n".to_vec(),
         ]
         .concat();
-        match create_new(&path, &bytes) {
+        let created = {
+            let _guard = guard(root, lock)?;
+            create_new(&path, &bytes, write)
+        };
+        match created {
             Ok(()) => {
                 log(
                     root,
@@ -354,11 +419,16 @@ pub fn take(root: &Root, lock: &str, actor: &str, owner: bool, purpose: &str) ->
     )))
 }
 
-/// Create `path` only if it does not exist, write `bytes` and flush them
-/// to disk. A file left half-written by a failed write is removed. On
-/// Windows a file that is being removed cannot be created for a moment, so
-/// "access denied" is retried.
-fn create_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Create `path` only if it does not exist and `write` `bytes` to it. A
+/// file left half-written by a failed write is removed. The caller holds
+/// the lock's guard, so no break and new take can replace the file between
+/// the create and that removal. On Windows a file that is being removed
+/// cannot be created for a moment, so "access denied" is retried.
+fn create_new(
+    path: &Path,
+    bytes: &[u8],
+    write: &dyn Fn(&mut fs::File, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
     let mut attempt = 0;
     let mut f = loop {
         match OpenOptions::new().write(true).create_new(true).open(path) {
@@ -370,7 +440,7 @@ fn create_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
             Err(e) => return Err(e),
         }
     };
-    let written = f.write_all(bytes).and_then(|()| f.sync_all());
+    let written = write(&mut f, bytes);
     if written.is_err() {
         drop(f);
         let _ = fs::remove_file(path);
@@ -526,13 +596,32 @@ pub fn inspect(
     stale_after: Duration,
     now: Timestamp,
 ) -> Result<Option<Lock>> {
+    inspect_by(root, lock, stale_after, now, None)
+}
+
+/// `inspect`, read by the watcher `watcher` when it is one: a lock that
+/// watcher holds itself is judged by its own running process (see
+/// `Liveness::read_by`).
+fn inspect_by(
+    root: &Root,
+    lock: &str,
+    stale_after: Duration,
+    now: Timestamp,
+    watcher: Option<&str>,
+) -> Result<Option<Lock>> {
     check_name("LOCK", lock)?;
     let hold = match read(root, lock)? {
         Holding::Free => return Ok(None),
         Holding::Held(h) => Some(h),
         Holding::Unreadable => None,
     };
-    let modified = fsutil::modified(&root.lock_hold(lock)).and_then(timefmt::from_system_time);
+    let path = root.lock_hold(lock);
+    let file = if hold.is_none() {
+        file_generation(&path)
+    } else {
+        None
+    };
+    let modified = fsutil::modified(&path).and_then(timefmt::from_system_time);
     let since = hold
         .as_ref()
         .and_then(|h| timefmt::parse_rfc3339_z(&h.taken))
@@ -546,7 +635,7 @@ pub fn inspect(
         None => (Health::Live, None),
         Some(h) if h.holder == OWNER => (Health::Live, None),
         Some(h) => {
-            let live = Liveness::read(root, &h.holder);
+            let live = Liveness::read_by(root, &h.holder, watcher);
             match live.why_stopped() {
                 Some(why) => {
                     let last = live.beat.map_or(since, |b| b.max(since));
@@ -568,6 +657,7 @@ pub fn inspect(
         age: age(since, now),
         health,
         why,
+        file,
     }))
 }
 
@@ -591,9 +681,17 @@ pub fn names(root: &Root) -> Vec<String> {
 
 /// Every held lock, by name. Locks that cannot be read are skipped.
 pub fn list(root: &Root, stale_after: Duration, now: Timestamp) -> Vec<Lock> {
+    list_by(root, stale_after, now, None)
+}
+
+fn list_by(root: &Root, stale_after: Duration, now: Timestamp, watcher: Option<&str>) -> Vec<Lock> {
     names(root)
         .iter()
-        .filter_map(|n| inspect(root, n, stale_after, now).ok().flatten())
+        .filter_map(|n| {
+            inspect_by(root, n, stale_after, now, watcher)
+                .ok()
+                .flatten()
+        })
         .collect()
 }
 
@@ -644,17 +742,18 @@ pub fn wait(
     }
 }
 
-/// For a coordinator's watcher: the event line of each orphaned or stale
-/// lock not reported before, with its alert key. Keys of takes that are no
-/// longer held are dropped from `reported`. Reads only; the caller records
-/// each key once its line is delivered.
+/// For the coordinator `watcher`'s watcher, run in that process: the event
+/// line of each orphaned or stale lock not reported before, with its alert
+/// key. Keys of takes that are no longer held are dropped from `reported`.
+/// Reads only; the caller records each key once its line is delivered.
 pub fn alerts(
     root: &Root,
+    watcher: &str,
     stale_after: Duration,
     reported: &mut HashSet<String>,
 ) -> Vec<(String, Lock)> {
     let now = timefmt::now();
-    let held = list(root, stale_after, now);
+    let held = list_by(root, stale_after, now, Some(watcher));
     let takes: HashSet<(&str, &str)> = held
         .iter()
         .map(|l| (l.name.as_str(), l.take_id()))
@@ -902,7 +1001,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(l.health, Health::Orphaned);
-        assert_eq!(l.alert_key(), "orphaned monitor -");
+        let key = l.alert_key();
+        assert!(key.starts_with("orphaned monitor file-"), "{key}");
+        assert!(is_alert_key(&key), "{key}");
         fs::write(root.coordinators(), "lead\n").unwrap();
         assert_eq!(break_lock(&root, "monitor", "lead", "junk").unwrap(), None);
     }
@@ -958,7 +1059,7 @@ mod tests {
         )
         .unwrap();
         let mut reported = HashSet::new();
-        let found = alerts(&root, 120 * MIN, &mut reported);
+        let found = alerts(&root, "lead", 120 * MIN, &mut reported);
         assert_eq!(found.len(), 1);
         let (key, lock) = &found[0];
         assert!(is_alert_key(key), "{key}");
@@ -971,18 +1072,122 @@ mod tests {
         );
         assert!(line.contains(" age=10m for=\"x\" "), "{line}");
         reported.insert(key.clone());
-        assert!(alerts(&root, 120 * MIN, &mut reported).is_empty());
+        assert!(alerts(&root, "lead", 120 * MIN, &mut reported).is_empty());
         assert_eq!(reported.len(), 1);
         // Released: forgotten.
         release(&root, "monitor", "worker-a", false).unwrap();
-        assert!(alerts(&root, 120 * MIN, &mut reported).is_empty());
+        assert!(alerts(&root, "lead", 120 * MIN, &mut reported).is_empty());
         assert!(reported.is_empty());
+    }
+
+    /// Each unreadable file is its own take. One made again under the same
+    /// name (a break, then a taker that stops before it writes) is reported
+    /// again, though no scan saw the lock free in between.
+    #[test]
+    fn a_new_unreadable_file_is_reported_again() {
+        let (_dir, root) = root();
+        let path = root.lock_hold("monitor");
+        let make = |secs_ago: u64| {
+            let f = fs::File::create(&path).unwrap();
+            f.set_modified(std::time::SystemTime::now() - Duration::from_secs(secs_ago))
+                .unwrap();
+        };
+        make(600);
+        let mut reported = HashSet::new();
+        let found = alerts(&root, "lead", 120 * MIN, &mut reported);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let first = found[0].0.clone();
+        assert!(first.starts_with("orphaned monitor file-"), "{first}");
+        assert!(is_alert_key(&first), "{first}");
+        reported.insert(first.clone());
+        // The same file: not again, and its key stays.
+        assert!(alerts(&root, "lead", 120 * MIN, &mut reported).is_empty());
+        assert!(reported.contains(&first));
+
+        fs::remove_file(&path).unwrap();
+        make(300);
+        let found = alerts(&root, "lead", 120 * MIN, &mut reported);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_ne!(found[0].0, first);
+        assert!(is_alert_key(&found[0].0), "{}", found[0].0);
+        // The first file's key is dropped: it is no longer there.
+        assert!(reported.is_empty(), "{reported:?}");
+    }
+
+    /// A coordinator's watcher judges a lock it holds itself by its own
+    /// running process, so an old one is stale to it. Any other reader still
+    /// treats a pid file that names its own process as a dead watcher's.
+    #[test]
+    fn a_watcher_finds_its_own_old_lock_stale() {
+        let (_dir, root) = root();
+        let h = taken(take(&root, "monitor", "lead", false, "x").unwrap());
+        let old = Hold {
+            taken: rfc3339(timefmt::now() - jiff::SignedDuration::from_secs(600)),
+            ..h
+        };
+        fs::write(root.lock_hold("monitor"), serde_json::to_vec(&old).unwrap()).unwrap();
+        // This process is lead's watcher, beating now.
+        fs::write(root.pid_file("lead"), format!("{}\n", std::process::id())).unwrap();
+        fs::write(
+            root.heartbeat("lead"),
+            format!("{}\n", rfc3339(timefmt::now())),
+        )
+        .unwrap();
+
+        let found = alerts(&root, "lead", 2 * MIN, &mut HashSet::new());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].1.health, Health::Stale);
+        assert_eq!(found[0].0, format!("stale monitor {}", old.id));
+
+        assert!(Liveness::read_by(&root, "lead", Some("lead")).running());
+        assert!(!Liveness::read(&root, "lead").running());
+        assert!(!Liveness::read_by(&root, "lead", Some("lead-2")).running());
+        // Another coordinator's watcher in this process: not lead's.
+        assert!(alerts(&root, "lead-2", 2 * MIN, &mut HashSet::new()).is_empty());
+    }
+
+    /// A take whose write fails removes its file under the guard. A break
+    /// and a new take that start after the failure wait for that removal,
+    /// so the failed take never removes the new hold.
+    #[test]
+    fn a_failed_take_never_removes_a_replacement_hold() {
+        let (_dir, root) = root();
+        fs::write(root.coordinators(), "lead\n").unwrap();
+        let (failed, on_fail) = std::sync::mpsc::channel();
+        // The whole hold is written, so a reader finds it at once; then
+        // the flush fails, and the take pauses before it cleans up.
+        let fail_sync = move |f: &mut fs::File, bytes: &[u8]| {
+            f.write_all(bytes)?;
+            failed.send(()).unwrap();
+            sleep(Duration::from_millis(500));
+            Err(io::Error::other("injected sync failure"))
+        };
+        std::thread::scope(|s| {
+            let failing =
+                s.spawn(|| take_with(&root, "monitor", "worker-a", false, "x", &fail_sync));
+            on_fail.recv().unwrap();
+            let replacing = s.spawn(|| {
+                let broken = break_lock(&root, "monitor", "lead", "stuck");
+                (broken, take(&root, "monitor", "worker-b", false, "y"))
+            });
+            let e = failing.join().unwrap().unwrap_err();
+            assert!(e.message.contains("injected sync failure"), "{}", e.message);
+            let (broken, replaced) = replacing.join().unwrap();
+            // The break waited for the cleanup, so it found the lock free.
+            assert_eq!(broken.unwrap_err().code, exit::LOCK_HELD);
+            let h = taken(replaced.unwrap());
+            assert_eq!(h.holder, "worker-b");
+            assert_eq!(read(&root, "monitor").unwrap(), Holding::Held(h));
+        });
     }
 
     #[test]
     fn alert_keys_are_checked() {
         assert!(is_alert_key("stale monitor 20261111T100000Z-worker-a-ab12"));
         assert!(is_alert_key("orphaned monitor -"));
+        assert!(is_alert_key("orphaned monitor file-1a.2b-17f3c-0"));
+        assert!(!is_alert_key("orphaned monitor file-"));
+        assert!(!is_alert_key("orphaned monitor file-x"));
         assert!(!is_alert_key("live monitor -"));
         assert!(!is_alert_key("stale ../x -"));
         assert!(!is_alert_key("stale monitor junk"));

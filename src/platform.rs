@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::error::{CqError, Result};
 
-pub use imp::{InboxConn, open_inbox, process_alive, stdin_has_input, terminate};
+pub use imp::{InboxConn, file_id, open_inbox, process_alive, stdin_has_input, terminate};
 
 /// How long `stdin_has_input` waits for the first byte on an open, empty
 /// pipe. A pipeline writer (`echo ... | cq done`) can start after `cq`;
@@ -55,7 +55,8 @@ mod imp {
         WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileSizeEx, GetFileType,
+        BY_HANDLE_FILE_INFORMATION, FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileInformationByHandle,
+        GetFileSizeEx, GetFileType,
     };
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     use windows_sys::Win32::System::Threading::{
@@ -67,6 +68,19 @@ mod imp {
 
     /// A client end of a Claude Code session's inbox named pipe.
     pub type InboxConn = std::fs::File;
+
+    /// The volume serial number and file index of an open file. NTFS gives
+    /// a file made again under a removed file's name a new index.
+    pub fn file_id(f: &std::fs::File) -> Option<(u64, u64)> {
+        // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is valid, and the
+        // handle is open for the call.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) } == 0 {
+            return None;
+        }
+        let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        Some((u64::from(info.dwVolumeSerialNumber), index))
+    }
 
     /// Connect to a session's inbox named pipe (`\\.\pipe\...`), write only.
     /// Fails at once when the pipe does not exist or every instance is
@@ -227,6 +241,14 @@ mod imp {
 
     /// A connection to a Claude Code session's inbox socket.
     pub type InboxConn = std::os::unix::net::UnixStream;
+
+    /// The device and inode of an open file. A removed file's inode can be
+    /// given to the next new file, so callers add the modified time.
+    pub fn file_id(f: &File) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        let m = f.metadata().ok()?;
+        Some((m.dev(), m.ino()))
+    }
 
     /// Connect to a session's inbox Unix socket.
     pub fn open_inbox(path: &std::ffi::OsStr) -> io::Result<InboxConn> {

@@ -579,15 +579,24 @@ impl Liveness {
     /// session-start`): a pid file that names this process belongs to a
     /// dead watcher whose ID was reused, which Windows does at once.
     pub fn read(root: &Root, name: &str) -> Self {
+        Self::read_by(root, name, None)
+    }
+
+    /// As `read`, for a reader that may be the watcher `watcher` (a
+    /// coordinator's lock scan): `name`'s own pid file naming this process
+    /// is this watcher, so it runs. Any other name's pid file that names
+    /// this process still counts as a dead watcher's.
+    pub fn read_by(root: &Root, name: &str, watcher: Option<&str>) -> Self {
         let pid = read_pid(root, name);
         let me = std::process::id();
+        let is_me = watcher == Some(name);
         Self {
             pid_file: root.pid_file(name).is_file(),
             pid,
             beat: last_beat(root, name),
             alive: pid.and_then(|p| {
                 if p == me {
-                    Some(false)
+                    Some(is_me)
                 } else {
                     platform::process_alive(p)
                 }
@@ -794,7 +803,7 @@ fn lock_scan(
     reported: &mut HashSet<String>,
     out: &mut impl Sink,
 ) -> io::Result<()> {
-    for (key, held) in lock::alerts(root, stale_after, reported) {
+    for (key, held) in lock::alerts(root, name, stale_after, reported) {
         let Some(line) = held.event_line(timefmt::now()) else {
             continue;
         };
