@@ -162,7 +162,7 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | A stopped watcher, Codex checks that are not taken, approval prompts, an open `agy` session, split queues |
 | [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
 | [`CLAUDE-SNIPPETS.md`](docs/agents/CLAUDE-SNIPPETS.md) | Claude Code blocks and session prompts to paste |
-| [Message protocol and session lifecycle](docs/PROTOCOL.md) | Message handling for every agent (claim, finish, reply, reject, storm limits), then the lifecycle per wake route (watch, rejoin, sleep, overdue tasks) |
+| [Message protocol and session lifecycle](docs/PROTOCOL.md) | Message handling for every agent (claim, finish, reply, reject, storm limits), then the lifecycle per wake route (watch, rejoin, sleep, overdue tasks, locks) |
 | [Example session rules](docs/SESSION-RULES.example.md) | A longer rules file to adapt, with a part for each agent |
 | [Commands](docs/COMMANDS.md) | Every command, the exit codes, the queue root layout |
 | [cq-top](docs/CQ-TOP.md) | The live, read-only terminal view of the queue |

@@ -99,6 +99,14 @@ pub fn local_hhmm(ts: Timestamp) -> String {
     hhmm_label(ts, &l.tz, l.label.as_deref())
 }
 
+/// `YYYY-MM-DD HH:MM <label>` in the local time zone, as `local_hhmm` with
+/// the date: `2026-11-11 09:55 UK`.
+pub fn local_datetime(ts: Timestamp) -> String {
+    let l = local();
+    let date = ts.to_zoned(l.tz.clone()).strftime("%Y-%m-%d").to_string();
+    format!("{date} {}", hhmm_label(ts, &l.tz, l.label.as_deref()))
+}
+
 /// The local zone and label, for `--help`.
 pub fn local_description() -> String {
     let l = local();

@@ -15,6 +15,14 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Named locks on Windows, 11 November 2026
+
+[Issue #99](https://github.com/niklasrichardson/session-queue/issues/99), `cq lock`. Checked on Windows 11 with `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (398 tests, 0 failed). Nothing was run live in a session, or on macOS or Linux.
+
+- `src/lock.rs` unit tests: take, already yours and held; bad names, `--for` and `PAUSE`; 24 threads taking one lock at once, 5 rounds, exactly one wins; only the holder releases; the owner hold; break; an unreadable lock file; the orphan rule at 89 and 90 seconds; alerts once per take; a new unreadable file under the same name reported again with no free scan between; a coordinator's watcher finds its own old lock stale, while other readers keep the reused-PID rule; a take whose flush fails, with a break and a new take started before its cleanup, does not remove the new hold (the injected failure test fails without the guard); wait free, at its limit and on release.
+- `tests/lock.rs`: the same through the `cq` binary, with 16 processes taking one lock at once, 3 rounds; a session refused under another name; orphaned and stale in `status` and `list`, and `CQ_LOCK_STALE_MINUTES`; `cq status` with `locks=`; a coordinator's watcher prints `CQ-LOCK-ORPHAN` and `CQ-LOCK-STALE` once, not again after a restart, and again for a new take; a coordinator's watcher prints `CQ-LOCK-STALE` for its own old lock; a worker's watcher prints none; take, wait, release and status from Git Bash.
+- Not verified: the forms under a Claude Code Monitor or `--to-inbox` in a live session, and the lock under real GUI test use.
+
 ## Reply and hop limits, and CI, on Windows, 10 November 2026
 
 Three `cq send` and `cq done` changes from a code review. Checked on Windows 11 with Rust 1.98.1: `cargo build`, `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (371 tests, 0 failed). All passed, with the Codex change below included.

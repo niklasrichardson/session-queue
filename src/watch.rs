@@ -18,6 +18,12 @@
 //! restarted watcher does not report it again; a line lost in a failed post
 //! is reported again. It never moves the tasks.
 //!
+//! A coordinator's watcher also prints `CQ-LOCK-ORPHAN` and `CQ-LOCK-STALE`
+//! once per take of a lock that is orphaned or stale (see `lock`), and logs
+//! each to `locks.log`. Reported takes are kept in
+//! `heartbeat/<name>.lock-alerts` as overdue tasks are. It never breaks a
+//! lock.
+//!
 //! A watcher whose name is listed in `idle-alerts` also checks the turn end
 //! that `cq turn-end` records, and sends the idle alert when the session
 //! stays idle (see `idle::IdleCheck`). It prints nothing for this. Each
@@ -57,6 +63,7 @@ use crate::error::{CqError, Result, exit};
 use crate::exitlog::{self, Exit};
 use crate::fsutil;
 use crate::idle;
+use crate::lock;
 use crate::members;
 use crate::message::{EVENT_SUBJECT_MAX, event_text, header};
 use crate::names::{check_name, is_valid_id};
@@ -89,6 +96,8 @@ const WAKE_SCAN_EVERY: Duration = Duration::from_secs(1);
 pub const WAKE_AFTER: Duration = Duration::from_secs(120);
 /// How often a coordinator's watcher looks for newly overdue tasks.
 const OVERDUE_SCAN_EVERY: Duration = Duration::from_secs(30);
+/// How often a coordinator's watcher looks for orphaned and stale locks.
+const LOCK_SCAN_EVERY: Duration = Duration::from_secs(15);
 /// How often the watcher checks the turn end recorded by `cq turn-end`.
 const IDLE_CHECK_EVERY: Duration = Duration::from_secs(5);
 /// The reason a caught signal gives. The signal's name follows it.
@@ -213,6 +222,11 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     } else {
         None
     };
+    let lock_stale = if coordinator {
+        Some(lock::stale_after_from_env()?)
+    } else {
+        None
+    };
     let started = Instant::now();
     let deadline = opts.max_seconds.map(|s| started + Duration::from_secs(s));
 
@@ -265,7 +279,7 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     let mut woken: HashSet<String> = HashSet::new();
     let mut next_wake_scan = started;
     let mut reported = if coordinator {
-        read_reported(root, name)
+        read_marker(&root.overdue_marker(name), is_valid_id)
     } else {
         HashSet::new()
     };
@@ -273,6 +287,14 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     // has delivered, so a line lost in a failed post is reported again.
     let mut saved = reported.clone();
     let mut next_overdue_scan = started;
+    // The same for orphaned and stale locks, in `<name>.lock-alerts`.
+    let mut lock_alerts = if coordinator {
+        read_marker(&root.lock_alerts(name), lock::is_alert_key)
+    } else {
+        HashSet::new()
+    };
+    let mut lock_alerts_saved = lock_alerts.clone();
+    let mut next_lock_scan = started;
     let mut idle_check = idle::IdleCheck::default();
     let mut next_idle_check = started;
     let mut out = Counted {
@@ -339,6 +361,15 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
                 break out.failed(e).map(|r| (r, Ended::Normal));
             }
         }
+        if let Some(stale_after) = lock_stale
+            && !paused
+            && now >= next_lock_scan
+        {
+            next_lock_scan = now + LOCK_SCAN_EVERY;
+            if let Err(e) = lock_scan(root, name, stale_after, &mut lock_alerts, out) {
+                break out.failed(e).map(|r| (r, Ended::Normal));
+            }
+        }
         if let Err(e) = out.tick() {
             break out.failed(e).map(|r| (r, Ended::Normal));
         }
@@ -351,8 +382,12 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
             idle_check.run(root, name, opts.idle_after, opts.idle_every);
         }
         if reported != saved && !out.holding() {
-            save_reported(root, name, &reported);
+            save_marker(root, &root.overdue_marker(name), &reported);
             saved = reported.clone();
+        }
+        if lock_alerts != lock_alerts_saved && !out.holding() {
+            save_marker(root, &root.lock_alerts(name), &lock_alerts);
+            lock_alerts_saved = lock_alerts.clone();
         }
 
         let wait = deadline.map_or(TICK, |d| {
@@ -405,8 +440,13 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     // Before `stopped`, which can take seconds of retries.
     exits.finish(code, signal, &reason);
     // The last lines go out only now; save them once they are delivered.
-    if out.stopped(&reason, ended) && reported != saved {
-        save_reported(root, name, &reported);
+    if out.stopped(&reason, ended) {
+        if reported != saved {
+            save_marker(root, &root.overdue_marker(name), &reported);
+        }
+        if lock_alerts != lock_alerts_saved {
+            save_marker(root, &root.lock_alerts(name), &lock_alerts);
+        }
     }
     // Ignore a failed write: stderr may be the same closed pipe as stdout.
     let _ = writeln!(io::stderr(), "cq watch: exiting: {reason}");
@@ -539,15 +579,24 @@ impl Liveness {
     /// session-start`): a pid file that names this process belongs to a
     /// dead watcher whose ID was reused, which Windows does at once.
     pub fn read(root: &Root, name: &str) -> Self {
+        Self::read_by(root, name, None)
+    }
+
+    /// As `read`, for a reader that may be the watcher `watcher` (a
+    /// coordinator's lock scan): `name`'s own pid file naming this process
+    /// is this watcher, so it runs. Any other name's pid file that names
+    /// this process still counts as a dead watcher's.
+    pub fn read_by(root: &Root, name: &str, watcher: Option<&str>) -> Self {
         let pid = read_pid(root, name);
         let me = std::process::id();
+        let is_me = watcher == Some(name);
         Self {
             pid_file: root.pid_file(name).is_file(),
             pid,
             beat: last_beat(root, name),
             alive: pid.and_then(|p| {
                 if p == me {
-                    Some(false)
+                    Some(is_me)
                 } else {
                     platform::process_alive(p)
                 }
@@ -742,26 +791,50 @@ fn overdue_scan(
     Ok(())
 }
 
-/// The tasks this coordinator has reported overdue. A missing or unreadable
-/// file gives none.
-fn read_reported(root: &Root, name: &str) -> HashSet<String> {
-    fs::read_to_string(root.overdue_marker(name))
+/// For a coordinator: one `CQ-LOCK-ORPHAN` or `CQ-LOCK-STALE` line per
+/// take of a lock not reported before in that state, each also logged to
+/// `locks.log`. Takes no longer held are forgotten. The loop saves
+/// `reported` once the sink has delivered the lines. Reads only; the lock
+/// stays held.
+fn lock_scan(
+    root: &Root,
+    name: &str,
+    stale_after: Duration,
+    reported: &mut HashSet<String>,
+    out: &mut impl Sink,
+) -> io::Result<()> {
+    for (key, held) in lock::alerts(root, name, stale_after, reported) {
+        let Some(line) = held.event_line(timefmt::now()) else {
+            continue;
+        };
+        out.line(&line)?;
+        lock::log_alert(root, &held, name);
+        reported.insert(key);
+    }
+    Ok(())
+}
+
+/// What a coordinator's watcher has reported (overdue task IDs, or lock
+/// alert keys): the lines of `path` that pass `valid`. A missing or
+/// unreadable file gives none.
+fn read_marker(path: &Path, valid: impl Fn(&str) -> bool) -> HashSet<String> {
+    fs::read_to_string(path)
         .map(|t| {
             t.lines()
                 .map(str::trim)
-                .filter(|l| is_valid_id(l))
+                .filter(|l| valid(l))
                 .map(str::to_owned)
                 .collect()
         })
         .unwrap_or_default()
 }
 
-/// Save the reported tasks, sorted. A failed write only risks one repeated
-/// line after a restart, so it is reported on stderr and the watcher runs on.
-fn save_reported(root: &Root, name: &str, reported: &HashSet<String>) {
-    let path = root.overdue_marker(name);
+/// Save what was reported to `path`, sorted. A failed write only risks one
+/// repeated line after a restart, so it is reported on stderr and the
+/// watcher runs on.
+fn save_marker(root: &Root, path: &Path, reported: &HashSet<String>) {
     if reported.is_empty() {
-        if let Err(e) = fs::remove_file(&path)
+        if let Err(e) = fs::remove_file(path)
             && e.kind() != io::ErrorKind::NotFound
         {
             eprintln!("cq watch: could not remove {}: {e}", path.display());
@@ -771,7 +844,7 @@ fn save_reported(root: &Root, name: &str, reported: &HashSet<String>) {
     let mut ids: Vec<&String> = reported.iter().collect();
     ids.sort();
     let text: String = ids.iter().map(|id| format!("{id}\n")).collect();
-    if let Err(e) = fsutil::write_atomic(&root.tmp(), &path, text.as_bytes()) {
+    if let Err(e) = fsutil::write_atomic(&root.tmp(), path, text.as_bytes()) {
         eprintln!("cq watch: could not write {}: {e}", path.display());
     }
 }

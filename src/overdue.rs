@@ -81,20 +81,9 @@ impl Limits {
     }
 
     fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
-        let read = |var: &str, default: u64| -> Result<u64> {
-            match get(var).map(|v| v.trim().to_owned()) {
-                None => Ok(default),
-                Some(v) if v.is_empty() => Ok(default),
-                Some(v) => v.parse::<u64>().ok().filter(|n| *n >= 1).ok_or_else(|| {
-                    CqError::usage(format!(
-                        "{var} must be a whole number of minutes, at least 1; got {v:?}"
-                    ))
-                }),
-            }
-        };
         Ok(Self::from_minutes(
-            read(ENV_UNCLAIMED, DEFAULT_UNCLAIMED_MINUTES)?,
-            read(ENV_CLAIMED, DEFAULT_CLAIMED_MINUTES)?,
+            minutes_var(&get, ENV_UNCLAIMED, DEFAULT_UNCLAIMED_MINUTES)?,
+            minutes_var(&get, ENV_CLAIMED, DEFAULT_CLAIMED_MINUTES)?,
         ))
     }
 
@@ -126,6 +115,25 @@ impl Limits {
             self.unclaimed.as_secs() / 60,
             self.claimed.as_secs() / 60
         )
+    }
+}
+
+/// The variable `var` from `get`, as a whole number of minutes, at least 1.
+/// Unset or empty gives `default`; any other value is a usage error (exit
+/// 64). Also read for `CQ_LOCK_STALE_MINUTES` (see `lock`).
+pub(crate) fn minutes_var(
+    get: impl Fn(&str) -> Option<String>,
+    var: &str,
+    default: u64,
+) -> Result<u64> {
+    match get(var).map(|v| v.trim().to_owned()) {
+        None => Ok(default),
+        Some(v) if v.is_empty() => Ok(default),
+        Some(v) => v.parse::<u64>().ok().filter(|n| *n >= 1).ok_or_else(|| {
+            CqError::usage(format!(
+                "{var} must be a whole number of minutes, at least 1; got {v:?}"
+            ))
+        }),
     }
 }
 

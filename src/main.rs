@@ -25,13 +25,14 @@ use cq::send::{self, Hops, Outgoing};
 use cq::watch::{
     self, DEFAULT_MAX_SECONDS, DEFAULT_RESCAN_SECONDS, Ended, Lines, Sink, WatchOptions,
 };
-use cq::{Root, claim, idle, list, members, overdue, platform, record, sleep, timefmt};
+use cq::{Root, claim, idle, list, lock, members, overdue, platform, record, sleep, timefmt};
 
 const EXIT_CODES: &str = "\
 Exit codes:
   0   ok
-  1   claim: the message is no longer in the inbox (already handled); ignore it
-  2   a rename still failed after 3 retries
+  1   claim: the message is no longer in the inbox (already handled); ignore it.
+      lock: held by another name, or (release, break) not held or not yours
+  2   a rename still failed after 3 retries. lock wait: still held at --max
   3   claim: the message is invalid and went to the dead letter queue
   4   done or dispatch: the message is finished, but the reply was not sent
   5   refused (name, size, hop or send limit, PAUSE, missing parent, a reply
@@ -82,6 +83,38 @@ exists; cq never moves, re-sends or answers an overdue task.
         overdue::DEFAULT_CLAIMED_MINUTES,
         overdue::ENV_UNCLAIMED,
         overdue::ENV_CLAIMED,
+        exit_help()
+    )
+}
+
+/// The lock rules and exit codes for `cq lock`, then the general exit codes.
+fn lock_help() -> String {
+    format!(
+        "A lock is held while CQ_ROOT/locks/<LOCK>.lock exists. Of many takes at
+once exactly one wins. Only the holder releases it; a coordinator may break
+any lock with a reason. The holder \"{}\" is the user's hold: a coordinator
+takes or releases it with --owner, and nobody else can take the lock while it
+is held. take is refused (exit 5) while PAUSE exists.
+
+A held lock is orphaned when its holder's watcher is stopped and its last
+heartbeat (or the take) is over 90 s old, and stale when its holder's watcher
+runs and it has been held {} minutes (set {}). A coordinator's watcher prints
+CQ-LOCK-ORPHAN and CQ-LOCK-STALE once per take; cq never breaks a lock itself.
+Each take, release, break and report is a line in CQ_ROOT/locks.log.
+
+Lock exit codes:
+  take     0 taken or already yours; 1 held by another name (the holder is printed)
+  release  0 released; 1 not held, or not yours
+  status   0 free; 1 held (holder, time taken, --for text, age)
+  wait     0 free; 2 still held at --max
+  break    0 broken; 1 not held
+  list     0
+  5        refused (bad name, --owner or break without being a coordinator, PAUSE)
+
+{}",
+        lock::OWNER,
+        lock::DEFAULT_STALE_MINUTES,
+        lock::ENV_STALE,
         exit_help()
     )
 }
@@ -404,6 +437,15 @@ enum Cmd {
         name: String,
     },
 
+    /// Take, release, wait for and list named locks, such as one for the
+    /// desktop that GUI tests drive. Sessions read a lock instead of
+    /// messaging its holder.
+    #[command(after_help = lock_help())]
+    Lock {
+        #[command(subcommand)]
+        cmd: LockCmd,
+    },
+
     /// For a Claude Code SessionStart hook (startup|clear|compact|resume). If this
     /// session owns a queue name, print a reminder to rejoin as it; else
     /// print nothing. Always exits 0.
@@ -443,6 +485,81 @@ enum Cmd {
         /// Print the session key, the name and the result to stderr.
         #[arg(long)]
         debug: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LockCmd {
+    /// Take LOCK. Exit 0 when taken or already yours, 1 when another name
+    /// holds it (the holder is printed).
+    #[command(after_help = lock_help())]
+    Take {
+        /// The lock's name, as a queue name: a-z, 0-9 and -.
+        lock: String,
+        /// Your session name.
+        #[arg(long = "as", value_name = "NAME")]
+        actor: String,
+        /// What you hold it for, in a few words (at most 200 characters).
+        #[arg(long = "for", value_name = "TEXT")]
+        purpose: String,
+        /// Take the user's hold ("owner") instead of your own. Coordinators
+        /// only.
+        #[arg(long)]
+        owner: bool,
+    },
+
+    /// Release LOCK. Exit 0 when released, 1 when it is not held or not
+    /// yours.
+    #[command(after_help = lock_help())]
+    Release {
+        lock: String,
+        /// Your session name.
+        #[arg(long = "as", value_name = "NAME")]
+        actor: String,
+        /// Release the user's hold ("owner"). Coordinators only.
+        #[arg(long)]
+        owner: bool,
+    },
+
+    /// Print whether LOCK is free (exit 0) or held (exit 1), with the
+    /// holder, the time taken, the --for text and the age, and "orphaned"
+    /// or "stale" when it is. Reads only.
+    #[command(after_help = lock_help())]
+    Status { lock: String },
+
+    /// Wait until LOCK is free (exit 0), or until --max minutes have passed
+    /// (exit 2). Reads the lock every 15 s; sends nothing and takes nothing.
+    /// Run it in the background.
+    #[command(after_help = lock_help())]
+    Wait {
+        lock: String,
+        /// Give up after this many minutes. Without it, waits until free.
+        #[arg(long, value_name = "MINUTES",
+              value_parser = clap::value_parser!(u64).range(1..))]
+        max: Option<u64>,
+        /// Read the lock this often, in milliseconds (for tests).
+        #[arg(long, hide = true, default_value_t = 15_000)]
+        poll_ms: u64,
+        /// Give up after this many milliseconds (for tests).
+        #[arg(long, hide = true, conflicts_with = "max")]
+        max_ms: Option<u64>,
+    },
+
+    /// Print one line per held lock, with its holder. Reads only.
+    #[command(after_help = lock_help())]
+    List,
+
+    /// Break LOCK, whoever holds it, and log why. Coordinators only. Exit 1
+    /// when it is not held.
+    #[command(after_help = lock_help())]
+    Break {
+        lock: String,
+        /// Your session name, a coordinator.
+        #[arg(long = "as", value_name = "NAME")]
+        actor: String,
+        /// Why, in a few words. Goes into locks.log.
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
     },
 }
 
@@ -857,6 +974,7 @@ fn run(cmd: Cmd) -> Result<i32> {
             }
         }
         Cmd::Status { name } => return status(&name),
+        Cmd::Lock { cmd } => return lock_cmd(cmd),
         Cmd::SessionStart { debug } => session_start(debug),
         Cmd::IdleAlert {
             every,
@@ -913,6 +1031,10 @@ fn status(name: &str) -> Result<i32> {
             tags.push_str(" stale-target");
         }
     }
+    let held = lock::held_by(&root, name);
+    if !held.is_empty() {
+        tags.push_str(&format!(" locks={}", held.join(",")));
+    }
     let (line, code) = match sleep::read(&root, name) {
         Some(rec) => {
             let watcher = if why.is_none() { "running" } else { "stopped" };
@@ -935,6 +1057,89 @@ fn status(name: &str) -> Result<i32> {
     };
     println!("{line}");
     Ok(code)
+}
+
+/// `cq lock`: one line on stdout, and the exit code `lock_help` lists.
+fn lock_cmd(cmd: LockCmd) -> Result<i32> {
+    let root = Root::open()?;
+    let stale_after = lock::stale_after_from_env()?;
+    // The held lock as `status` shows it; `None` once it is free again.
+    let show = |name: &str| lock::inspect(&root, name, stale_after, timefmt::now());
+    match cmd {
+        LockCmd::Take {
+            lock: name,
+            actor,
+            purpose,
+            owner,
+        } => match lock::take(&root, &name, &actor, owner, &purpose)? {
+            lock::Taken::New(_) | lock::Taken::Already(_) => {
+                let fields = match show(&name)? {
+                    Some(l) => l.fields(),
+                    None => format!("lock={name}"),
+                };
+                println!("taken {fields}");
+            }
+            lock::Taken::HeldBy(_) => {
+                match show(&name)? {
+                    Some(l) => println!("{}", l.line()),
+                    // Released since: say so, still not taken.
+                    None => println!("free lock={name} (released during the take; try again)"),
+                }
+                return Ok(exit::LOCK_HELD);
+            }
+        },
+        LockCmd::Release {
+            lock: name,
+            actor,
+            owner,
+        } => {
+            lock::release(&root, &name, &actor, owner)?;
+            println!("released lock={name}");
+        }
+        LockCmd::Status { lock: name } => match show(&name)? {
+            Some(l) => {
+                println!("{}", l.line());
+                return Ok(exit::LOCK_HELD);
+            }
+            None => println!("free lock={name}"),
+        },
+        LockCmd::Wait {
+            lock: name,
+            max,
+            poll_ms,
+            max_ms,
+        } => {
+            let max = max_ms
+                .map(Duration::from_millis)
+                .or(max.map(|m| Duration::from_secs(m.saturating_mul(60))));
+            let poll = Duration::from_millis(poll_ms.max(1));
+            match lock::wait(&root, &name, poll, max, stale_after)? {
+                lock::Waited::Free => println!("free lock={name}"),
+                lock::Waited::StillHeld(l) => {
+                    match l {
+                        Some(l) => println!("{}", l.line()),
+                        None => println!("held lock={name}"),
+                    }
+                    return Ok(exit::LOCK_WAIT_TIMEOUT);
+                }
+            }
+        }
+        LockCmd::List => {
+            for l in lock::list(&root, stale_after, timefmt::now()) {
+                println!("{}", l.line());
+            }
+        }
+        LockCmd::Break {
+            lock: name,
+            actor,
+            reason,
+        } => {
+            let hold = lock::break_lock(&root, &name, &actor, &reason)?;
+            let holder = hold.as_ref().map_or("?", |h| h.holder.as_str());
+            println!("broken lock={name} holder={holder} by={actor}");
+        }
+    }
+    Ok(exit::OK)
 }
 
 /// The SessionStart hook. Never fails, never blocks and, without

@@ -10,7 +10,7 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | --- | --- |
 | `cq init` | Create the layout under `CQ_ROOT`. |
 | `cq send --from A --to B --type task\|result\|info [--reply-to ID] [--parent ID] [--status ok\|failed\|rejected] [--input FILE]` | Read `{"subject": "...", "body": "..."}`, write the message, print its ID. |
-| `cq watch --as B [--takeover] [--max-seconds 1790] [--idle-after 5m] [--idle-every 1h] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT] [--codex-check-seconds 60] [--codex-queue-db PATH] [--debug] \| --to-agy CONVERSATION_ID [--agy-bin PATH] [--agy-prompt TEXT]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)) and `CQ-OVERDUE` lines (see [Overdue tasks](#overdue-tasks)). `--to-inbox` posts the lines into the Claude Code session's own inbox instead, the default for Claude Code (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` runs `codex queue` to wake a Codex chat instead, the default for Codex (see [Wake a Codex chat](#wake-a-codex-chat)). `--to-agy` runs an `agy` turn to wake an Antigravity CLI conversation instead (see [Wake an Antigravity CLI conversation](#wake-an-antigravity-cli-conversation)). When `B` is listed in `CQ_ROOT/idle-alerts`, also send the idle alert after a turn end recorded by `cq turn-end`, once no activity is observed for `--idle-after` (see [Idle alerts](#idle-alerts)). |
+| `cq watch --as B [--takeover] [--max-seconds 1790] [--idle-after 5m] [--idle-every 1h] [--to-inbox \| --to-codex THREAD [--codex-bin PATH] [--codex-prompt TEXT] [--codex-check-seconds 60] [--codex-queue-db PATH] [--debug] \| --to-agy CONVERSATION_ID [--agy-bin PATH] [--agy-prompt TEXT]]` | Print one `CQ-NEW` line per new message. One watcher per name. While `B` is asleep, print `CQ-SLEEP` and exit 7. For a coordinator, also print `CQ-WAKE` lines (see [Sleep and wake](#sleep-and-wake)), `CQ-OVERDUE` lines (see [Overdue tasks](#overdue-tasks)), and `CQ-LOCK-ORPHAN` and `CQ-LOCK-STALE` lines (see [Locks](#locks)). `--to-inbox` posts the lines into the Claude Code session's own inbox instead, the default for Claude Code (see [Watch into the inbox](#watch-into-the-inbox)). `--to-codex` runs `codex queue` to wake a Codex chat instead, the default for Codex (see [Wake a Codex chat](#wake-a-codex-chat)). `--to-agy` runs an `agy` turn to wake an Antigravity CLI conversation instead (see [Wake an Antigravity CLI conversation](#wake-an-antigravity-cli-conversation)). When `B` is listed in `CQ_ROOT/idle-alerts`, also send the idle alert after a turn end recorded by `cq turn-end`, once no activity is observed for `--idle-after` (see [Idle alerts](#idle-alerts)). |
 | `cq dispatch --as B --codex FILE --workspace DIR --instructions FILE --allow-from NAME [--allow-from NAME ...] [--sandbox read-only\|workspace-write] [--timeout-seconds 600] [--once]` | Run one fresh Codex process per task, serially. See [Codex setup](agents/CODEX.md). |
 | `cq claim --as B ID` | Move the message to `.processing/` and print its JSON. |
 | `cq done --as B ID [--reply [--status ok\|failed] \| --reject] [--input FILE]` | Finish a claimed message. With no flag, sends no reply, and refuses (exit 64, nothing moved) if input is waiting on stdin. `--reply` reads `{"reply": "..."}` (tasks only); `--reject` reads `{"reason": "..."}` and tells the sender (see [Rejections](#rejections)). |
@@ -23,6 +23,12 @@ Every command has `--help`. Message text never goes on the command line: `send` 
 | `cq sleep --as A B [--reason TEXT]` | Put `B` to sleep: write `sleep/B`. `A` may be `B` itself or a coordinator. |
 | `cq wake --as A B` | Wake `B`: remove `sleep/B`. Any name may wake any name. Exit 0 when `B` was not asleep. |
 | `cq status --as B` | Print one line saying whether `B`'s watcher runs: `running` (exit 0), `stopped` with the reason (exit 10), or `asleep` (exit 7). Reads only, and needs no session key: any session or the user may check any name. See [Watcher status and exit log](#watcher-status-and-exit-log). |
+| `cq lock take LOCK --as A --for TEXT [--owner]` | Take the named lock `LOCK`. Exit 0 when taken or already `A`'s, 1 when another name holds it (the holder is printed). Refused (exit 5) under `PAUSE`. `--owner` takes the user's hold; coordinators only. See [Locks](#locks). |
+| `cq lock release LOCK --as A [--owner]` | Release `LOCK`. Exit 0 when released, 1 when it is not held or not `A`'s. |
+| `cq lock status LOCK` | Print whether `LOCK` is free (exit 0) or held (exit 1), with the holder, time taken, `--for` text and age, and `orphaned` or `stale`. Reads only. |
+| `cq lock wait LOCK [--max MINUTES]` | Wait until `LOCK` is free (exit 0), or still held at `--max` (exit 2). Reads every 15 seconds; sends nothing, takes nothing. |
+| `cq lock list` | Print one line per held lock, with its holder. Reads only. |
+| `cq lock break LOCK --as A --reason TEXT` | Break `LOCK`, whoever holds it, and log why. Coordinators only (exit 5). Exit 1 when it is not held. |
 | `cq session-start [--debug]` | For the Claude Code SessionStart hook. Prints the rejoin reminder when this session owns a name, a "you are asleep" note when that name is asleep, else nothing. The text ends with a note that a subagent ignores it, because subagents share the host session ID. Always exits 0. |
 | `cq turn-end [--debug]` | For the Claude Code Stop hook. When this session owns a name listed in `CQ_ROOT/idle-alerts`, record the turn end in `idle/<name>.turn-end` for the name's watcher. Records nothing when the hook input lists other running background work. A Monitor task does not count. Prints nothing and always exits 0. See [Idle alerts](#idle-alerts). |
 | `cq idle-alert [--every 1h] [--debug]` | For the Claude Code Notification hook (matcher `idle_prompt`), or manual use. When this session owns a name listed in `CQ_ROOT/idle-alerts`, send its lead one fixed `info` message at once, at most once per `--every`. The desktop app does not send `idle_prompt`: use `cq turn-end` there. Prints nothing and exits 0. A bad `--every` value is a configuration error and exits 64. See [Idle alerts](#idle-alerts). |
@@ -171,6 +177,54 @@ A task is overdue when it has been unclaimed for 30 minutes, or claimed for 120 
 - **Nothing moves.** `cq` never resends, reclaims or moves an overdue task. The coordinator decides what to do (see [Protocol](PROTOCOL.md#overdue-tasks)).
 - **`PAUSE`.** `cq list --overdue` and `cq-top` still report overdue tasks under `PAUSE`, because they only read. A coordinator's watcher prints no `CQ-OVERDUE` lines under `PAUSE`, like `CQ-NEW`; it reports the tasks once `PAUSE` is removed.
 
+## Locks
+
+[Issue #99](https://github.com/niklasrichardson/session-queue/issues/99). A named lock says which session uses a shared resource, for example the desktop that GUI tests drive. Sessions read the lock instead of messaging its holder. The protocol is in [Protocol](PROTOCOL.md#locks).
+
+```bash
+cq lock take desktop --as worker-a --for "GUI test of the settings window"
+cq lock status desktop
+cq lock wait desktop --max 60
+cq lock release desktop --as worker-a
+```
+
+- **Names.** A lock name follows the queue-name rule: `a-z`, `0-9` and `-`, starting with a letter or digit, at most 32 characters. A bad name exits 5. `--as` must be a valid queue name too, and not `owner`. When this session's key is recorded in `members/` for another name, the command is refused (exit 5), so a session cannot act under another session's name.
+- **One holder.** `take` creates `locks/LOCK.lock` with an exclusive create, so of many takes at once exactly one wins. A take by the current holder exits 0 and changes nothing (the first `--for` text stays). Any other take exits 1 and prints the holder on stdout. `--for` is required, at most 200 characters (longer exits 5).
+- **The file.** `locks/LOCK.lock` is JSON: `lock`, `id` (the take, in the message ID format), `holder`, `by` (the name that ran `take`), `taken` (UTC), `taken_local` (for a person reading the file), `for`, and `session_key` when the taker has one. A file that cannot be read as this is held by `?`: it blocks takes, cannot be released, and a coordinator can break it.
+- **Release.** Only the holder releases (exit 1 for any other name, or when the lock is not held). Release and break hold `locks/LOCK.guard` while they read and remove the file, so neither removes a lock that was broken and taken again in between.
+- **The user's hold.** The holder `owner` is the user's hold, for example while the user uses the desktop. A coordinator (a name in `CQ_ROOT/coordinators`) takes and releases it with `--owner`: `cq lock take desktop --as lead --owner --for "user testing"`. Any coordinator may release it. Nobody else can take the lock while it is held; `--owner` from another name exits 5, and `--as owner` exits 5. The owner hold is never orphaned or stale.
+- **Break.** `cq lock break LOCK --as A --reason TEXT` removes the lock whoever holds it. Only a coordinator may break (exit 5); `--reason` must not be empty (exit 64). Exit 1 when the lock is not held.
+- **Orphaned.** A held lock is orphaned when its holder's watcher is stopped (as `cq status` sees it) and the last sign of life, the heartbeat or the take itself, is at least 90 seconds old. So a lock taken by a name with no watcher is orphaned 90 seconds after the take. An unreadable lock file is orphaned once its modified time is 90 seconds old.
+- **Stale.** A held lock is stale when its holder's watcher runs and it has been held 120 minutes or more. Set `CQ_LOCK_STALE_MINUTES` (whole minutes, 1 or more; unset or empty means the default; any other value exits 64 for every `cq lock` command and a coordinator's watcher).
+- **Status and list.** `status` prints `free lock=LOCK` (exit 0) or one `held` line (exit 1). `list` prints one `held` line per lock, by name, and nothing when none is held:
+
+  ```text
+  held lock=desktop holder=worker-a since=2026-11-11T10:00:00Z (10:00 UK) age=12m for="GUI test of the settings window"
+  held lock=desktop holder=owner since=2026-11-11T10:00:00Z (10:00 UK) age=3m by=lead for="user testing"
+  held lock=desktop holder=worker-a since=2026-11-11T08:00:00Z (08:00 UK) age=130m for="GUI test" why="heartbeat 340s old" orphaned
+  held lock=desktop holder=worker-b since=2026-11-11T08:00:00Z (08:00 UK) age=130m for="GUI test" stale
+  ```
+
+- **Wait.** `wait` checks every 15 seconds whether `locks/LOCK.lock` exists, and exits 0 with `free lock=LOCK` once it does not. With `--max MINUTES` (1 or more) it exits 2 with the `held` line when the lock is still held then. Without `--max` it waits until the lock is free. It sends no message, does not take the lock, and works under `PAUSE`. Run it in the background and take the lock after it returns: another session may take it first.
+- **Reports.** A coordinator's watcher checks the locks at start and every 15 seconds, and prints one line per take of a lock that is orphaned or stale. It reports each take once per state: a key is written to `heartbeat/<name>.lock-alerts` after its line is delivered, as for [overdue tasks](#overdue-tasks), so a restarted watcher does not repeat it. A new take of the same lock is reported again. Under `PAUSE` it prints nothing. Other watchers print no lock lines. `--to-codex` and `--to-agy` drop these lines, as they drop `CQ-OVERDUE`.
+
+  ```text
+  CQ-LOCK-ORPHAN 2026-11-11T10:05:02Z (10:05 UK) lock=desktop holder=worker-a since=2026-11-11T10:00:00Z (10:00 UK) age=5m for="GUI test" why="no pid file" orphaned
+  CQ-LOCK-STALE 2026-11-11T12:00:10Z (12:00 UK) lock=desktop holder=worker-b since=2026-11-11T10:00:00Z (10:00 UK) age=120m for="GUI test" stale
+  ```
+
+- **Nothing breaks by itself.** `cq` never breaks or releases a lock. The coordinator decides (see [Protocol](PROTOCOL.md#locks)).
+- **`locks.log`.** `CQ_ROOT/locks.log` gets one line per take, release and break, and per orphan or stale report, appended and rotated as `watch-exits.log` is (`locks.log.lock`, `locks.log.old` over 1 MiB). A line that cannot be written goes to stderr; the command's result does not change.
+
+  ```text
+  2026-11-11T10:00:00Z event=take lock=desktop holder=worker-a id=20261111T100000Z-worker-a-ab12 for="GUI test"
+  2026-11-11T10:05:02Z event=orphan lock=desktop holder=worker-a id=20261111T100000Z-worker-a-ab12 age=5m seen_by=lead
+  2026-11-11T10:06:00Z event=break lock=desktop holder=worker-a id=20261111T100000Z-worker-a-ab12 by=lead age=6m reason="session ended"
+  2026-11-11T10:07:00Z event=release lock=desktop holder=owner id=20261111T100700Z-lead-cd34 by=lead age=1m
+  ```
+
+- **`cq status`.** `cq status --as B` ends with `locks=a,b` when `B` holds locks.
+
 ## Watch into the inbox
 
 `cq watch --as B --to-inbox` posts its lines into the Claude Code session that started it, instead of printing them. A message to an idle session starts a new turn, so the session needs no Monitor and no re-arm every 30 minutes. It is the default way for Claude Code sessions to receive queue events. How a session runs it is in [Protocol](PROTOCOL.md#inbox-mode). Claude Code documents the inbox in [The session's inbox socket](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket).
@@ -266,18 +320,18 @@ asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" 
 | Code | Meaning |
 | --- | --- |
 | 0 | OK |
-| 1 | `claim`: the message is no longer in the inbox (another claim won, or a duplicate event). Ignore it. |
-| 2 | A rename still failed after 3 retries over 1 second. |
+| 1 | `claim`: the message is no longer in the inbox (another claim won, or a duplicate event). Ignore it. `lock take` and `lock status`: another name holds the lock. `lock release`: the lock is not held, or not by this name. `lock break`: the lock is not held. |
+| 2 | A rename still failed after 3 retries over 1 second. `lock wait`: the lock is still held at `--max`. |
 | 3 | `claim`: the message is invalid and went to `dlq/`. The sender was told, when known. |
 | 4 | `done` or `dispatch` completion: the message is finished, but the reply was not sent. This includes `done --reply` or `done --reject` on a claimed file that cannot be read. |
-| 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` or `send --reply-to` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. |
+| 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` or `send --reply-to` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. `lock`: a bad lock name, `--as owner`, `--for` over 200 characters, `--owner` or `break` by a name that is not a coordinator, or a session acting as a name other than its recorded one. |
 | 6 | `done`: the message is not claimed by this session. `requeue`: the message is not in this session's `rejected/` folder. |
 | 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. `status`: the name is asleep. |
 | 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. |
 | 9 | `watch --to-codex`: `codex queue` failed 4 times in a row. Nothing wakes the Codex chat until the watcher is started again. |
 | 10 | `status`: no watcher runs for the name, and it is not asleep. |
 | 11 | `watch --to-agy`: an `agy` turn failed 4 times in a row, or ran in another conversation. Nothing wakes the conversation until the watcher is started again. |
-| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found, or `watch --to-agy` with an empty conversation ID, an empty prompt or an `agy` executable that cannot be found. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value for `list --overdue`, a coordinator's `watch` or `cq-top`. A problem in `config.toml` in the queue root is not an error: `cq` warns on stderr and ignores the bad part (see [Setup](SETUP.md#configtoml)). |
+| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found, or `watch --to-agy` with an empty conversation ID, an empty prompt or an `agy` executable that cannot be found. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value for `list --overdue`, a coordinator's `watch` or `cq-top`. A bad `CQ_LOCK_STALE_MINUTES` value for `lock` or a coordinator's `watch`. A problem in `config.toml` in the queue root is not an error: `cq` warns on stderr and ignores the bad part (see [Setup](SETUP.md#configtoml)). |
 | 70 | Dispatch timeout/interruption (task stays claimed), or any other error (I/O, `CQ_ROOT` missing or not initialised). |
 
 
@@ -298,6 +352,7 @@ CQ_ROOT/
   heartbeat/<name>.pid       the running watcher/dispatcher process ID
   heartbeat/<name>.watcher   its record: pid, cq version and, for --to-inbox, the inbox address and a 16-digit SHA-256 prefix of the token (never the token)
   heartbeat/<name>.overdue   overdue task IDs a coordinator's watcher has reported, one per line
+  heartbeat/<name>.lock-alerts orphaned and stale lock takes a coordinator's watcher has reported, one per line
   dispatch/<name>/<id>/       Codex logs and completion state (not auto-pruned)
   members/<key>              the name owned by a session (a Claude Code session, `codex-NAME` for a `--to-codex` watcher, or `agy-NAME` for a `--to-agy` watcher), the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox, codex or agy)
   sleep/<name>               while it exists, the name is asleep (by, time, reason)
@@ -311,13 +366,18 @@ CQ_ROOT/
   watch-exits.log            one line per watcher exit (see Watcher status and exit log)
   watch-exits.log.lock       locked while a watcher appends its line or renames the log
   watch-exits.log.old        the previous log, once it passed 1 MiB
+  locks/<lock>.lock          while it exists, the lock is held (JSON: holder, time, --for text)
+  locks/<lock>.guard         locked while a lock is released or broken (never removed)
+  locks.log                  one line per lock take, release, break and report (see Locks)
+  locks.log.lock             locked while a line is appended or the log renamed
+  locks.log.old              the previous log, once it passed 1 MiB
 ```
 
 `cq` and `cq-top` read only the files and folders listed above. They ignore any other file or folder in the root, so your own files, such as `SESSION-RULES.md` and `watchers.json`, can live there.
 
 Message format: [`schema/message.v1.json`](../schema/message.v1.json). One file per message, `<id>.json`, UTF-8 without BOM. IDs are `<UTC yyyymmddThhmmssZ>-<from>-<4 hex>`. Readers ignore unknown fields.
 
-To stop all queue traffic at once, create a file named `PAUSE` in the queue root (for example `touch "$CQ_ROOT/PAUSE"`). While it exists, watchers announce nothing and every `cq send` is refused (exit 5). Remove the file to resume; waiting messages are then announced. `cq list`, `cq list --overdue` and `cq-top` still work under `PAUSE`, because they only read.
+To stop all queue traffic at once, create a file named `PAUSE` in the queue root (for example `touch "$CQ_ROOT/PAUSE"`). While it exists, watchers announce nothing, and every `cq send` and `cq lock take` is refused (exit 5). Release, break, status, list and wait still work. Remove the file to resume; waiting messages are then announced. `cq list`, `cq list --overdue` and `cq-top` still work under `PAUSE`, because they only read.
 
 ## Codex dispatch
 

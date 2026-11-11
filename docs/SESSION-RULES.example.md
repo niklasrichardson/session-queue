@@ -53,6 +53,13 @@ Use the wake route your setup provides, such as polling. On each wake or poll, r
 - A coordinator (a name in CQ_ROOT/coordinators) may get CQ-WAKE lines: a message has waited 2 minutes for a sleeping name. Do the same as a sender: in Claude Code, run /cq-start NAME; in another agent, tell the user which name needs waking. Do not claim the message.
 - Only a coordinator may sleep another name. Any name may wake any name.
 
+## Locks
+
+- Before you show a window or drive the mouse or keyboard, take the desktop lock: cq lock take desktop --as NAME --for "what you are doing".
+- Exit 0: go ahead. Exit 1: another session or the user holds it. Run cq lock wait desktop in the background, and take the lock when it returns. Do not message the holder about the lock.
+- Release it as soon as you are done, also when the work fails: cq lock release desktop --as NAME.
+- A coordinator takes the user's hold with --owner when the user wants the desktop, and acts on CQ-LOCK-ORPHAN and CQ-LOCK-STALE lines: check with the holder or the user before cq lock break.
+
 ## Claim, decide and finish
 
 1. On CQ-NEW, claim the message before doing work. Claim exit 1 means already handled: ignore it. Exit 3 means invalid and dead-lettered: nothing more to do.
