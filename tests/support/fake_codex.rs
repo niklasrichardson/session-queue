@@ -38,6 +38,11 @@ fn main() {
             eprintln!("synthetic authentication failure");
             std::process::exit(1);
         }
+        "stderr-cut" => {
+            // 33 ASCII bytes, then 2-byte characters: byte 4096 splits one.
+            eprintln!("synthetic authentication failure {}", "é".repeat(3000));
+            std::process::exit(1);
+        }
         "timeout" => {
             Command::new(env::current_exe().unwrap())
                 .arg("--descendant")

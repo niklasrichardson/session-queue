@@ -15,6 +15,16 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Review fixes from issue #83 on Windows, 11 November 2026
+
+cq 1.15.1: findings M1, M2, L2 and L5 of [issue #83](https://github.com/niklasrichardson/session-queue/issues/83). Checked on Windows 11 with `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (449 tests, 0 failed, 1 ignored). Nothing was run live.
+
+- `tests/dispatch.rs`: unlisted tasks whose rejection reply the pair rate limit refuses are recorded `completed`, an allowed task in the same run still runs, and a second run starts and handles a new task. A Codex stderr cut inside a UTF-8 character at 4096 bytes still gives the detail.
+- `tests/config.rs` (12 tests): a `tz_label` with a newline and a control character forges no line and is cut to 16 characters; `rules` with a newline is ignored with a warning and the reminder does not name it; a UTF-8 byte order mark is skipped; UTF-16 text with or without a byte order mark is ignored with a warning.
+- `tests/rejected.rs`: a crafted `time` in a reason file prints as `rejected=?`.
+- Unit tests in `src/timefmt.rs`, `src/record.rs` and `src/exitlog.rs`: the label filter, and a crafted version reads and logs as unknown.
+- Each new test failed without its change, except the byte order mark test: the TOML parser already skipped the mark.
+
 ## Antigravity CLI broker mode shell on Windows, 11 November 2026
 
 `cq watch --to-agy --agy-broker` (cq 1.15.0). Live test with the real `agy` on Windows 11, 2 turns: the turn could use the exchange folder through the sandbox SID, and `--add-dir` gave it the job folder. In both turns agy's sandboxed shell did not start: `exebox: creating sandbox: CreateProcessSecurityEnvironment: The process cannot access the file because it is being used by another process`. agy wrote `reply.json` with its file tool instead.
@@ -94,7 +104,7 @@ Not checked:
 `config.toml` in the queue root (see [Configuration](SETUP.md#configuration)) and `examples/start-watchers.ps1` (see [Watchers](WATCHERS.md)). Checked on Windows 11 with `cargo test --workspace` (330 tests, 0 failed), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`. All passed.
 
 - Unit tests in `src/config.rs` (8 tests): every key is read; a relative `rules` path is joined to the root and an absolute one is kept; empty text and empty values give no settings; an unknown key is named in the warning and the other keys still apply; a wrong type or an unknown zone drops only that key; bad TOML ignores the whole file and gives the line; the order is environment variable, file, build default.
-- `tests/config.rs` (8 tests) runs the real `cq` against temporary queue roots. `tz` and `tz_label` from the file set the local time unless `CQ_TZ` and `CQ_TZ_LABEL` are set; `--help` shows the file's zone; the `session-start` reminder names the file's `rules` path unless `CQ_RULES` is set; with an unknown key, `list`, `watch`, `status`, `init` and `send` run as usual, each prints one warning line that names the file and the key, and the other keys still apply; a wrong type or an unknown zone gives a warning, the other key still applies and `CQ_TZ` still wins; bad TOML and a duplicate key ignore the whole file with a warning that gives the line; `session-start` prints the warning only with `--debug`; a missing or empty file changes nothing and prints nothing.
+- `tests/config.rs` (8 tests then) runs the real `cq` against temporary queue roots. `tz` and `tz_label` from the file set the local time unless `CQ_TZ` and `CQ_TZ_LABEL` are set; `--help` shows the file's zone; the `session-start` reminder names the file's `rules` path unless `CQ_RULES` is set; with an unknown key, `list`, `watch`, `status`, `init` and `send` run as usual, each prints one warning line that names the file and the key, and the other keys still apply; a wrong type or an unknown zone gives a warning, the other key still applies and `CQ_TZ` still wins; bad TOML and a duplicate key ignore the whole file with a warning that gives the line; `session-start` prints the warning only with `--debug`; a missing or empty file changes nothing and prints nothing.
 - The build-time defaults (`CQ_RULES_PATH`, `CQ_DEFAULT_TZ`, `CQ_DEFAULT_TZ_LABEL`) are set at compile time, so only the unit test checks their place in the order.
 - The script was parsed with PowerShell 7.6 (0 errors). Its config checks were run against bad configs, and its output against a fake `cq` that echoes its arguments and exits 3. Six watchers were run against a fake `cq` that prints a start line, waits 5 seconds, then prints a done line: all six started within 0.1 seconds. Before the fix, the sixth started only after the first five ended, because `Start-ThreadJob` runs at most 5 jobs by default. It has not been run with real watchers, and closing the window or pressing Ctrl+C was not tested.
 

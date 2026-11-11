@@ -77,7 +77,7 @@ The time is when the watcher saw the message: UTC first, then local time with it
 - **Send limits.** The notice goes through the same limits as `cq send`. If a limit or `PAUSE` blocks it, the reject still succeeds (exit 0, `reply=none`) and stderr says `cq: message <id> moved to rejected/B/, but <sender> was not told: <why>`. A task's `rejected` result is a reply, so a blocked one still exits 4.
 - `done` prints the notice's ID as `reply=<id>`.
 
-`cq list --as B --rejected` prints one line per rejected message, oldest first (by the time in the ID), then a total. `REJECTED-IN` is a message that `B` rejected (in `rejected/B/`). `REJECTED-OUT` is a message from `B` (by the sender in the file name) that another session rejected. `rejected=` is the time in the reason file, or `?` without one. It never prints bodies. It does not take `--stale-minutes` (exit 64).
+`cq list --as B --rejected` prints one line per rejected message, oldest first (by the time in the ID), then a total. `REJECTED-IN` is a message that `B` rejected (in `rejected/B/`). `REJECTED-OUT` is a message from `B` (by the sender in the file name) that another session rejected. `rejected=` is the time in the reason file, or `?` without one or when it is not a UTC time. It never prints bodies. It does not take `--stale-minutes` (exit 64).
 
 ```text
 REJECTED-IN 2026-10-26T09:00:00Z (09:00 GMT) rejected=2026-10-26T09:01:12Z by=worker-a from=lead type=info id=20261026T090000Z-lead-ab12 subject="hello" reason="Sender not in scope."
@@ -402,7 +402,7 @@ To stop all queue traffic at once, create a file named `PAUSE` in the queue root
 
 ## Codex dispatch
 
-`dispatch` requires an explicit executable, workspace, trusted scope file and sender allowlist. Paths must be absolute. It holds the same lock as `watch`; it has no takeover option. It scans every second, observes PAUSE, and handles the current inbox once with --once. Each task starts `codex exec` with stdin data, structured output, no interactive approvals and an explicit read-only (default) or workspace-write sandbox. Hooks and user configuration are disabled for that invocation. Info/result messages finish without starting Codex. Disallowed senders are rejected.
+`dispatch` requires an explicit executable, workspace, trusted scope file and sender allowlist. Paths must be absolute. It holds the same lock as `watch`; it has no takeover option. It scans every second, observes PAUSE, and handles the current inbox once with --once. Each task starts `codex exec` with stdin data, structured output, no interactive approvals and an explicit read-only (default) or workspace-write sandbox. Hooks and user configuration are disabled for that invocation. Info/result messages finish without starting Codex. Disallowed senders are rejected. If the hop or rate limit refuses that rejection reply, the job is still recorded `completed` and the dispatcher continues.
 
 Agent failures become failed results; a successfully delivered failed result leaves dispatch running (exit 0 with --once). Timeout/interruption leaves work claimed and exits 70. Completion failures preserve their existing cq exit code. Claimed tasks and unresolved dispatch records refuse restart with exit 5. See [recovery](agents/CODEX-DISPATCH.md#failure-handling-and-recovery) before restarting. No automatic retry occurs.
 

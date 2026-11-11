@@ -130,7 +130,7 @@ fn non_tasks_invalid_messages_and_unlisted_senders_never_run_codex() {
 
 #[test]
 fn failures_and_oversized_or_invalid_answers_become_failed_results() {
-    for mode in ["fail", "stderr", "oversize", "empty"] {
+    for mode in ["fail", "stderr", "stderr-cut", "oversize", "empty"] {
         let env = Env::new();
         let id = env.send("a", "b", "task", "review", "data");
         let out = dispatch(&env, mode);
@@ -138,7 +138,8 @@ fn failures_and_oversized_or_invalid_answers_become_failed_results() {
         let reply = result(&env, &id);
         assert_eq!(reply["status"], "failed", "{mode}");
         assert!(reply["body"].as_str().unwrap().len() <= 20480);
-        if mode == "stderr" {
+        if mode.starts_with("stderr") {
+            // `stderr-cut` splits a UTF-8 sequence at the 4096-byte read.
             assert!(
                 reply["body"]
                     .as_str()
@@ -157,7 +158,7 @@ fn failures_and_oversized_or_invalid_answers_become_failed_results() {
         assert!(
             env.path(&format!("dispatch/b/{id}/answer.json")).exists()
                 || mode == "fail"
-                || mode == "stderr"
+                || mode.starts_with("stderr")
         );
     }
 }
@@ -254,6 +255,52 @@ fn reply_failure_stops_and_restart_cannot_replay_the_finished_task() {
             .count(),
         1
     );
+}
+
+/// Issue #83 M1: an unlisted sender past the pair rate limit cannot stop the
+/// dispatcher, and the jobs whose rejection reply was refused do not block a
+/// restart.
+#[test]
+fn unlisted_flood_past_the_rate_limit_keeps_the_dispatcher_running() {
+    let env = Env::new();
+    for _ in 0..20 {
+        let out = env.send_raw(
+            &[
+                "--from", "b", "--to", "other", "--type", "result", "--status", "ok",
+            ],
+            "limit fixture",
+            "data",
+        );
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+    }
+    let flood: Vec<String> = (0..3)
+        .map(|_| env.send("other", "b", "task", "flood", "data"))
+        .collect();
+    let allowed = env.send("a", "b", "task", "review", "data");
+    let out = dispatch(&env, "ok");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    for id in &flood {
+        assert!(env.path(&format!("rejected/b/{id}.json")).exists());
+        let state = env.read_json(&format!("dispatch/b/{id}/state.json"));
+        assert_eq!(state["phase"], "completed");
+        assert!(
+            state["detail"].as_str().unwrap().contains("reply not sent"),
+            "{state}"
+        );
+    }
+    assert_eq!(result(&env, &allowed)["status"], "ok");
+    let calls = || {
+        fs::read_to_string(env.path("calls.txt"))
+            .unwrap()
+            .lines()
+            .count()
+    };
+    assert_eq!(calls(), 1);
+    let later = env.send("a", "b", "task", "later", "data");
+    let again = dispatch(&env, "ok");
+    assert_eq!(code(&again), 0, "{}", stderr(&again));
+    assert_eq!(result(&env, &later)["status"], "ok");
+    assert_eq!(calls(), 2);
 }
 
 #[test]

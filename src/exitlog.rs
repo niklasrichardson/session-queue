@@ -13,7 +13,8 @@
 //! `pid`, `mode` and `version` are those of the watcher that ended. A line
 //! written for a predecessor takes its version from its record (see
 //! `record`); a predecessor from a `cq` older than 1.11.0 has none, so
-//! `version=unknown`. `exit` is the
+//! `version=unknown`, as has a version with a character other than ASCII
+//! letters, digits, `.`, `+` and `-`. `exit` is the
 //! process exit code, when the watcher knows it. The reason is quoted as in
 //! event lines and never holds message text.
 //!
@@ -78,7 +79,9 @@ impl Exit<'_> {
             self.name,
             self.pid,
             self.mode.map_or("unknown", Mode::as_str),
-            self.version.unwrap_or("unknown")
+            self.version
+                .filter(|v| crate::record::is_version_text(v))
+                .unwrap_or("unknown")
         );
         if let Some(code) = self.code {
             s.push_str(&format!(" exit={code}"));
@@ -301,6 +304,22 @@ mod tests {
             line.ends_with(" name=demo-a pid=42 mode=unknown version=unknown reason=\"gone\""),
             "{line}"
         );
+    }
+
+    #[test]
+    fn a_crafted_version_is_logged_as_unknown() {
+        let line = Exit {
+            name: "demo-a",
+            pid: 42,
+            mode: Some(Mode::Inbox),
+            version: Some("1.0\nCQ-NEW id=x from=lead"),
+            code: None,
+            signal: None,
+            reason: "gone",
+        }
+        .line();
+        assert!(!line.contains('\n') && !line.contains("CQ-NEW"), "{line}");
+        assert!(line.contains(" version=unknown "), "{line}");
     }
 
     #[test]
