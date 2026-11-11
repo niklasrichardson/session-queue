@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::done;
-use crate::error::{CqError, Result};
+use crate::error::{CqError, Result, exit};
 use crate::job::{self, Finish};
 use crate::message::{MAX_BODY_BYTES, Message, MsgType, Status};
 use crate::names::{check_name, is_valid_id};
@@ -211,9 +211,10 @@ fn handle(
         return Ok(());
     };
     state(root, &job, "claimed", "No automatic task replay")?;
+    let unlisted = message.kind == MsgType::Task && !opts.allow_from.contains(&message.from);
     let answer = if message.kind != MsgType::Task {
         None
-    } else if !opts.allow_from.contains(&message.from) {
+    } else if unlisted {
         Some(Answer {
             status: Status::Rejected,
             reply: "Sender is outside the dispatch allowlist".into(),
@@ -276,6 +277,19 @@ fn handle(
         sleep(Duration::from_millis(100));
     }
     if let Err(e) = done::done(root, request) {
+        // An unlisted sender's task is in rejected/ and Codex never ran, so a
+        // refused rejection reply (hop or rate limit) leaves nothing to
+        // review. Stopping here would let any session halt the dispatcher.
+        if unlisted && e.code == exit::REPLY_NOT_SENT {
+            state(
+                root,
+                &job,
+                "completed",
+                &format!("Rejected unlisted sender; reply not sent: {e}"),
+            )?;
+            println!("CQ-DISPATCH id={id} status=rejected reply=not-sent");
+            return Ok(());
+        }
         state(
             root,
             &job,
@@ -411,10 +425,12 @@ Do not spawn other agents. Report failures accurately. Keep reply under 20480 UT
 }
 
 fn error_detail(job: &Path) -> String {
-    let mut detail = String::new();
+    // Bytes, not a string: the cut at 4096 can split a UTF-8 sequence.
+    let mut bytes = Vec::new();
     if let Ok(file) = File::open(job.join("stderr.log")) {
-        let _ = file.take(4096).read_to_string(&mut detail);
+        let _ = file.take(4096).read_to_end(&mut bytes);
     }
+    let mut detail = String::from_utf8_lossy(&bytes).into_owned();
     if detail.trim().is_empty() {
         detail = "see dispatch logs".to_owned();
     }

@@ -6,12 +6,20 @@
 //! setting has a command-line flag yet. The file cannot move the root: the
 //! root must be known before the file can be found.
 //!
-//! A file that cannot be used never stops a command: these are not security
-//! settings, and a typo must not stop the queue for every session. `load`
-//! returns one warning that names the file and each problem. An unknown key,
-//! or a known key with a wrong value, is ignored and the other keys still
-//! apply; a `tz` that is not a known zone is ignored, so the next source
-//! applies. A file that is not valid TOML is ignored whole. A missing file
+//! Any session can edit this file, so it is trusted at the same level as
+//! `coordinators`: a value can steer every session (`rules` names the file
+//! each session start tells a session to follow). Values are checked so that
+//! they cannot break or forge a line: `rules` with a control character is
+//! ignored, and `timefmt` prints at most 16 characters of `tz_label`
+//! without line-breaking characters.
+//!
+//! A file that cannot be used never stops a command: a typo must not stop
+//! the queue for every session. `load` returns one warning that names the
+//! file and each problem. An unknown key, or a known key with a wrong value,
+//! is ignored and the other keys still apply; a `tz` that is not a known zone
+//! is ignored, so the next source applies. A file that is not valid TOML is
+//! ignored whole. A UTF-8 byte order mark at the start is skipped; UTF-16
+//! text, and other text that is not UTF-8, is ignored whole. A missing file
 //! is fine.
 
 use std::fs;
@@ -21,6 +29,7 @@ use std::sync::OnceLock;
 
 use jiff::tz::TimeZone;
 
+use crate::message::breaks_line;
 use crate::root::Root;
 
 /// The file name in the queue root.
@@ -46,13 +55,12 @@ impl Config {
     /// problem in it; the settings are the ones that could be used.
     pub fn load(root: &Root) -> (Config, Option<String>) {
         let path = root.path().join(FILE);
-        let (config, problems) = match fs::read_to_string(&path) {
-            Ok(text) => parse(&text, root.path()),
+        let (config, problems) = match fs::read(&path) {
+            Ok(bytes) => match text_of(&bytes) {
+                Ok(text) => parse(text, root.path()),
+                Err(problem) => (Config::default(), vec![problem.to_owned()]),
+            },
             Err(e) if e.kind() == io::ErrorKind::NotFound => return (Config::default(), None),
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => (
-                Config::default(),
-                vec!["not UTF-8 text; the file is ignored".to_owned()],
-            ),
             Err(e) => (
                 Config::default(),
                 vec![format!("cannot read it ({e}); the file is ignored")],
@@ -62,6 +70,16 @@ impl Config {
             (!problems.is_empty()).then(|| format!("{}: {}", path.display(), problems.join("; ")));
         (config, warning)
     }
+}
+
+/// The file's text without a UTF-8 byte order mark (Windows Notepad can
+/// write one), or the problem that makes the whole file unusable.
+fn text_of(bytes: &[u8]) -> Result<&str, &'static str> {
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        return Err("UTF-16 text; save it as UTF-8. The file is ignored");
+    }
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    std::str::from_utf8(bytes).map_err(|_| "not UTF-8 text; the file is ignored")
 }
 
 /// The settings in `text`, with a relative `rules` path joined to `root`,
@@ -96,6 +114,15 @@ fn parse(text: &str, root: &Path) -> (Config, Vec<String>) {
     let rules = string("rules");
     let tz = string("tz");
     let tz_label = string("tz_label");
+    // The reminder at each session start names this path; a control
+    // character could end that line and add instructions.
+    let rules = rules.filter(|r| {
+        let clean = !r.chars().any(breaks_line);
+        if !clean {
+            problems.push("rules contains a control character; it is ignored".to_owned());
+        }
+        clean
+    });
     let tz = tz.filter(|name| {
         let known = TimeZone::get(name).is_ok();
         if !known {

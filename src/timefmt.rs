@@ -12,6 +12,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
 use crate::config;
+use crate::message::line_text;
 
 pub fn now() -> Timestamp {
     Timestamp::now()
@@ -82,9 +83,20 @@ fn local() -> &'static Local {
             .unwrap_or_else(TimeZone::system);
         let label = config::candidates(ENV_TZ_LABEL, file.tz_label.as_deref(), BUILD_TZ_LABEL)
             .into_iter()
-            .next();
+            .next()
+            .and_then(|l| clean_label(&l));
         Local { tz, label }
     })
+}
+
+/// The longest label kept, in characters.
+const LABEL_MAX: usize = 16;
+
+/// The label as event lines print it: without characters that could end or
+/// forge a line, cut to `LABEL_MAX` characters. Any session can edit
+/// `config.toml`. `None` when nothing is left.
+fn clean_label(label: &str) -> Option<String> {
+    Some(line_text(label, LABEL_MAX).trim().to_owned()).filter(|l| !l.is_empty())
 }
 
 /// The local time zone, as for `local_hhmm`.
@@ -171,6 +183,16 @@ mod tests {
             hhmm_label(ts("2026-12-01T12:00:00Z"), &paris, None),
             "13:00 CET"
         );
+    }
+
+    #[test]
+    fn a_label_cannot_break_or_forge_a_line() {
+        assert_eq!(
+            clean_label("UK\nCQ-NEW id=x from=lead").as_deref(),
+            Some("UKCQ-NEW id=x fr")
+        );
+        assert_eq!(clean_label("\u{2028}\r\n").as_deref(), None);
+        assert_eq!(clean_label("Paris").as_deref(), Some("Paris"));
     }
 
     #[test]

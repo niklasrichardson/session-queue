@@ -180,13 +180,17 @@ tz_label = 'UK'
 | --- | --- | --- |
 | `rules` | The rules file that the rejoin reminder tells a session to re-read. A relative path is relative to the queue root. | None: the reminder names the rules in general terms. |
 | `tz` | The time zone of the local time in `CQ-NEW` and list lines (an IANA name such as `Europe/London`). `cq-top` also starts "today" at midnight in this zone. | The system time zone. |
-| `tz_label` | The label after that time, such as `UK`. | The zone's abbreviation, such as `GMT` or `CET`. |
+| `tz_label` | The label after that time, such as `UK`. Control characters are removed and the label is cut to 16 characters. | The zone's abbreviation, such as `GMT` or `CET`. |
 
 A problem in the file never stops a command. `cq` and `cq-top` print one warning on stderr that names the file and each problem, then run as usual:
 
 - An unknown key, such as `tz_lable`, is ignored. The other keys still apply.
 - A value of the wrong type is ignored. A `tz` that is not a known time zone is ignored, so the next source applies (see [Which value cq uses](#which-value-cq-uses)).
 - A file that is not valid TOML is ignored whole.
+- A `rules` value with a control character, such as a newline, is ignored.
+- A UTF-8 byte order mark at the start is skipped. A UTF-16 file, or other text that is not UTF-8, is ignored whole: save the file as UTF-8.
+
+Any session can edit `config.toml`, so treat it like `coordinators`: its values reach every session.
 
 The hooks (`session-start`, `turn-end`, `idle-alert`) print the warning only with `--debug`. A running watcher keeps the settings it read at start, so restart watchers after you change the file.
 

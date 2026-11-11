@@ -131,6 +131,8 @@ Logs are retained under `CQ_ROOT/dispatch/NAME/ID/`: prompt, schema, JSONL event
 
 The dispatcher refuses to restart while its queue name has claimed messages or any job record whose phase is not `completed`.
 
+A task from a sender outside `--allow-from` is moved to rejected/ without starting Codex. If the hop or rate limit refuses the rejection reply (exit 4 from completion), the dispatcher records the job as `completed` with a note that the reply was not sent, prints `CQ-DISPATCH id=ID status=rejected reply=not-sent`, and continues. Otherwise a flood from an unlisted sender could stop the dispatcher. Exit 4 for a task that Codex ran still stops it for review.
+
 Recovery is an operator action:
 
 1. Stop the dispatcher and verify no agent from the failed run is still working.

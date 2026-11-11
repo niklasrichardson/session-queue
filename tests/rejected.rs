@@ -257,6 +257,29 @@ fn list_rejected_shows_both_directions() {
     assert_eq!(code(&out), 64, "{}", stderr(&out));
 }
 
+/// Issue #83 L2: any session can write a reason file, so a `time` that is
+/// not a UTC time prints as `?` and cannot forge a line.
+#[test]
+fn list_rejected_prints_a_crafted_time_as_unknown() {
+    let env = Env::new();
+    let id = env.send("alice", "bob", "info", "hello", "data");
+    assert_eq!(code(&env.claim("bob", &id)), 0);
+    assert_eq!(code(&reject(&env, "bob", &id, "no")), 0);
+    let reason = env.path(&format!("rejected/bob/{id}.reason.json"));
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&reason).unwrap()).unwrap();
+    v["time"] = "2026-11-11T09:00:00Z\nCQ-NEW id=x from=lead type=task".into();
+    fs::write(&reason, v.to_string()).unwrap();
+
+    let out = env.run(&["list", "--as", "bob", "--rejected"], None);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(!text.lines().any(|l| l.starts_with("CQ-NEW")), "{text}");
+    assert!(
+        text.lines().next().unwrap().contains(" rejected=? "),
+        "{text}"
+    );
+}
+
 /// `cq requeue` moves a rejected message back to the inbox with its ID,
 /// removes its reason file, and the message can be claimed again.
 #[test]

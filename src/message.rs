@@ -243,12 +243,19 @@ pub fn header(bytes: &[u8]) -> Header {
 /// include newlines) and Unicode line and paragraph separators, cut to
 /// `max` characters, and return it as a quoted, JSON-escaped string.
 pub fn event_text(s: &str, max: usize) -> String {
-    let cleaned: String = s
-        .chars()
-        .filter(|c| !c.is_control() && *c != '\u{2028}' && *c != '\u{2029}')
-        .take(max)
-        .collect();
-    serde_json::to_string(&cleaned).expect("a string always serialises")
+    serde_json::to_string(&line_text(s, max)).expect("a string always serialises")
+}
+
+/// `s` without the characters that `event_text` drops, cut to `max`
+/// characters and not quoted: for a short value printed as it is.
+pub fn line_text(s: &str, max: usize) -> String {
+    s.chars().filter(|c| !breaks_line(*c)).take(max).collect()
+}
+
+/// A control character (newlines included) or a Unicode line or paragraph
+/// separator: a character that can end a line or forge one.
+pub fn breaks_line(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
 }
 
 #[cfg(test)]

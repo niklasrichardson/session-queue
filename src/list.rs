@@ -14,7 +14,7 @@ use crate::message::{EVENT_SUBJECT_MAX, event_text, header};
 use crate::names::{check_name, id_parts, is_valid_id, is_valid_name};
 use crate::root::{Root, message_file, reason_file};
 use crate::sleep;
-use crate::timefmt::{self, local_hhmm, rfc3339};
+use crate::timefmt::{self, local_hhmm, parse_rfc3339_z, rfc3339};
 
 /// Reason text in a `DLQ` line, in characters.
 const REASON_MAX: usize = 200;
@@ -166,7 +166,11 @@ pub fn rejected(root: &Root, name: &str) -> Result<Vec<String>> {
                     "{label} {} ({}) rejected={} by={by} from={} type={} id={id} subject={} reason={}",
                     rfc3339(created),
                     local_hhmm(created),
-                    field("time").unwrap_or_else(|| "?".to_owned()),
+                    // Any session can write the reason file: print only a
+                    // UTC time, in the form cq writes.
+                    field("time")
+                        .and_then(|t| parse_rfc3339_z(&t))
+                        .map_or_else(|| "?".to_owned(), rfc3339),
                     h.from,
                     h.kind,
                     event_text(&h.subject, EVENT_SUBJECT_MAX),

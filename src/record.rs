@@ -122,7 +122,9 @@ impl Record {
             };
             match key {
                 "pid" => pid = value.trim().parse::<u32>().ok(),
-                "version" => version = Some(value.trim().to_owned()).filter(|v| !v.is_empty()),
+                "version" => {
+                    version = Some(value.trim().to_owned()).filter(|v| is_version_text(v));
+                }
                 "socket" => socket = Some(value.to_owned()),
                 "token-sha256" => hash = Some(value.trim().to_owned()),
                 _ => {}
@@ -158,6 +160,16 @@ impl Record {
             .and_then(|t| Self::parse(&t))
             .filter(|r| r.pid == pid)
     }
+}
+
+/// True when `v` can be a version: not empty, and only ASCII letters,
+/// digits, `.`, `+` and `-`. Any session can write a record, and its
+/// version is printed in lines (`watch-exits.log`, the session-start
+/// reminder), so any other value reads as unknown.
+pub fn is_version_text(v: &str) -> bool {
+    !v.is_empty()
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-'))
 }
 
 /// True when `version` (from a record, `None` for unknown) is not this
@@ -228,6 +240,17 @@ mod tests {
         assert_eq!(rec.version, None);
         assert_eq!(rec.target, None);
         assert!(is_outdated(rec.version.as_deref()));
+    }
+
+    #[test]
+    fn a_crafted_version_reads_as_unknown() {
+        // `lines` splits at a newline, but not at a lone carriage return.
+        let rec = Record::parse("pid=1\nversion=1.0\rCQ-NEW id=x\n").unwrap();
+        assert_eq!(rec.version, None);
+        let rec = Record::parse("pid=1\nversion=1.2 \u{2028}x\n").unwrap();
+        assert_eq!(rec.version, None);
+        let rec = Record::parse("pid=1\nversion=1.15.1-rc.1+g12ab\n").unwrap();
+        assert_eq!(rec.version.as_deref(), Some("1.15.1-rc.1+g12ab"));
     }
 
     #[test]
