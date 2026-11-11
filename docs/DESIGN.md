@@ -148,6 +148,21 @@ Stage 1 of [issue #7](https://github.com/niklasrichardson/session-queue/issues/7
 - **When sleep pays off.** Waking a session writes its whole context to the prompt cache again, which costs about 2 times the context in input tokens. Staying awake costs about 0.4 times the context per hour in re-arms and cache reads. So sleep pays off only for an idle period of about 5 hours or more, unless the context is small. These figures are for Monitor mode. In inbox mode, an idle session takes no re-arm turns, so staying awake costs less, and sleep pays off only after a longer idle period.
 - **Not in stage 1:** automatic sleep after an idle time. `cq dispatch` (Codex) does not check the flag.
 
+## Locks
+
+[Issue #99](https://github.com/niklasrichardson/session-queue/issues/99): named locks, such as one for the desktop that GUI tests drive. The commands are in [Commands](COMMANDS.md#locks).
+
+- **A file per lock, made by an exclusive create.** `take` opens `locks/<lock>.lock` with create-new, which the file system grants to one caller only, on Windows, macOS and Linux. No OS lock is held while the lock is held, so a lock survives the process that took it: a session takes it with one command and releases it with another. An OS lock would end with the process.
+- **Release and break under a guard.** Release reads the holder and then removes the file. Without a guard, a break and a new take between those two steps would let the old holder remove the new holder's lock. Release and break hold the OS lock on `locks/<lock>.guard` for both steps; take needs no guard, because the create decides. The guard file is never removed, so two processes never lock different files of the same name.
+- **A half-written file.** A reader can find the file after the create and before the write. It reads again for up to half a second before it counts the file as unreadable (holder `?`). An unreadable file still holds the lock: removing it would need a guess about whether its taker is alive.
+- **The holder is a queue name.** `--as` must pass the queue-name rule, as for `cq send`. When this session's key is in `members/` for another name, the command is refused, so a session cannot take or release under another session's name by mistake. There is no list of names that exist, so the check cannot do more without `members/` (send has the same limit).
+- **The owner hold.** The user is not a queue name. A coordinator takes and releases the reserved holder `owner` for the user with `--owner`, so the user can claim the desktop from any coordinator session. Any coordinator may release it, so the hold does not depend on one session staying alive. It is never orphaned or stale: the user's presence has no heartbeat.
+- **Orphaned and stale are reports, not actions.** A holder whose watcher stopped may still be working: a watcher can stop while its session runs. So `cq` never breaks a lock; a coordinator's watcher reports, and the coordinator decides. Orphaned uses the watcher rule of `cq status` with a 90-second grace from the take, so a session that takes a lock before its watcher starts is not reported at once. Stale only applies to a live holder, so one lock is never both.
+- **Once per take.** A report is keyed by the state, the lock and the take's ID, and kept in `heartbeat/<name>.lock-alerts` after delivery, as for `CQ-OVERDUE`. So a restarted coordinator does not repeat it, and a new take of the same lock is reported again.
+- **Wait polls.** `cq lock wait` checks every 15 seconds whether the file exists. File-system events would add a watcher per waiter for a wait that is measured in minutes. It sends no message, so a waiting session costs the holder nothing.
+- **`PAUSE` refuses takes only.** Taking a lock starts new work, like `cq send`. Release, break, status, list and wait finish work or only read, so they still work.
+- **`locks.log`** uses the same append and rotation as `watch-exits.log`, so lines from processes that end at the same time are kept whole.
+
 ## Dependencies
 
 - clap, serde, serde_json, jiff (time zones; the bundled database on Windows), notify, sha2 (the token hash in the watcher record), windows-sys (Windows), libc (macOS and Linux). Tests: jsonschema (without default features, to avoid a network client build) and tempfile.

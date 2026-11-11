@@ -130,3 +130,13 @@ The skills are in [`skills/`](../skills/), and work in Claude Code and Codex; [I
 - **`cq` changes nothing.** No command resends, reclaims or moves an overdue task. A resend is a new task, sent by a person or the coordinator with `cq send`.
 - **Anyone can look.** `cq list --overdue` and `cq-top` show overdue tasks to any name. They only read, so they work under `PAUSE`. Under `PAUSE` the coordinator's watcher prints no `CQ-OVERDUE` lines until `PAUSE` is removed.
 - Without a `coordinators` file, nobody gets `CQ-OVERDUE` lines; use `cq list --overdue` or `cq-top`.
+
+### Locks
+
+[Issue #99](https://github.com/niklasrichardson/session-queue/issues/99). A named lock says which session uses a shared resource, such as the desktop. The commands are in [Commands](COMMANDS.md#locks).
+
+- **Take before use.** Before a session uses the resource, it runs `cq lock take LOCK --as NAME --for TEXT`. Exit 0: go ahead. Exit 1: another name holds it; the line names the holder.
+- **Wait, do not message.** When the lock is held, run `cq lock wait LOCK` in the background, and take the lock when it returns. Do not message the holder about the lock: the holder releases it when done.
+- **Release when done.** `cq lock release LOCK --as NAME`, also when the work fails. A lock left behind blocks every other session until a coordinator breaks it.
+- **The user's hold.** When the user wants the resource, a coordinator takes the `owner` hold for the user with `--owner`, and releases it when the user is done.
+- **The coordinator acts on reports.** A coordinator's watcher prints `CQ-LOCK-ORPHAN` when the holder's watcher has stopped, and `CQ-LOCK-STALE` when a live holder has held the lock for 120 minutes. The coordinator checks with the holder or the user, then breaks the lock with `cq lock break LOCK --as NAME --reason TEXT` only when the holder is gone or agrees. `cq` never breaks a lock itself. A coordinator whose watcher runs with `--to-codex` or `--to-agy` gets none of these lines: use `cq lock list`.
