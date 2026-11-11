@@ -5,16 +5,19 @@
 //! check the message validator directly.
 
 pub mod agy;
+pub mod broker;
 pub mod claim;
 pub mod codex;
 pub mod config;
 pub mod dispatch;
 pub mod done;
 pub mod error;
+pub mod exchange;
 pub mod exitlog;
 pub mod fsutil;
 pub mod idle;
 pub mod inbox;
+pub mod job;
 pub mod list;
 pub mod lock;
 pub mod members;

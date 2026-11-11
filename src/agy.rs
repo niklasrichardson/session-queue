@@ -247,7 +247,7 @@ impl Runner for AgyBin {
 
 /// The first JSON object with a `status` that starts a line of `out`, and
 /// what follows it.
-fn result_json(out: &str) -> Option<serde_json::Map<String, Value>> {
+pub(crate) fn result_json(out: &str) -> Option<serde_json::Map<String, Value>> {
     let mut at = 0;
     for line in out.split_inclusive('\n') {
         if line.trim_start().starts_with('{') {

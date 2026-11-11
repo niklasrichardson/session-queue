@@ -37,15 +37,17 @@ Exit codes:
   4   done or dispatch: the message is finished, but the reply was not sent
   5   refused (name, size, hop or send limit, PAUSE, missing parent, a reply
       to a result or info, watcher running, sleeping another name without
-      being a coordinator)
-  6   done: the message is not claimed by this session; requeue: the
+      being a coordinator, an agy broker job record that needs review or is
+      torn)
+  6  done: the message is not claimed by this session; requeue: the
       message is not in this session's rejected/
   7   watch: the name is asleep; do not re-arm. status: the name is asleep
   8   watch --to-inbox: the session's inbox cannot be reached (session gone)
   9   watch --to-codex: codex queue failed 4 times; the Codex chat is not woken
   10  status: no watcher runs for the name
   11  watch --to-agy: an agy turn failed 4 times in a row, or ran in another
-      conversation; the conversation is not woken
+      conversation; the conversation is not woken. With --agy-broker: a job
+      needs review (see its record), or agy could not start 4 times
   64  bad arguments or bad JSON input
   70  any other error (I/O, CQ_ROOT missing or not initialised)";
 
@@ -154,6 +156,8 @@ struct Cli {
     cmd: Cmd,
 }
 
+// Parsed once per run, so the size of the `watch` variant does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Cmd {
     /// Create the queue layout under CQ_ROOT. Safe to run more than once.
@@ -254,6 +258,24 @@ enum Cmd {
         /// check prompt. It must not contain anything a queue message wrote.
         #[arg(long, value_name = "TEXT", requires = "to_agy")]
         agy_prompt: Option<String>,
+        /// Experimental, Windows only. With --to-agy: the watcher claims and
+        /// finishes each message itself, and each agy turn only reads a
+        /// request file and writes a reply file in the exchange folder. One
+        /// turn per message.
+        #[arg(long, requires = "to_agy")]
+        agy_broker: bool,
+        /// With --agy-broker: a sender whose messages get an agy turn. Repeat
+        /// it for each sender. Other senders' tasks are rejected unread.
+        #[arg(long, value_name = "NAME", requires = "agy_broker")]
+        agy_allow_from: Vec<String>,
+        /// With --agy-broker: the exchange folder. Default:
+        /// CQ_ROOT/agy-exchange/NAME.
+        #[arg(long, value_name = "DIR", requires = "agy_broker")]
+        agy_exchange: Option<PathBuf>,
+        /// With --agy-broker, on Windows: the SID of agy's sandbox, which gets
+        /// Modify access to the exchange folder.
+        #[arg(long, value_name = "SID", requires = "agy_broker")]
+        agy_sandbox_sid: Option<String>,
         /// Send the idle alert this long after a turn end recorded by
         /// `cq turn-end`, when no activity is observed since: no transcript
         /// write after the first 30 s, and no line from this watcher. For
@@ -663,6 +685,41 @@ fn watch_to_agy(
     watch::watch(&root, opts, &mut agy)
 }
 
+/// `cq watch --to-agy --agy-broker`.
+fn watch_agy_broker(
+    opts: &WatchOptions,
+    conversation: &str,
+    bin: Option<OsString>,
+    prompt: Option<String>,
+    broker: BrokerFlags,
+) -> Result<Ended> {
+    let root = Root::open()?;
+    let exchange = broker
+        .exchange
+        .unwrap_or_else(|| cq::broker::default_exchange(&root, &opts.name));
+    let cfg = cq::broker::Config {
+        name: opts.name.clone(),
+        conversation: conversation.to_owned(),
+        allow_from: broker.allow_from,
+        exchange,
+        sandbox_sid: broker.sandbox_sid,
+        bin: bin.unwrap_or_else(|| cq::agy::DEFAULT_BIN.into()),
+        prompt,
+    };
+    let mut sink = cq::broker::AgyBroker::start(root.clone(), cfg)?;
+    if let Err(e) = platform::install_interrupt_handler() {
+        eprintln!("cq watch: a signal may stop the watcher without stopping a running turn ({e})");
+    }
+    watch::watch(&root, opts, &mut sink)
+}
+
+/// The `--agy-broker` options.
+struct BrokerFlags {
+    allow_from: Vec<String>,
+    exchange: Option<PathBuf>,
+    sandbox_sid: Option<String>,
+}
+
 /// Read `config.toml` in the queue root and use it for this process.
 /// Returns the warning for a file with problems; the usable settings are
 /// still used. Without a usable root there is no file; the command reports
@@ -732,6 +789,10 @@ fn run(cmd: Cmd) -> Result<i32> {
             to_agy,
             agy_bin,
             agy_prompt,
+            agy_broker,
+            agy_allow_from,
+            agy_exchange,
+            agy_sandbox_sid,
             idle_after,
             idle_every,
         } => {
@@ -750,6 +811,24 @@ fn run(cmd: Cmd) -> Result<i32> {
             }
             if to_agy.is_none() && (agy_bin.is_some() || agy_prompt.is_some()) {
                 return Err(CqError::usage("--agy-bin and --agy-prompt need --to-agy"));
+            }
+            if (to_agy.is_none() && agy_broker)
+                || (!agy_broker
+                    && (!agy_allow_from.is_empty()
+                        || agy_exchange.is_some()
+                        || agy_sandbox_sid.is_some()))
+            {
+                return Err(CqError::usage(
+                    "--agy-broker needs --to-agy, and --agy-allow-from, --agy-exchange and --agy-sandbox-sid need --agy-broker",
+                ));
+            }
+            // The Unix trust rule reads only owners and mode bits, so an ACL
+            // (macOS extended ACLs, POSIX ACLs) could still let another user
+            // swap a folder of the exchange path.
+            if agy_broker && !cfg!(windows) {
+                return Err(CqError::usage(
+                    "--agy-broker is supported on Windows only: on Unix the exchange folder needs trust checks that read ACLs (macOS extended ACLs, POSIX ACLs), which cq does not have yet",
+                ));
             }
             let mode = match (&to_codex, &to_agy, to_inbox) {
                 (Some(_), _, _) => members::Mode::Codex,
@@ -789,6 +868,15 @@ fn run(cmd: Cmd) -> Result<i32> {
                     codex_queue_db,
                     debug,
                 )?
+            } else if let Some(conversation) = &to_agy
+                && agy_broker
+            {
+                let flags = BrokerFlags {
+                    allow_from: agy_allow_from,
+                    exchange: agy_exchange,
+                    sandbox_sid: agy_sandbox_sid,
+                };
+                watch_agy_broker(&opts, conversation, agy_bin, agy_prompt, flags)?
             } else if let Some(conversation) = &to_agy {
                 watch_to_agy(&opts, conversation, agy_bin, agy_prompt)?
             } else if to_inbox {

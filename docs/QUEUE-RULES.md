@@ -6,7 +6,7 @@ These rules say how to handle a message. How a session gets woken depends on the
 
 - Claude Code: add the Claude Code block from [`CLAUDE-SNIPPETS.md`](agents/CLAUDE-SNIPPETS.md) as well, and follow [Claude Code setup](agents/CLAUDE-CODE.md).
 - Codex: follow [Codex setup](agents/CODEX.md), or [Codex dispatch worker](agents/CODEX-DISPATCH.md) for a fresh run per task.
-- Antigravity CLI: follow [Antigravity CLI setup](agents/ANTIGRAVITY.md).
+- Antigravity CLI: follow [Antigravity CLI setup](agents/ANTIGRAVITY.md). Under a [broker mode](agents/ANTIGRAVITY.md#broker-mode) watcher, the conversation does not claim or finish messages: the watcher does, and the turn writes one reply file.
 - Other agents: see [Other agents](agents/OTHER-AGENTS.md).
 
 The steps that are the same for every agent are in [Setup](SETUP.md).

@@ -278,6 +278,10 @@ fn exit_log_on_max_seconds_and_asleep() {
         )
     );
 
+    // The first watcher's heartbeat stays: without this, `ready` passes at
+    // once and `cq sleep` can win the race with the start, which then
+    // exits 7 with no line.
+    fs::remove_file(env.path("heartbeat/demo-a")).unwrap();
     let mut w = env.watch("demo-a", &["--max-seconds", "30"]);
     ready(&env, "demo-a");
     let pid = w.child.id();
