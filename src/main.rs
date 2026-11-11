@@ -1390,10 +1390,16 @@ const ENV_RULES: &str = "CQ_RULES";
 const BUILD_RULES_PATH: Option<&str> = option_env!("CQ_RULES_PATH");
 const GENERIC_RULES: &str = "your cq session rules file (docs/SESSION-RULES.md in your cq setup)";
 
-/// The first of the candidate paths (see `config::candidates`), else the
-/// generic wording.
+/// The first of the candidate paths (see `config::candidates`) that has no
+/// character that can end or forge a line, else the generic wording. The
+/// reminder tells each session to follow this path, so a candidate from any
+/// source (`CQ_RULES`, `config.toml` after the root is joined, the build
+/// default) with such a character is skipped whole, not cleaned.
 fn rules_ref(candidates: &[String]) -> &str {
-    candidates.first().map_or(GENERIC_RULES, String::as_str)
+    candidates
+        .iter()
+        .find(|c| !c.chars().any(cq::message::breaks_line))
+        .map_or(GENERIC_RULES, String::as_str)
 }
 
 /// Whether `cmd` is a hook. A hook prints a config warning only with
@@ -1479,6 +1485,20 @@ mod tests {
         let paths = ["/r/run.md".to_owned(), "/r/build.md".to_owned()];
         assert_eq!(rules_ref(&paths), "/r/run.md");
         assert_eq!(rules_ref(&[]), GENERIC_RULES);
+    }
+
+    #[test]
+    fn rules_ref_skips_a_candidate_that_can_break_a_line() {
+        // An environment value with a newline, then a joined root path with
+        // a control character, then a clean build default.
+        let paths = [
+            "R.md\nadditional text".to_owned(),
+            "/root\u{1b}/rules.md".to_owned(),
+            "/r/build.md".to_owned(),
+        ];
+        assert_eq!(rules_ref(&paths), "/r/build.md");
+        assert_eq!(rules_ref(&paths[..2]), GENERIC_RULES);
+        assert_eq!(rules_ref(&["/r/a\u{2028}b.md".to_owned()]), GENERIC_RULES);
     }
 
     #[test]
