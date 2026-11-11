@@ -22,6 +22,11 @@
 //! PAUSE                     while it exists, watchers emit nothing
 //! watch-exits.log           one line per watcher exit (see `exitlog`)
 //! watch-exits.log.lock      held while a line is appended or the log renamed
+//! locks/<lock>.lock         while it exists, the lock is held (see `lock`)
+//! locks/<lock>.guard        held while a lock is released or broken
+//! locks.log                 one line per lock take, release, break and alert
+//! locks.log.lock            held while a line is appended or the log renamed
+//! heartbeat/<name>.lock-alerts locks a coordinator's watcher reported
 //! ```
 
 use std::fs;
@@ -46,6 +51,7 @@ const TOP_DIRS: [&str; 6] = ["tmp", "inbox", "done", "rejected", "dlq", "heartbe
 /// still opens.
 const MEMBERS_DIR: &str = "members";
 const SLEEP_DIR: &str = "sleep";
+const LOCKS_DIR: &str = "locks";
 
 #[derive(Debug, Clone)]
 pub struct Root {
@@ -93,7 +99,10 @@ impl Root {
 
     /// Create the layout. Safe to run more than once.
     pub fn init(&self) -> Result<()> {
-        for d in TOP_DIRS.into_iter().chain([MEMBERS_DIR, SLEEP_DIR]) {
+        for d in TOP_DIRS
+            .into_iter()
+            .chain([MEMBERS_DIR, SLEEP_DIR, LOCKS_DIR])
+        {
             let p = self.path.join(d);
             fs::create_dir_all(&p)
                 .map_err(|e| CqError::io(format!("create {}", p.display()), e))?;
@@ -228,6 +237,34 @@ impl Root {
     /// One line per watcher exit, created on demand (see `exitlog`).
     pub fn watch_exits(&self) -> PathBuf {
         self.path.join("watch-exits.log")
+    }
+
+    /// Created by cq init, and on demand by cq lock take.
+    pub fn locks_dir(&self) -> PathBuf {
+        self.path.join(LOCKS_DIR)
+    }
+
+    /// Exists while lock is held; holds the holder (see lock::Hold).
+    pub fn lock_hold(&self, lock: &str) -> PathBuf {
+        self.locks_dir().join(format!("{lock}.lock"))
+    }
+
+    /// Held while lock is released or broken. Never removed.
+    pub fn lock_guard(&self, lock: &str) -> PathBuf {
+        self.locks_dir().join(format!("{lock}.guard"))
+    }
+
+    /// One line per lock take, release, break and alert (see lock).
+    pub fn locks_log(&self) -> PathBuf {
+        self.path.join("locks.log")
+    }
+
+    /// The orphaned and stale locks a coordinator's watcher has reported,
+    /// one key per line, so a restarted watcher does not report them again.
+    pub fn lock_alerts(&self, name: &str) -> PathBuf {
+        self.path
+            .join("heartbeat")
+            .join(format!("{name}.lock-alerts"))
     }
 }
 
