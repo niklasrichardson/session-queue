@@ -495,17 +495,34 @@ fn bar(ratio: f64, width: u16, style: Style, t: &Theme) -> Line<'static> {
 }
 
 /// Which columns fit in `room` cells. Each column is (header, width, priority), one cell
-/// apart; a narrow terminal drops the highest priority numbers first.
+/// apart; a narrow terminal drops the highest priority numbers first. A column that does not
+/// fit leaves its room to narrower columns with higher numbers.
 fn fit_columns(cols: &[(&str, u16, u8)], room: u16) -> Vec<bool> {
+    fit(cols, room, false)
+}
+
+/// As `fit_columns`, but once a column does not fit, no column with a higher number is kept.
+fn fit_columns_strict(cols: &[(&str, u16, u8)], room: u16) -> Vec<bool> {
+    fit(cols, room, true)
+}
+
+fn fit(cols: &[(&str, u16, u8)], room: u16, strict: bool) -> Vec<bool> {
     let mut by_prio: Vec<usize> = (0..cols.len()).collect();
     by_prio.sort_by_key(|&i| cols[i].2);
     let mut keep = vec![false; cols.len()];
     let mut used = 0u16;
+    // The priority of the first column that did not fit.
+    let mut cut: Option<u8> = None;
     for i in by_prio {
+        if strict && cut.is_some_and(|c| c < cols[i].2) {
+            continue;
+        }
         let need = cols[i].1 + u16::from(used > 0);
         if used + need <= room {
             keep[i] = true;
             used += need;
+        } else {
+            cut.get_or_insert(cols[i].2);
         }
     }
     keep
@@ -555,7 +572,8 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
         ("dead", 5, 0),
         ("version", 8, 1),
     ];
-    let keep = fit_columns(&cols, watchers.width.saturating_sub(2));
+    // Strict, so the context never shows while the version is dropped.
+    let keep = fit_columns_strict(&cols, watchers.width.saturating_sub(2));
     let rows = s.watchers.iter().map(|w| {
         let (txt, style) = match w.beat_age {
             _ if w.asleep => ("asleep".into(), t.info),
@@ -1196,7 +1214,23 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap;
+    use super::{fit_columns, fit_columns_strict, wrap};
+
+    /// Only the strict fit stops at the first column that does not fit; columns with the
+    /// same number still fill the room.
+    #[test]
+    fn strict_fit_keeps_the_priority_order() {
+        let cols = [("a", 4, 0), ("b", 4, 0), ("wide", 9, 1), ("narrow", 8, 2)];
+        // 4 + 1 + 4 = 9 cells for the main columns; "wide" needs 10 more, "narrow" 9.
+        assert_eq!(fit_columns(&cols, 18), [true, true, false, true]);
+        assert_eq!(fit_columns_strict(&cols, 18), [true, true, false, false]);
+        assert_eq!(fit_columns_strict(&cols, 19), [true, true, true, false]);
+        assert_eq!(fit_columns_strict(&cols, 28), [true, true, true, true]);
+        // A main column that does not fit leaves room to the other main column only.
+        let cols = [("a", 6, 0), ("b", 9, 0), ("c", 3, 0), ("d", 1, 1)];
+        assert_eq!(fit_columns_strict(&cols, 12), [true, false, true, false]);
+        assert_eq!(fit_columns(&cols, 12), [true, false, true, true]);
+    }
 
     #[test]
     fn wrap_fits_words_splits_long_ones_and_marks_a_cut() {

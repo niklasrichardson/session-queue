@@ -2470,6 +2470,8 @@ mod tests {
             (text.contains("context"), text.contains("version"))
         };
         assert_eq!(shown(96), (false, false));
+        // Room for the context but not the version: the context still does not show.
+        assert_eq!(shown(100), (false, false));
         assert_eq!(shown(101), (false, true));
         assert_eq!(shown(110), (true, true));
     }
