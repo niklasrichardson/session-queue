@@ -15,6 +15,10 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## cq-top context column on Windows, 12 November 2026
+
+cq 1.16.0 / cq-top 0.5.0: the Overview Watchers table and the `--html` dashboard show each watcher's session context ([issue #102](https://github.com/niklasrichardson/session-queue/issues/102)). Checked on Windows 11 with `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (cq-top: 92 tests, 0 failed). CI passed on Windows, macOS and Linux. Not yet checked live in a terminal.
+
 ## Review fixes from issue #83 on Windows, 11 November 2026
 
 cq 1.15.1: findings M1, M2, L2 and L5 of [issue #83](https://github.com/niklasrichardson/session-queue/issues/83). Checked on Windows 11 with `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (449 tests, 0 failed, 1 ignored). Nothing was run live.
