@@ -2316,6 +2316,184 @@ mod tests {
         }
     }
 
+    /// The sample with one watcher for each way a watcher finds its session, for the context
+    /// column: `w1` (Claude Code, its process seen, 42k), `napper` (Claude Code, asleep, by
+    /// the folder in its record, 300k), `demo-codex` (a Codex thread, 180k), `demo-agy` (an
+    /// Antigravity conversation, which has no context figure) and `lonely` (no session).
+    fn context_sample() -> Snapshot {
+        use sessions::Agent;
+        let mut snap = sample();
+        let watcher = |name: &str, mode, agent| Watcher {
+            name: name.into(),
+            beat_age: Some(10),
+            asleep: false,
+            folder: None,
+            mode: Some(mode),
+            agent: Some(agent),
+            pid: "7".into(),
+            version: Some(cq::record::VERSION.into()),
+            session: String::new(),
+            queued: 0,
+            claimed: 0,
+            done: 0,
+            rejected: 0,
+            dead: 0,
+        };
+        snap.watchers.extend([
+            watcher("demo-codex", Mode::Codex, Agent::Codex),
+            watcher("demo-agy", Mode::Agy, Agent::Gemini),
+            watcher("lonely", Mode::Inbox, Agent::Claude),
+        ]);
+        let now = snap.now;
+        let row = |agent, name: &str, cq_name: Option<&str>, folder: &str, context| sessions::Row {
+            agent,
+            name: name.into(),
+            cq_name: cq_name.map(str::to_string),
+            folder_key: folder.into(),
+            context,
+            active: now - 4000,
+            ..Default::default()
+        };
+        snap.sessions.rows[1].context = Some(42_000);
+        snap.sessions.rows.extend([
+            row(
+                Agent::Claude,
+                "Nap session",
+                None,
+                "d--code-nap",
+                Some(300_000),
+            ),
+            row(
+                Agent::Codex,
+                "Codex thread",
+                Some("demo-codex"),
+                "c--work-demo",
+                Some(180_000),
+            ),
+            row(
+                Agent::GeminiApp,
+                "Agy chat",
+                Some("demo-agy"),
+                "c--work-demo",
+                None,
+            ),
+        ]);
+        snap
+    }
+
+    /// A watcher's session is the row the Sessions screen gives that watcher.
+    #[test]
+    fn watchers_find_their_sessions_for_the_context_column() {
+        let snap = context_sample();
+        let found = |name: &str| {
+            let w = snap.watchers.iter().find(|w| w.name == name).unwrap();
+            draw::watcher_session(&snap, w).map(|r| r.name.clone())
+        };
+        assert_eq!(found("w1").as_deref(), Some("w1"));
+        assert_eq!(found("napper").as_deref(), Some("Nap session"));
+        assert_eq!(found("demo-codex").as_deref(), Some("Codex thread"));
+        assert_eq!(found("demo-agy").as_deref(), Some("Agy chat"));
+        assert_eq!(found("lonely"), None);
+    }
+
+    /// The Overview's context column has the Sessions screen's figures and colours, only in
+    /// that cell, and a dim dash without a figure.
+    #[test]
+    fn overview_shows_each_watchers_context_coloured_like_the_sessions_screen() {
+        use ratatui::style::{Color, Style};
+        let snap = context_sample();
+        let find = |line: &[&str], text: &str| {
+            let n = text.chars().count();
+            (0..=line.len() - n).find(|&x| line[x..x + n].concat() == text)
+        };
+        for theme in &THEMES {
+            let mut term = Terminal::new(TestBackend::new(140, 42)).unwrap();
+            term.draw(|f| draw(f, Path::new("/q"), &snap, false, Screen::Overview, theme))
+                .unwrap();
+            let buf = term.backend().buffer();
+            let lines: Vec<Vec<&str>> = (0..42)
+                .map(|y| (0..140).map(|x| buf[(x, y)].symbol()).collect())
+                .collect();
+            let (head, col) = (0..42)
+                .find_map(|y| find(&lines[y], "context").map(|x| (y, x)))
+                .unwrap();
+            // A watcher's context text and style, and the style of the queued cell beside it.
+            let cell = |name: &str| -> (String, Style, Style) {
+                let y = (head + 1..42)
+                    .find(|&y| find(&lines[y], name) == Some(1))
+                    .unwrap();
+                let at = |x: usize| buf[(x as u16, y as u16)].style();
+                let text = lines[y][col..col + 7].concat().trim().to_string();
+                (text, at(col), at(col + 8))
+            };
+            let (small, small_style, plain) = cell("w1");
+            let (large, large_style, _) = cell("demo-codex");
+            let (full, full_style, _) = cell("napper");
+            assert_eq!(
+                (small.as_str(), large.as_str(), full.as_str()),
+                ("42k", "180k", "300k"),
+                "{}",
+                theme.name
+            );
+            assert_eq!(small_style, plain, "{}", theme.name);
+            assert!(
+                large_style != plain && full_style != plain && large_style != full_style,
+                "{}",
+                theme.name
+            );
+            for name in ["demo-agy", "lonely"] {
+                let (text, style, _) = cell(name);
+                assert_eq!(text, "-", "{name} in {}", theme.name);
+                assert_ne!(style, plain, "{name} in {}", theme.name);
+                if theme.name == "classic" {
+                    assert_eq!(style.fg, Some(Color::DarkGray));
+                }
+            }
+            if theme.name == "classic" {
+                assert_eq!(
+                    (large_style.fg, full_style.fg),
+                    (Some(Color::Indexed(208)), Some(Color::Red))
+                );
+            }
+        }
+    }
+
+    /// The context column goes first in a narrow terminal, before the version and before the
+    /// main columns.
+    #[test]
+    fn a_narrow_overview_drops_the_context_column_first() {
+        let snap = sample();
+        // The main columns take 90 cells, the version 9 more and the context 8 more.
+        let shown = |width| {
+            let text = screen_lines(&snap, Screen::Overview, &THEMES[0], width, 30).join("\n");
+            assert!(text.contains("session") && text.contains("dead"), "{text}");
+            (text.contains("context"), text.contains("version"))
+        };
+        assert_eq!(shown(96), (false, false));
+        assert_eq!(shown(101), (false, true));
+        assert_eq!(shown(110), (true, true));
+    }
+
+    #[test]
+    fn dashboard_watchers_table_shows_the_context() {
+        let snap = context_sample();
+        let page = html::dashboard(Path::new("/queue"), &snap);
+        let start = page.find("<h2>Watchers</h2>").unwrap();
+        let end = start + page[start..].find("</section>").unwrap();
+        let watchers = &page[start..end];
+        assert!(watchers.contains("<th>Session</th><th class=\"n\">Context</th>"));
+        for want in [
+            "<td class=\"n\">42k</td>",
+            "<td class=\"n\"><span class=\"serious\" title=\"over 150k tokens\">180k</span></td>",
+            "<td class=\"n\"><span class=\"critical\" title=\"over 250k tokens\">300k</span></td>",
+        ] {
+            assert!(watchers.contains(want), "{want}");
+        }
+        // demo-agy and lonely have no figure.
+        let dash = "<td class=\"n\"><span class=\"dim\">-</span></td>";
+        assert_eq!(watchers.matches(dash).count(), 2);
+    }
+
     #[test]
     fn every_theme_draws_the_cpu_and_memory_boxes() {
         let text = |snap: &Snapshot, theme, w, h| {

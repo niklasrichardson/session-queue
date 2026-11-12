@@ -539,13 +539,15 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
     header(f, head, root, s, bodies, Screen::Overview, t);
 
     let name_w = name_width("watcher", s.watchers.iter().map(|w| w.name.as_str()));
-    // Columns: header, width, priority. The version goes first in a narrow terminal.
-    let cols: [(&str, u16, u8); 11] = [
+    // Columns: header, width, priority. In a narrow terminal the context goes first, then
+    // the version.
+    let cols: [(&str, u16, u8); 12] = [
         ("watcher", name_w, 0),
         ("heartbeat", 14, 0),
         ("mode", 7, 0),
         ("pid", 8, 0),
         ("session", 10, 0),
+        ("context", 7, 2),
         ("queued", 7, 0),
         ("claimed", 8, 0),
         ("done", 6, 0),
@@ -579,6 +581,7 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 mode,
                 Cell::from(w.pid.clone()),
                 Cell::from(w.session.clone()),
+                context_cell(watcher_session(s, w).and_then(|r| r.context), t),
                 Cell::from(w.queued.to_string()),
                 Cell::from(w.claimed.to_string()),
                 Cell::from(w.done.to_string()),
@@ -764,6 +767,30 @@ pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a W
                     && w.folder.as_deref() == Some(row.folder_key.as_str())
             })
         })
+}
+
+/// The session a watcher runs beside: the row `session_watcher` gives this watcher, so the
+/// Overview and the Sessions screen agree. A row whose process runs the watcher comes before
+/// one that only remembers it. `None` when no row has it.
+pub fn watcher_session<'a>(s: &'a Snapshot, w: &Watcher) -> Option<&'a sessions::Row> {
+    let rows = || s.sessions.rows.iter();
+    rows()
+        .find(|r| r.cq_name.as_deref() == Some(w.name.as_str()))
+        .or_else(|| rows().find(|r| session_watcher(s, r).is_some_and(|x| x.name == w.name)))
+}
+
+/// A context figure. Only this cell is coloured when the context is large; a dim dash
+/// without a figure.
+fn context_cell(tokens: Option<u64>, t: &Theme) -> Cell<'static> {
+    use sessions::Context;
+    match tokens {
+        Some(n) => Cell::from(sessions::count(n)).style(match sessions::context(n) {
+            Context::Normal => t.text,
+            Context::Warn => t.hot,
+            Context::Bad => t.bad,
+        }),
+        None => Cell::from("-").style(t.dim),
+    }
 }
 
 /// The state shown for a session, and whether it is a warning (idle with cq messages).
@@ -970,7 +997,7 @@ fn machine_box(
 /// Code session, Codex thread and Antigravity conversation. Only counts, times, model
 /// names and titles are shown, never message text.
 fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
-    use sessions::{Context, State, bytes, count, usd};
+    use sessions::{State, bytes, count, usd};
     let [head, strip, table] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(MACHINE_ROWS),
@@ -1044,15 +1071,7 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 } else {
                     Cell::from(row.model.clone())
                 },
-                // Only the context cell is coloured when the context is large.
-                match row.context {
-                    Some(n) => Cell::from(count(n)).style(match sessions::context(n) {
-                        Context::Normal => t.text,
-                        Context::Warn => t.hot,
-                        Context::Bad => t.bad,
-                    }),
-                    None => dash(),
-                },
+                context_cell(row.context, t),
                 opt(row.tokens_today.map(count)),
                 if claude {
                     Cell::from(usd(row.cost_today))
