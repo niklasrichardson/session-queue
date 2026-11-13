@@ -95,7 +95,8 @@ impl Root {
     }
 
     /// A root at `path`, for session mode's inputs (`src/session.rs`),
-    /// which choose the path themselves.
+    /// which choose the path themselves. Session mode is Windows only.
+    #[cfg(windows)]
     pub(crate) fn pinned(path: PathBuf) -> Self {
         Self { path }
     }
