@@ -78,6 +78,16 @@ pub struct Record {
     pub version: Option<String>,
     /// `None` for a watcher that does not post to an inbox.
     pub target: Option<Target>,
+    /// `cq watch --to-agy-session`: the conversation it wakes and the
+    /// agentapi binary (a path only; never the address or the token).
+    pub session: Option<SessionTarget>,
+}
+
+/// What a `--to-agy-session` watcher wakes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTarget {
+    pub conversation: String,
+    pub agentapi: String,
 }
 
 impl Record {
@@ -87,6 +97,7 @@ impl Record {
             pid: std::process::id(),
             version: Some(VERSION.to_owned()),
             target,
+            session: None,
         }
     }
 
@@ -107,6 +118,14 @@ impl Record {
                 t.socket, t.token_sha256
             ));
         }
+        if let Some(t) = self.session.as_ref().filter(|t| {
+            !t.conversation.contains(['\n', '\r']) && !t.agentapi.contains(['\n', '\r'])
+        }) {
+            s.push_str(&format!(
+                "conversation={}\nagentapi={}\n",
+                t.conversation, t.agentapi
+            ));
+        }
         s
     }
 
@@ -116,6 +135,8 @@ impl Record {
         let mut version = None;
         let mut socket = None;
         let mut hash = None;
+        let mut conversation = None;
+        let mut agentapi = None;
         for line in text.lines() {
             let Some((key, value)) = line.trim_end_matches('\r').split_once('=') else {
                 continue;
@@ -127,6 +148,8 @@ impl Record {
                 }
                 "socket" => socket = Some(value.to_owned()),
                 "token-sha256" => hash = Some(value.trim().to_owned()),
+                "conversation" => conversation = Some(value.trim().to_owned()),
+                "agentapi" => agentapi = Some(value.to_owned()),
                 _ => {}
             }
         }
@@ -137,10 +160,18 @@ impl Record {
             }),
             _ => None,
         };
+        let session = match (conversation, agentapi) {
+            (Some(conversation), Some(agentapi)) => Some(SessionTarget {
+                conversation,
+                agentapi,
+            }),
+            _ => None,
+        };
         Some(Self {
             pid: pid?,
             version,
             target,
+            session,
         })
     }
 
@@ -221,6 +252,7 @@ mod tests {
             pid: 4242,
             version: Some(VERSION.to_owned()),
             target: Some(target(r"\\.\pipe\inbox-1", "secret-token-123")),
+            session: None,
         };
         let text = rec.text();
         assert!(!text.contains("secret-token-123"), "{text}");
@@ -228,6 +260,22 @@ mod tests {
             "token-sha256={}\n",
             token_hash(b"secret-token-123")
         )));
+        assert_eq!(Record::parse(&text), Some(rec));
+    }
+
+    #[test]
+    fn a_session_record_round_trips() {
+        let rec = Record {
+            pid: 4242,
+            version: Some(VERSION.to_owned()),
+            target: None,
+            session: Some(SessionTarget {
+                conversation: "conv-1".into(),
+                agentapi: r"C:\x\language_server.exe".into(),
+            }),
+        };
+        let text = rec.text();
+        assert!(text.contains("conversation=conv-1\n"), "{text}");
         assert_eq!(Record::parse(&text), Some(rec));
     }
 
@@ -267,6 +315,7 @@ mod tests {
             pid: 1,
             version: Some(v.to_owned()),
             target: t,
+            session: None,
         };
         let good = rec(Some(here.clone()), VERSION);
         assert_eq!(restart_reason(Some(&good), Some(&here)), None);

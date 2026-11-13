@@ -4,6 +4,8 @@ This page holds only what differs for the Antigravity CLI (`agy`). Before this p
 
 Experimental. `cq watch --as NAME --to-agy CONVERSATION_ID` wakes an Antigravity CLI conversation. On 6 Nov 2026, the watcher woke a real `agy` conversation on Windows 11, and the turn claimed and finished a message ([Test status](../TESTING.md#antigravity-cli-live-use-on-windows-6-november-2026)). The `agy` command that it runs was also tested by hand, and the watcher has automated tests with a fake `agy` ([Test status](../TESTING.md#antigravity-cli-wake-on-windows-6-november-2026)). A long run is not tested. The Antigravity desktop app was not tested with `cq`. Options, output and exit codes are in [Commands](../COMMANDS.md#wake-an-antigravity-cli-conversation).
 
+**Which mode.** Print mode without broker (the quick start below) is for the sandbox off, or for macOS and Linux only: on Windows a sandboxed turn cannot write the queue root. On Windows with the sandbox on, use [broker mode](#broker-mode) (a watcher outside the conversation) or [session mode](#session-mode) (a watcher that the open session starts itself, CLI or App).
+
 ## Quick start
 
 1. **Prerequisites.** Finish the shared install steps in [Setup](../SETUP.md#install), with one absolute `CQ_ROOT` for every session. Install the Antigravity CLI (`agy`) on the same machine as the queue root. The watcher runs `agy` from `PATH` unless you pass `--agy-bin PATH`. Note the ID of the conversation to wake. How to read that ID in `agy` is not covered here.
@@ -54,7 +56,7 @@ cq watch --as NAME --to-agy CONVERSATION_ID --agy-broker --agy-allow-from LEAD -
 - **Exchange folder.** `--agy-exchange DIR`, an absolute path. Default: `CQ_ROOT/agy-exchange/NAME`. It must not be or contain the queue root, and inside the queue root it must be under `agy-exchange/`. The watcher creates it with a Low label and a protected DACL: you and SYSTEM get Full control, the sandbox SID gets Modify. An existing folder must have exactly that access, or the watcher exits 64; its owner may be you or, in an elevated watcher, BUILTIN\Administrators. On Windows the watcher refuses a junction anywhere in the path. At start the watcher resolves the path and the queue root (symlinks on Unix, such as `/var` on macOS; 8.3 names, case and `subst` drives on Windows), applies the rules above to the result, and gives agy only the resolved path. If the job folder path leads elsewhere before a turn, the job is held.
 - **Unix (not supported yet).** The Unix exchange code keeps this rule, for a later release: every folder from `/` down to the job folder must be owned by root or you, and not writable by group or others; a sticky folder such as `/tmp` may be, when the folder in it is yours or root's. Otherwise another user could swap a folder of the path before agy opens the request. The rule reads only owners and mode bits, so an ACL that lets another user add or delete entries in a folder of the path is not caught; that is why broker mode is refused on Unix. Windows does not need the rule, because the watcher's open handles stop any folder of the path being renamed.
 - **Sandbox SID.** `--agy-sandbox-sid` is required on Windows. cq does not derive it. Whether it stays the same across `agy` versions is not known.
-- **Files.** The job folder `JOBDIR/ID` holds `request.json` ([schema](../../schema/agy-request.v1.json)). The turn writes `reply.json` ([schema](../../schema/agy-reply.v1.json)) as UTF-8, with its shell or its file tool, with the request's `id` and `nonce`, and writes no other file in that folder. The watcher reads it only after every process of the turn has stopped.
+- **Files.** The job folder `JOBDIR/ID` holds `request.json` ([schema](../../schema/agy-request.v2.json); cq 1.15 and 1.16 wrote [/1](../../schema/agy-request.v1.json)). The turn writes `reply.json` ([schema](../../schema/agy-reply.v1.json)) as UTF-8, with its shell or its file tool, with the request's `id` and `nonce`, and writes no other file in that folder. `request.json` gives the exact shape of each offered outcome in `reply_format`. The watcher reads it only after every process of the turn has stopped.
 - **Shell.** When agy's sandboxed shell starts, it adds an entry to the job folder and to each folder above it, so that the sandbox SID can traverse them. In the live test it added nothing to the exchange and job folders, where the sandbox SID already has Modify. It opens each folder without delete sharing, so the watcher's held handles have no delete access. They still deny delete sharing, so no folder of the path can be renamed during a turn. The entry stays on the folders above the exchange folder, as it does for any `--add-dir` path. An existing exchange folder with that entry (traverse and synchronize, not inherited, for the sandbox SID) is still accepted.
 - **Outcome.** A valid reply or reject finishes a task with that text. A turn that succeeded without a valid reply gets a `failed` reply that says the task may have partly run. A failed turn without a reply gets a `failed` reply with agy's status. Info and results are finished without a reply.
 - **Job records.** `CQ_ROOT/dispatch/NAME/ID/` holds `state.json`, `completion.json`, `agy.out` and `agy.err`. Records stay after the job.
@@ -71,9 +73,114 @@ The watcher holds a job (phase `needs-review`, exit 11) when it cannot be sure w
 
 Live test, 11 Nov 2026, Windows 11, real `agy`, 2 turns: the turn could use the exchange folder through the sandbox SID, and `--add-dir` gave the turn the job folder. In both turns agy's shell did not start (`exebox: creating sandbox: CreateProcessSecurityEnvironment: The process cannot access the file because it is being used by another process`), and agy wrote `reply.json` with its file tool. The cause was the delete access of the watcher's handles; cq 1.15.0 removes it ([Shell](#broker-mode)). After the fix, the shell started in a print turn on a job folder that cq's exchange code held open as the watcher does. Then a full `cq watch --agy-broker` turn ran a task that used the shell: the shell started and wrote `reply.json`, and the watcher finished the message ([test record](../TESTING.md)).
 
+## Session mode
+
+Experimental, cq 1.17.0, Windows only (exit 64 elsewhere). The open Antigravity session (CLI or App) starts the watcher itself, once, as a background command that bypasses the sandbox. For each message the watcher wakes that same session with `agentapi send-message`, through the exchange folder of [broker mode](#broker-mode). A wake from inside the session works; the agentapi call needs the token that Antigravity gives only to processes that it starts. The full watcher is not yet tested live (see [open gates](#open-gates)).
+
+```text
+C:\<cq folder>\cq.exe watch --as NAME --to-agy-session
+```
+
+### Setup
+
+1. **Build.** Build `cq` with `CQ_DEFAULT_ROOT` set to the queue root. Session mode uses only that root and exits 64 in a build without it. It ignores `CQ_ROOT` and every other setting from the environment.
+2. **Install.** Put `cq.exe` in a folder whose path has no spaces, for example `C:\<cq folder>\cq.exe`. No sandbox may write it: no Low label and no write grant to a sandbox principal on the file or any folder above it. **No agent workspace (Antigravity, Codex or Claude) may contain the queue root or the `cq.exe` folder.** The watcher checks the ACLs at start (exit 64), but it cannot check two things, so they are setup rules:
+   - **Workspaces.** The agent's file tool runs outside the OS sandbox, so the ACL checks do not bind it. In a live test the CLI's file tool wrote into a `cq.exe` folder inside its workspace with no prompt, although the folder's ACL refused the sandboxed shell. It also wrote files in the queue root, outside its workspace, with no prompt; the likely cause is `"allowNonWorkspaceAccess": true` in the CLI's `settings.json` (not yet confirmed by a re-test). So:
+     - set `allowNonWorkspaceAccess` to `false` in any CLI that hosts a session-mode watcher;
+     - keep the queue root and `cq.exe` outside that session's workspace, and outside every folder listed in its trusted workspaces.
+
+     cq does not read Antigravity's settings and cannot tell which folders are a workspace.
+   - **Named sandbox groups.** Some sandboxes run as an ordinary local group (for example Codex's sandbox users group) that had Modify on a repo folder. Such a group looks like any other group, so cq does not refuse it. Give no such group write access to `cq.exe`, the queue root or any folder above them.
+3. **Policy.** Add a table for NAME to `config.toml` in the queue root ([table below](#the-agy-session-table)). The queue root, `config.toml` and every folder above them must pass the same checks, with no junction or symbolic link.
+4. **Rule.** In Antigravity, save a `command(...)` rule with the exact line, with the fixed absolute path to `cq.exe`, in the scope "Shared with Antigravity". It carries the sandbox bypass with no prompt, in every new conversation. Wildcard and prefix rules do not match on Windows.
+5. **Instruction file.** Put this in the NAME section of `GEMINI.md` or `AGENTS.md`, with the real path:
+
+   > Start the queue watcher once, as a background command, with `BypassSandbox: true`, using exactly this line and nothing else: `C:\<cq folder>\cq.exe watch --as NAME --to-agy-session`. Never add arguments, variables or other commands to it. Run every other command sandboxed.
+
+   Add the "Antigravity session mode" rules from [SESSION-RULES.example.md](../SESSION-RULES.example.md#antigravity-session-mode).
+
+### The `agy-session` table
+
+```toml
+[agy-session.NAME]
+allow_from = ["lead"]
+sandbox_sids = ["S-1-15-3-..."]
+reply_minutes = 60
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `conversation` | no | A fallback conversation ID. Each wake goes to `ANTIGRAVITY_CONVERSATION_ID`, which Antigravity sets in the session's shell. If both are set and differ: exit 64. If the variable is missing, this value is used; if both are missing: exit 64. |
+| `allow_from` | yes | The senders whose messages wake the session. A task from any other sender is rejected unread; other types are finished unread. |
+| `sandbox_sids` | yes | Exactly one SID in this version: the sandbox SID that gets Modify on the exchange folder. The root checks also refuse a write grant to it. CLI and App may differ. |
+| `ack_minutes` | no, 15 | No `started` this long after the first wake: exit 8. |
+| `reply_minutes` | no, 60 | No reply this long after `started`: one RESUME wake. |
+| `resume_minutes` | no, 10 | No reply this long after the RESUME wake: the job needs review, exit 11. |
+
+The table is strict: an unknown key or a bad value is exit 64. Minutes are 1 to 1440.
+
+### What the watcher checks at start
+
+All before any queue write; each failure is exit 64.
+
+- The root is the build's `CQ_DEFAULT_ROOT`. The root, `config.toml` and `cq.exe`: no junction or link anywhere in the path, no Low label, and no write grant, direct or inheritable, on the object or any folder above it, to any app-container or capability SID (`S-1-15-2-...`, `S-1-15-3-...`, listed in `sandbox_sids` or not), the Low label SID, RESTRICTED (`S-1-5-12`), WRITE RESTRICTED (`S-1-5-33`) or a `sandbox_sids` entry. The owner, users, Authenticated Users, administrators and SYSTEM may write: that is ordinary user trust. The root folders stay held open for the watcher's life.
+- **If the root check fails.** In a live test the sandboxed shell could create files in the queue root and its folders, because the root's DACL had an inheritable Modify entry for a capability SID (`S-1-15-3-1024-...`). The start check refuses such a root. Remove the entry (and any like it on the folders above) before you use session mode; cq never changes the root's ACL itself.
+- The conversation: `ANTIGRAVITY_CONVERSATION_ID`, which Antigravity sets and the session cannot change (each run-command call is a fresh process with no environment parameter). With `conversation` in the table as well, the two must match. Without the variable, the table's value is used. Neither, or a value that is not one line: exit 64.
+- The launching session: the nearest `agy.exe` (CLI) or `language_server.exe` (App) above the watcher in the process tree, where each parent started before its child.
+- The agentapi binary: that process's own image, run as `IMAGE agentapi send-message ID TEXT`. `PATH` is not searched. If `ANTIGRAVITY_AGENTAPI_EXE` names another file: exit 64. The image and every folder above it get the same checks as `cq.exe`. The watcher holds the image and its folders open for its life, so while it runs, the image cannot be changed, renamed, replaced or deleted, and its folders cannot be renamed. Before each wake it checks that the path still opens the same file (volume serial and file index); if not, it sends nothing and stops with exit 8, and the next start checks the program again.
+- The address: `ANTIGRAVITY_LS_ADDRESS` must be a loopback host and port, and every listening socket a connect could reach must belong to the launching process. Checked again before each wake.
+- The agentapi child gets only `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, `SystemRoot`, `TEMP` and `TMP`. cq never prints, logs or records the token or the address.
+
+### Per message
+
+1. The watcher claims the message, writes `request.json` in `CQ_ROOT/agy-exchange/NAME/ID/`, and records the wake in `CQ_ROOT/dispatch/NAME/ID/state.json` (schema `cq-agy-job/2`, `kind: "session"`) before it sends it.
+2. It sends the NEW-WORK wake. The text holds only NAME and paths, never message text: "cq: queue job for 'NAME'. ... First create .../started as a new file; if it already exists, stop and end the turn. Then read .../request.json ... Write .../reply.json in one write, exactly in the shape that request.json's "reply_format" gives."
+3. The session creates `started` as a new file. If it exists, the job was already started, and the session ends the turn. No `started`: the same wake again at 2 and 6 minutes; after `ack_minutes`, exit 8 and the job stays `waking`.
+4. The session writes `reply.json` in one write, in the shape that `request.json` gives in `reply_format`: fixed text from cq with the exact JSON of each offered outcome, already filled with this job's `id` and `nonce`. One JSON object, UTF-8, at most 64 KiB, no other fields ([schema](../../schema/agy-reply.v1.json)):
+   - task: `{"id": ID, "nonce": NONCE, "outcome": "reply", "status": "ok", "text": "..."}` (status `ok` or `failed`), or `{"id": ID, "nonce": NONCE, "outcome": "reject", "text": "why"}`;
+   - info or result: `{"id": ID, "nonce": NONCE, "outcome": "read"}`.
+5. The watcher reads the folder every second. A valid reply finishes the message. A reply that is not valid and stays the same for 60 seconds gives the sender a `failed` reply. No reply after `reply_minutes`: one RESUME wake ("... was already started. Do not start it again. ..."); none after `resume_minutes` more: the job needs review, exit 11.
+
+A restart reads the job record and the folder before any wake: it never sends NEW-WORK once `started` exists, and never sends the RESUME wake twice. `woken` with `started` gone: needs review. A `waking` or `woken` job whose message is no longer claimed (for example, finished with `cq done` or rejected while no watcher ran): needs review, exit 11, and no wake. A `waking` or `woken` job whose `request.json` is not `cq-agy-request/2` (so it has no `reply_format`): needs review, exit 11, no wake, and the file is not written again. Held jobs are handled as in [broker mode](#held-jobs).
+
+A restart keeps the deadlines in the job record; it does not start them again. A deadline that ran out while no watcher ran acts at the first tick:
+
+- `waking` past `ack_minutes`: exit 8 again, no NEW-WORK, and the job stays `waking`.
+- `woken` past `reply_minutes` with no RESUME sent: the RESUME goes out at once.
+- `woken` past the end of the RESUME window: needs review, exit 11.
+
+Only sleep or `PAUSE` starts a deadline that ran out again (see below). So the stop line for an expired `waking` job ends "Do not restart; tell the user." To give that job a new round of wakes, the user puts NAME to sleep (or creates `PAUSE`), has the session start the watcher, then runs `cq wake NAME` (or removes `PAUSE`).
+
+### While it runs
+
+- **Session end.** The watcher stops with exit 8 when the launching process exits, after 3 failed TCP connects to the address in a row (every 30 s), or when agentapi fails 4 times in a row (1, 2 and 4 s apart). It checks the process and the address on every tick, also with no job, while asleep and under `PAUSE`, so a watcher whose session has gone frees NAME. In the App one language server serves many conversations, so closing one conversation trips none of these; the next job then ends with exit 8 after `ack_minutes`.
+- **Sleep.** While NAME is asleep the watcher keeps running, claims nothing and wakes nothing. Deadlines that ran out during the sleep start again on `cq wake`, also when the watcher started while NAME was asleep.
+- **PAUSE.** While `PAUSE` exists the watcher claims nothing, finishes nothing and sends no wake: no NEW-WORK retry and no RESUME. It still reads `started` and `reply.json`. Deadlines work as for sleep: one that ran out under `PAUSE` starts again when `PAUSE` is removed, and a due RESUME then goes out at once. Sleep and `PAUSE` are checked again before every agentapi attempt, also between the retries of a failed call. If either appears, the watcher stops trying, and the wake is not counted as sent: a NEW-WORK wake or the RESUME goes out once the name is free. A failed attempt may still have reached the session, so a deferred RESUME can arrive twice; its text says not to start the job again.
+- **Updating Antigravity.** Stop the session-mode watcher before you update Antigravity. The watcher holds the agentapi image (`agy.exe` or `language_server.exe`) open, so an update cannot replace or rename that file while the watcher runs. End the watcher's background command (sleep alone does not stop a session-mode watcher, so it does not free the file), update, then start the watcher again from the session.
+- **Second start.** Exit 5. The stop line says "already running for this conversation; nothing to do" when the holder is a session-mode watcher for the same conversation, else "NAME is held by another watcher; ask the user". Only a person decides on `--takeover`.
+- **Stop line.** When the watcher ends, its last stdout line is `cq watch (NAME) stopped: REASON. WHAT TO DO`. "Start the watcher again with the same line" follows exit 8 when the session was gone. "Do not restart; tell the user" follows exit 5, 11 and 64, and the exit 8 of a `waking` job past `ack_minutes`, after the steps for a new round. Progress lines go to stderr.
+- **A wake during a turn.** A wake does not interrupt a running turn and does not cancel a running command. It arrives inside that turn as a system message at the next tool-response boundary (live test, CLI and App). So the session may get the NEW-WORK text in the middle of other work. The `started` rule still applies: create it as a new file, and stop if it exists.
+- **Cross-surface sends fail silently.** A wake to a conversation of the other surface (CLI to App, or App to CLI) is not delivered, and agentapi does not say so. The ack timeout then gives exit 8.
+- **Coordinators.** As in broker mode, a session-mode name can only reply: it cannot send queue messages, and gets no `CQ-WAKE` or `CQ-OVERDUE` lines.
+
+### Open gates
+
+Live tests on 13 November 2026, CLI and App, with `agentapi` and the sandbox but not yet with this watcher:
+
+| Gate | Result |
+| --- | --- |
+| S1 environment | Pass. Each run-command call is a fresh PowerShell process: environment, working folder, functions and aliases never carry over, and the tool has no environment or working-folder parameter. |
+| S1 writes | **Fail on the test machine**: the root's DACL gave a capability SID inheritable Modify, so the sandboxed shell could write the queue. The start check now refuses that root. The CLI's file tool also wrote in the queue root with no prompt, likely because of `allowNonWorkspaceAccess` (see [Setup](#setup)); cq cannot check that. To pass: fix the ACL and the setting, then confirm that nothing the session runs, shell or file tool, can write the root, `config.toml` or `cq.exe`. |
+| A5 | Pass: the `cq.exe` path checks hold for the installed path. |
+| A7 | Antigravity sets `ANTIGRAVITY_CONVERSATION_ID` to the conversation ID; cq uses it, with the table's `conversation` as an optional fallback and check. |
+| A8 | A wake during a turn is not an interrupt (see [While it runs](#while-it-runs)). v1 is not blocked. |
+| A12 | `send-message` delivers with exactly `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, `SystemRoot`, `TEMP` and `TMP`. Without the conversation variable the message shows as from the system. |
+
+Still open: S1 writes on a fixed root, an end-to-end run of this watcher, and the agentapi image checks and hold on a real Antigravity install. The token is not protected from the session: the sandboxed shell already sees it and the address.
+
 ## Open conversation
 
-In one live test, a turn ran while the same conversation was also open in an interactive `agy` window. The turn claimed and finished the message, but the open window did not show the turn. About 5 minutes later, the interactive session exited. The cause is not known ([Test status](../TESTING.md#antigravity-cli-live-use-on-windows-6-november-2026)). No way is known to send a prompt into an `agy` session that is already open from outside it ([What else is known](#what-else-is-known)).
+This section is about print mode only. In one live test, a turn ran while the same conversation was also open in an interactive `agy` window. The turn claimed and finished the message, but the open window did not show the turn. About 5 minutes later, the interactive session exited. The cause is not known ([Test status](../TESTING.md#antigravity-cli-live-use-on-windows-6-november-2026)). No way is known to send a prompt into an `agy` session that is already open from outside it ([What else is known](#what-else-is-known)).
 
 Until this is understood, do not keep the conversation open in an interactive `agy` while its watcher runs. To work in the conversation yourself:
 

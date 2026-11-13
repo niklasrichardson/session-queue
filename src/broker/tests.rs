@@ -133,7 +133,7 @@ impl Log {
     }
 }
 
-type Broker = AgyBroker<Fake, FakeClock>;
+type Broker = AgyBroker<PrintTurn<Fake>, FakeClock>;
 
 struct Env {
     _dir: tempfile::TempDir,
@@ -211,7 +211,7 @@ impl Env {
     }
 
     fn state(&self, id: &str) -> JobState {
-        read_record(&self.record(id)).unwrap()
+        read_record(&self.record(id), SCHEMA).unwrap()
     }
 
     fn inbox(&self, name: &str) -> Vec<Message> {
@@ -412,6 +412,50 @@ fn check_reply_takes_only_a_strict_reply_for_this_job() {
     assert!(check_reply(good, info, "i", "n").is_err());
 }
 
+/// The `{...}` shapes in a `reply_format` text.
+fn shapes(text: &str) -> Vec<&str> {
+    text.match_indices('{')
+        .map(|(i, _)| &text[i..=i + text[i..].find('}').expect("closed")])
+        .collect()
+}
+
+#[test]
+fn reply_format_gives_shapes_that_check_reply_takes() {
+    let (id, nonce) = (
+        "2026-11-13T12-00-00Z-a\"b",
+        "0123456789abcdef0123456789abcdef",
+    );
+    let task = reply_format(MsgType::Task, id, nonce);
+    let found = shapes(&task);
+    assert_eq!(found.len(), 2, "{task}");
+    for shape in &found {
+        assert!(
+            check_reply(shape.as_bytes(), MsgType::Task, id, nonce).is_ok(),
+            "{shape}"
+        );
+    }
+    assert!(
+        found[0].contains(r#""outcome": "reply", "status": "ok""#),
+        "{task}"
+    );
+    assert!(found[1].contains(r#""outcome": "reject""#), "{task}");
+    assert!(
+        task.contains(&format!("at most {MAX_BODY_BYTES} UTF-8 bytes")),
+        "{task}"
+    );
+    assert!(task.contains("\"ok\" or \"failed\""), "{task}");
+    for kind in [MsgType::Info, MsgType::Result] {
+        let read = reply_format(kind, id, nonce);
+        let found = shapes(&read);
+        assert_eq!(found.len(), 1, "{read}");
+        assert!(
+            check_reply(found[0].as_bytes(), kind, id, nonce).is_ok(),
+            "{read}"
+        );
+        assert!(check_reply(found[0].as_bytes(), MsgType::Task, id, nonce).is_err());
+    }
+}
+
 #[test]
 fn verdict_reads_agy_status_conversation_and_the_reply() {
     let out = format!("noise\n{{\"status\":\"SUCCESS\",\"conversation_id\":\"{CONV}\"}}\n");
@@ -579,6 +623,10 @@ fn a_task_gets_the_turns_reply_and_no_message_text_reaches_the_prompt_or_log() {
     let req = &s.requests[0];
     assert_eq!(req["schema"], REQUEST_SCHEMA);
     assert_eq!(req["outcomes"], json!(["reply", "reject"]));
+    assert_eq!(
+        req["reply_format"],
+        reply_format(MsgType::Task, &id, req["nonce"].as_str().unwrap())
+    );
     assert!(req["message"].get("from_session_id").is_none());
     assert_eq!(req["message"]["body"], format!("{SECRET} body"));
     let seen = format!("{:?}\n{}", spec.args, env.log.text());
@@ -803,6 +851,28 @@ fn a_record_left_prepared_is_prepared_again_with_a_new_nonce() {
     assert_eq!(st.phase, Phase::Completed);
     assert_ne!(st.nonce.as_deref(), Some(old.as_str()));
     assert_eq!(env.fake.0.borrow().requests[0]["nonce"], json!(st.nonce));
+}
+
+#[test]
+fn a_print_mode_job_with_a_v1_request_still_recovers() {
+    // A job prepared by cq 1.15 or 1.16, before reply_format.
+    let env = Env::new();
+    env.fake.set(|s| {
+        s.spawn_errors = 1;
+        s.reply = Some(answer("reply", Some("ok"), Some("ok")));
+    });
+    let id = env.send("boss", MsgType::Task);
+    env.broker().tick().unwrap();
+    assert_eq!(env.state(&id).phase, Phase::Prepared);
+    let path = default_exchange(&env.root, NAME).join(&id).join(REQUEST);
+    let mut req: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    req["schema"] = json!("cq-agy-request/1");
+    req.as_object_mut().unwrap().remove("reply_format");
+    fs::write(&path, serde_json::to_vec(&req).unwrap()).unwrap();
+    let mut b = env.broker();
+    b.tick().unwrap();
+    assert_eq!(env.state(&id).phase, Phase::Completed);
+    assert_eq!(env.inbox("boss")[0].body, "ok");
 }
 
 #[test]

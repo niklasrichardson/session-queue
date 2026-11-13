@@ -300,6 +300,19 @@ Experimental, cq 1.15.0, Windows only: on macOS and Linux `--agy-broker` exits 6
 - **PAUSE.** While `PAUSE` exists, the watcher claims nothing, starts no turn and finishes nothing.
 - **Output.** `cq watch (B): <UTC time> started agy job ID`, then `cq watch (B): <UTC time> agy job ID status=ok|failed|rejected|read|unread`.
 
+### Session mode
+
+Experimental, cq 1.17.0, Windows only (exit 64 elsewhere). `cq watch --as B --to-agy-session` is started by the open Antigravity session itself, as a background command, and wakes that session with `agentapi send-message` for each message. It uses the exchange folder and job record of broker mode, with `kind: "session"`. Setup, the checks and the operator steps are in [Session mode](agents/ANTIGRAVITY.md#session-mode).
+
+- **Arguments.** Only `--as B` and `--takeover`. Every other flag is exit 64. All settings come from the `[agy-session.B]` table in `config.toml` in the build's `CQ_DEFAULT_ROOT`; `CQ_ROOT` and other settings from the environment are ignored. The conversation ID comes from `ANTIGRAVITY_CONVERSATION_ID`, with the table's optional `conversation` as fallback and check.
+- **Start checks.** Root, `config.toml` and `cq.exe` trust, the launching `agy.exe` or `language_server.exe`, the agentapi binary and the language-server address. Each failure is exit 64, before any queue write.
+- **Per message.** Claim, write `request.json`, record the wake, send the NEW-WORK wake. The session creates `started`, then writes `reply.json`. No `started` after `ack_minutes` (default 15): exit 8. No reply after `reply_minutes` (default 60): one RESUME wake; none after `resume_minutes` (default 10) more: needs review, exit 11.
+- **Asleep.** The watcher does not exit 7. It keeps running, claims nothing and wakes nothing until `cq wake`.
+- **PAUSE.** The watcher claims nothing, finishes nothing and sends no wake while `PAUSE` exists. Deadlines work as for sleep.
+- **Session gone.** The watcher checks the launching process and the address on every tick, also with no job, while asleep and under `PAUSE`, and exits 8 when the session has gone.
+- **Stop line.** The last stdout line is `cq watch (B) stopped: REASON. WHAT TO DO`. Progress lines go to stderr.
+- **Status.** `cq status` shows `mode=agy-session`.
+
 ## Watcher status and exit log
 
 `cq status --as B` prints one line from the files of `B`'s watcher or dispatcher. It uses the rule that `cq session-start` uses: the watcher runs when `heartbeat/B.pid` exists, the heartbeat is less than 90 seconds old, and the process in the pid file still runs. A watcher that was killed counts as stopped at once; where the process cannot be checked, it counts as running until its heartbeat is 90 seconds old. It never opens the lock file and writes nothing.
@@ -315,7 +328,7 @@ asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" 
 ```
 
 - The first word is the state; the exit code says the same: 0 `running`, 10 `stopped`, 7 `asleep`. A sleeping name is `asleep` even while its watcher still runs (it stops within 250 ms).
-- `why` is `no pid file`, `no heartbeat`, `heartbeat Ns old` or `process N is not running`. `pid` is the process ID in the pid file, and `heartbeat` the age of the last heartbeat, when there is one. `mode` is the mode in the `members/` record that names `B` (`monitor`, `inbox`, `codex` or `agy`), or `unknown` without one.
+- `why` is `no pid file`, `no heartbeat`, `heartbeat Ns old` or `process N is not running`. `pid` is the process ID in the pid file, and `heartbeat` the age of the last heartbeat, when there is one. `mode` is the mode in the `members/` record that names `B` (`monitor`, `inbox`, `codex`, `agy` or `agy-session`), or `unknown` without one.
 - With a pid file, the line ends with what the watcher or dispatcher recorded in `heartbeat/B.watcher`. `version` is its `cq` version, or `unknown` for one started by a `cq` older than 1.11.0. `outdated` follows when that is not the version of the `cq` that runs `cq status` (`unknown` counts). `stale-target` follows in `inbox` mode when the caller has `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` and the watcher's recorded address or token hash is another, or missing: its posts may not reach the caller's session. It is only checked when the caller's session key is recorded in `members/` for B (B's own session, also after `/clear`); any other caller has its own inbox, which never matches. Restart it with `cq watch --as B --to-inbox --takeover`. These words do not change the exit code.
 - A bad name exits 5; a root that is not initialised exits 70.
 
@@ -344,14 +357,14 @@ asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" 
 | 2 | A rename still failed after 3 retries over 1 second. `lock wait`: the lock is still held at `--max`. |
 | 3 | `claim`: the message is invalid and went to `dlq/`. The sender was told, when known. |
 | 4 | `done` or `dispatch` completion: the message is finished, but the reply was not sent. This includes `done --reply` or `done --reject` on a claimed file that cannot be read. |
-| 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` or `send --reply-to` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. `lock`: a bad lock name, `--as owner`, `--for` over 200 characters, `--owner` or `break` by a name that is not a coordinator, or a session acting as a name other than its recorded one. `watch --agy-broker`: a job record that is torn, unknown or needs review, a claimed message without a record, or more than one unfinished record. |
+| 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` or `send --reply-to` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. `lock`: a bad lock name, `--as owner`, `--for` over 200 characters, `--owner` or `break` by a name that is not a coordinator, or a session acting as a name other than its recorded one. `watch --agy-broker`: a job record that is torn, unknown or needs review, a claimed message without a record, or more than one unfinished record. `watch --to-agy-session`: also a watcher that already holds the name. |
 | 6 | `done`: the message is not claimed by this session. `requeue`: the message is not in this session's `rejected/` folder. |
 | 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. `status`: the name is asleep. |
-| 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. |
+| 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. `watch --to-agy-session`: the launching process exited, the address failed 3 connects in a row, agentapi failed 4 times in a row, the agentapi path no longer opens the file checked at start, or no `started` came within `ack_minutes`. Start the watcher again with the same line. |
 | 9 | `watch --to-codex`: `codex queue` failed 4 times in a row. Nothing wakes the Codex chat until the watcher is started again. |
 | 10 | `status`: no watcher runs for the name, and it is not asleep. |
-| 11 | `watch --to-agy`: an `agy` turn failed 4 times in a row, or ran in another conversation. Nothing wakes the conversation until the watcher is started again. With `--agy-broker`: a job needs review, or `agy` could not start 4 times in a row. |
-| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found, or `watch --to-agy` with an empty conversation ID, an empty prompt or an `agy` executable that cannot be found, or `watch --agy-broker` without `--agy-allow-from`, with a bad exchange folder or path, a prompt without `{request}` and `{reply}`, or, on Windows, without a valid `--agy-sandbox-sid`. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value for `list --overdue`, a coordinator's `watch` or `cq-top`. A bad `CQ_LOCK_STALE_MINUTES` value for `lock` or a coordinator's `watch`. A problem in `config.toml` in the queue root is not an error: `cq` warns on stderr and ignores the bad part (see [Setup](SETUP.md#configtoml)). |
+| 11 | `watch --to-agy`: an `agy` turn failed 4 times in a row, or ran in another conversation. Nothing wakes the conversation until the watcher is started again. With `--agy-broker`: a job needs review, or `agy` could not start 4 times in a row. With `--to-agy-session`: a job needs review. |
+| 64 | Bad arguments or bad JSON input, `done` input without `--reply` or `--reject`, `watch --to-inbox` without `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`, or `watch --to-codex` with an empty thread, an empty prompt or a Codex executable that cannot be found, or `watch --to-agy` with an empty conversation ID, an empty prompt or an `agy` executable that cannot be found, or `watch --agy-broker` without `--agy-allow-from`, with a bad exchange folder or path, a prompt without `{request}` and `{reply}`, or, on Windows, without a valid `--agy-sandbox-sid`. `watch --to-agy-session` with any other flag, off Windows, in a build without `CQ_DEFAULT_ROOT`, with a missing or bad `[agy-session.NAME]` table, with no conversation ID (neither `ANTIGRAVITY_CONVERSATION_ID` nor `conversation` in the table) or two that differ, or when a start check fails. A bad `CQ_OVERDUE_UNCLAIMED_MINUTES` or `CQ_OVERDUE_CLAIMED_MINUTES` value for `list --overdue`, a coordinator's `watch` or `cq-top`. A bad `CQ_LOCK_STALE_MINUTES` value for `lock` or a coordinator's `watch`. A problem in `config.toml` in the queue root is not an error: `cq` warns on stderr and ignores the bad part (see [Setup](SETUP.md#configtoml)). |
 | 70 | Dispatch timeout/interruption (task stays claimed), or any other error (I/O, `CQ_ROOT` missing or not initialised). |
 
 
@@ -375,7 +388,7 @@ CQ_ROOT/
   heartbeat/<name>.lock-alerts orphaned and stale lock takes a coordinator's watcher has reported, one per line
   dispatch/<name>/<id>/       Codex logs and completion state, or agy broker job records (not auto-pruned)
   agy-exchange/<name>/        default agy broker exchange folder (Low label on Windows)
-  members/<key>              the name owned by a session (a Claude Code session, `codex-NAME` for a `--to-codex` watcher, or `agy-NAME` for a `--to-agy` watcher), the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox, codex or agy)
+  members/<key>              the name owned by a session (a Claude Code session, `codex-NAME` for a `--to-codex` watcher, or `agy-NAME` for a `--to-agy` or `--to-agy-session` watcher), the UTC time it was recorded, the watcher's working folder, and its mode (monitor, inbox, codex, agy or agy-session)
   sleep/<name>               while it exists, the name is asleep (by, time, reason)
   coordinators               names that may sleep other names, one per line (edited by the owner)
   idle-alerts                `worker lead` pairs for cq idle-alert, one per line (edited by the owner)

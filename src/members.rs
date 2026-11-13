@@ -63,6 +63,9 @@ pub enum Mode {
     /// `--to-agy`: a background process outside the Antigravity CLI
     /// conversation it wakes.
     Agy,
+    /// `--to-agy-session`: a background command of the Antigravity session
+    /// it wakes.
+    AgySession,
 }
 
 impl Mode {
@@ -73,6 +76,7 @@ impl Mode {
             Mode::Inbox => "inbox",
             Mode::Codex => "codex",
             Mode::Agy => "agy",
+            Mode::AgySession => "agy-session",
         }
     }
 
@@ -82,6 +86,7 @@ impl Mode {
             Some("inbox") => Mode::Inbox,
             Some("codex") => Mode::Codex,
             Some("agy") => Mode::Agy,
+            Some("agy-session") => Mode::AgySession,
             _ => Mode::Monitor,
         }
     }
@@ -241,7 +246,13 @@ mod tests {
 
     #[test]
     fn modes_round_trip_and_unknown_reads_as_monitor() {
-        for m in [Mode::Monitor, Mode::Inbox, Mode::Codex, Mode::Agy] {
+        for m in [
+            Mode::Monitor,
+            Mode::Inbox,
+            Mode::Codex,
+            Mode::Agy,
+            Mode::AgySession,
+        ] {
             assert_eq!(Mode::parse(Some(m.as_str())), m);
         }
         assert_eq!(Mode::parse(Some(" codex ")), Mode::Codex);

@@ -495,6 +495,8 @@ fn watch_mode(args: &[String]) -> cq::members::Mode {
     };
     if has("--to-codex") {
         cq::members::Mode::Codex
+    } else if args.iter().any(|a| a == "--to-agy-session") {
+        cq::members::Mode::AgySession
     } else if has("--to-agy") {
         cq::members::Mode::Agy
     } else if args.iter().any(|a| a == "--to-inbox") {
@@ -1103,7 +1105,7 @@ fn read_processes(sys: &mut sysinfo::System, heartbeat: &Path) -> Option<Procs> 
         };
         if matches!(
             out.modes.get(name),
-            Some(cq::members::Mode::Codex | cq::members::Mode::Agy)
+            Some(cq::members::Mode::Codex | cq::members::Mode::Agy | cq::members::Mode::AgySession)
         ) {
             continue;
         }
@@ -1922,6 +1924,10 @@ mod tests {
         assert_eq!(
             watch_mode(&args(&["cq", "watch", "--as", "w1", "--to-agyx"])),
             Mode::Monitor
+        );
+        assert_eq!(
+            watch_mode(&args(&["cq", "watch", "--as", "w1", "--to-agy-session"])),
+            Mode::AgySession
         );
     }
 

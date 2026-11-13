@@ -276,6 +276,14 @@ enum Cmd {
         /// Modify access to the exchange folder.
         #[arg(long, value_name = "SID", requires = "agy_broker")]
         agy_sandbox_sid: Option<String>,
+        /// Experimental, Windows only. Run inside an Antigravity session (CLI
+        /// or App) as one fixed background command, and wake that session
+        /// with `agentapi send-message` for each message, through the
+        /// exchange folder. The root is the build's CQ_DEFAULT_ROOT and the
+        /// policy is [agy-session.NAME] in its config.toml; no setting comes
+        /// from the environment. Takes no other option except --takeover.
+        #[arg(long, conflicts_with_all = SESSION_CONFLICTS)]
+        to_agy_session: bool,
         /// Send the idle alert this long after a turn end recorded by
         /// `cq turn-end`, when no activity is observed since: no transcript
         /// write after the first 30 s, and no line from this watcher. For
@@ -593,6 +601,34 @@ const HOOK_INPUT_WAIT: Duration = Duration::from_millis(100);
 /// the read ends as soon as Claude Code closes stdin.
 const TURN_END_INPUT_WAIT: Duration = Duration::from_secs(2);
 
+/// The `watch` options `--to-agy-session` refuses: all but `--as` and
+/// `--takeover`. A default value does not count as given.
+const SESSION_CONFLICTS: [&str; 19] = [
+    "max_seconds",
+    "to_inbox",
+    "to_codex",
+    "codex_bin",
+    "codex_prompt",
+    "codex_check_seconds",
+    "codex_queue_db",
+    "debug",
+    "to_agy",
+    "agy_bin",
+    "agy_prompt",
+    "agy_broker",
+    "agy_allow_from",
+    "agy_exchange",
+    "agy_sandbox_sid",
+    "idle_after",
+    "idle_every",
+    "rescan_seconds",
+    "no_fs_events",
+];
+
+/// The flag that makes this process a session-mode watcher, which reads
+/// no setting from the environment.
+const SESSION_FLAG: &str = "--to-agy-session";
+
 #[derive(Clone, Copy, ValueEnum)]
 enum ReplyStatus {
     Ok,
@@ -602,11 +638,24 @@ enum ReplyStatus {
 fn main() -> ExitCode {
     // Before parsing: the help text shows the local time zone, which is
     // fixed once it is first read.
-    let config_warning = load_config();
+    // Session mode takes its root and config.toml from the build only
+    // (`cq::session`), so neither is read here from the environment.
+    let session_mode = std::env::args_os().any(|a| a == SESSION_FLAG);
+    let config_warning = if session_mode {
+        config::ignore_env();
+        None
+    } else {
+        load_config()
+    };
     let cli = match Cli::try_parse() {
         Ok(c) => c,
         Err(e) => {
             let _ = e.print();
+            if session_mode && e.use_stderr() {
+                println!(
+                    "cq watch stopped: the command line is not valid. Do not restart; tell the user."
+                );
+            }
             // clap uses exit 2 for usage errors, which is RENAME_FAILED here.
             let code = if e.use_stderr() {
                 exit::USAGE
@@ -713,6 +762,157 @@ fn watch_agy_broker(
     watch::watch(&root, opts, &mut sink)
 }
 
+/// `cq watch --to-agy-session`. Whatever ends it, the last stdout line is
+/// the stop line, which the session reads as the command's output.
+fn watch_agy_session(name: &str, takeover: bool) -> Result<i32> {
+    let result = run_agy_session(name, takeover);
+    println!("{}", stop_line(name, &result));
+    let _ = io::stdout().flush();
+    result
+}
+
+/// The last stdout line of a session-mode watcher.
+fn stop_line(name: &str, result: &Result<i32>) -> String {
+    format!("cq watch ({name}) stopped: {}", stop_advice(name, result))
+}
+
+/// The stop line after `cq watch (NAME) stopped: `: why, and what to do.
+fn stop_advice(name: &str, result: &Result<i32>) -> String {
+    let e = match result {
+        Ok(_) => return "it was ended. Do not restart; tell the user.".into(),
+        Err(e) => e,
+    };
+    match e.code {
+        // A restart would stop again at once: only a person can give the job
+        // a new round.
+        exit::INBOX_GONE if cq::broker::is_not_taken(e) => format!(
+            "{}. A restart stops again at once. For a new round, the user puts {name} to sleep (cq sleep) or creates PAUSE, has this session start the watcher, then runs cq wake {name} or removes PAUSE. Do not restart; tell the user.",
+            e.message
+        ),
+        exit::INBOX_GONE => format!("{}. Start the watcher again with the same line.", e.message),
+        exit::REFUSED if e.message.contains("already running") => {
+            if same_session_holds(name) {
+                "already running for this conversation; nothing to do.".into()
+            } else {
+                format!("{name} is held by another watcher; ask the user.")
+            }
+        }
+        _ => format!("{}. Do not restart; tell the user.", e.message),
+    }
+}
+
+/// The watcher holding `name` is a session-mode watcher for the
+/// conversation in this build's policy.
+fn same_session_holds(name: &str) -> bool {
+    let Some(root) = Root::build_default() else {
+        return false;
+    };
+    let policy = std::fs::read(root.path().join(config::FILE))
+        .ok()
+        .and_then(|b| config::text_of(&b).ok().map(str::to_owned))
+        .and_then(|t| policy_conversation(&t, name));
+    let holder = std::fs::read_to_string(root.pid_file(name))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .and_then(|pid| record::Record::read_for(&root, name, pid))
+        .and_then(|r| r.session);
+    matches!((policy, holder), (Some(c), Some(h)) if c == h.conversation)
+}
+
+#[cfg(windows)]
+fn policy_conversation(text: &str, name: &str) -> Option<String> {
+    let policy = cq::session::Policy::parse(text, name).ok()?;
+    cq::session::conversation_of(&policy, &|var: &str| std::env::var_os(var)).ok()
+}
+
+#[cfg(not(windows))]
+fn policy_conversation(_text: &str, _name: &str) -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+fn run_agy_session(_name: &str, _takeover: bool) -> Result<i32> {
+    Err(CqError::usage(
+        "--to-agy-session is supported on Windows only",
+    ))
+}
+
+/// Build the trusted inputs, then run the broker with session wakes.
+#[cfg(windows)]
+fn run_agy_session(name: &str, takeover: bool) -> Result<i32> {
+    use cq::broker::{AgyBroker, SessionWake, Timing, default_exchange};
+    use cq::session::{Os, SessionInputs, Sources};
+    use cq::wake::AgentApi;
+
+    cq::names::check_name("--as", name)?;
+    let env = |var: &str| std::env::var_os(var);
+    let inputs = SessionInputs::build(
+        name,
+        Sources {
+            build_root: Root::build_default().map(|r| r.path().to_owned()),
+            exe: std::env::current_exe().map_err(|e| CqError::io("find this cq.exe", e))?,
+            pid: std::process::id(),
+            env: &env,
+            system: Box::new(Os),
+        },
+    )?;
+    let SessionInputs {
+        root,
+        policy,
+        settings,
+        warning,
+        conversation,
+        agentapi,
+        link,
+        pins: _pins,
+        ..
+    } = inputs;
+    if let Some(w) = warning {
+        eprintln!("cq: warning: {w}");
+    }
+    config::install(settings);
+    let minutes = |m: u64| Duration::from_secs(m * 60);
+    let timing = Timing {
+        ack: minutes(policy.ack_minutes),
+        reply: minutes(policy.reply_minutes),
+        resume: minutes(policy.resume_minutes),
+    };
+    let wake = AgentApi::new(agentapi.clone(), conversation.clone(), env);
+    let cfg = cq::broker::Config {
+        name: name.to_owned(),
+        conversation: conversation.clone(),
+        allow_from: policy.allow_from,
+        exchange: default_exchange(&root, name),
+        sandbox_sid: policy.sandbox_sids.into_iter().next(),
+        bin: agentapi.clone().into_os_string(),
+        prompt: None,
+    };
+    let mut sink: AgyBroker<SessionWake<AgentApi, _>, _> = AgyBroker::session(
+        root.clone(),
+        cfg,
+        wake,
+        link,
+        timing,
+        cq::inbox::SystemClock,
+        timefmt::now(),
+        Box::new(io::stderr()),
+    )?;
+    if let Err(e) = platform::install_interrupt_handler() {
+        eprintln!("cq watch: a signal may stop the watcher without a stop line ({e})");
+    }
+    let mut opts = WatchOptions::new(name);
+    opts.takeover = takeover;
+    opts.max_seconds = None;
+    opts.member_key = members::sanitise_key(&format!("agy-{name}"));
+    opts.mode = members::Mode::AgySession;
+    opts.session = Some(record::SessionTarget {
+        conversation,
+        agentapi: agentapi.display().to_string(),
+    });
+    watch::watch(&root, &opts, &mut sink)?;
+    Ok(exit::OK)
+}
+
 /// The `--agy-broker` options.
 struct BrokerFlags {
     allow_from: Vec<String>,
@@ -793,9 +993,13 @@ fn run(cmd: Cmd) -> Result<i32> {
             agy_allow_from,
             agy_exchange,
             agy_sandbox_sid,
+            to_agy_session,
             idle_after,
             idle_every,
         } => {
+            if to_agy_session {
+                return watch_agy_session(&name, takeover);
+            }
             // clap does not enforce `requires` once a conflicting mode flag
             // is given, so check that each mode's options come with it.
             if to_codex.is_none()
@@ -856,6 +1060,7 @@ fn run(cmd: Cmd) -> Result<i32> {
                 } else {
                     None
                 },
+                session: None,
             };
             let ended = if let Some(thread) = &to_codex {
                 let check_after = codex_check_seconds.map_or(CHECK_AFTER, Duration::from_secs);
@@ -1295,6 +1500,14 @@ fn session_start(debug: bool) {
         format!(
             "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). An Antigravity CLI watcher (cq watch --as {name} --to-agy) still runs and wakes the conversation for {name} with agy turns: do not start a watcher for {name} here and do not use --takeover. Run cq list --as {name} and handle any UNCLAIMED messages."
         )
+    } else if mode == members::Mode::AgySession && watch::is_running(&root, &name) {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). An Antigravity session watcher (cq watch --as {name} --to-agy-session) still runs and wakes the Antigravity session for {name}: do not start a watcher for {name} here and do not use --takeover. Run cq list --as {name} and handle any UNCLAIMED messages."
+        )
+    } else if mode == members::Mode::AgySession {
+        format!(
+            "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Antigravity session watcher for {name} (cq watch --as {name} --to-agy-session) has stopped, so nothing wakes the Antigravity session for {name}. Do not start a watcher for {name} here: tell the user (see docs/agents/ANTIGRAVITY.md). Run cq list --as {name} and handle any UNCLAIMED messages."
+        )
     } else if mode == members::Mode::Agy {
         format!(
             "You are in the cq session queue as {name}. Before anything else this turn: re-read {rules} and follow it as {name} (skip choosing a name). The Antigravity CLI watcher for {name} (cq watch --as {name} --to-agy) has stopped, so nothing wakes the conversation for {name}. Do not start a watcher for {name} here: tell the user, who restarts it outside the conversation (see docs/agents/ANTIGRAVITY.md). Run cq list --as {name} and handle any UNCLAIMED messages."
@@ -1479,6 +1692,54 @@ fn parse_input<T: DeserializeOwned>(text: &str) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn to_agy_session_takes_only_as_and_takeover() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec!["cq", "watch", "--as", "w", "--to-agy-session"];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        assert!(parse(&[]).is_ok());
+        assert!(parse(&["--takeover"]).is_ok());
+        for extra in [
+            &["--max-seconds", "5"][..],
+            &["--to-inbox"],
+            &["--to-agy", "c"],
+            &["--to-codex", "t"],
+            &["--idle-after", "10m"],
+            &["--idle-every", "2h"],
+            &["--rescan-seconds", "5"],
+            &["--no-fs-events"],
+        ] {
+            assert!(parse(extra).is_err(), "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn the_stop_line_says_what_to_do() {
+        let gone = Err(CqError::new(
+            exit::INBOX_GONE,
+            "the session cannot be reached: x",
+        ));
+        assert_eq!(
+            stop_line("w", &gone),
+            "cq watch (w) stopped: the session cannot be reached: x. Start the watcher again with the same line."
+        );
+        let expired = Err(cq::broker::not_taken("ID1", 3));
+        assert_eq!(
+            stop_line("w", &expired),
+            "cq watch (w) stopped: agy job ID1 was not taken after 3 wakes; it stays waking. A restart stops again at once. For a new round, the user puts w to sleep (cq sleep) or creates PAUSE, has this session start the watcher, then runs cq wake w or removes PAUSE. Do not restart; tell the user."
+        );
+        for code in [exit::AGY_TURN_FAILED, exit::USAGE, exit::REFUSED] {
+            let e = Err(CqError::new(code, "a job needs review"));
+            assert!(
+                stop_advice("w", &e).ends_with("Do not restart; tell the user."),
+                "{code}"
+            );
+        }
+        assert!(stop_advice("w", &Ok(0)).contains("Do not restart"));
+    }
 
     #[test]
     fn rules_ref_takes_the_first_candidate_else_generic() {

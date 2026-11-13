@@ -52,6 +52,17 @@ pub enum FileRead {
     Refused(String),
 }
 
+impl FileRead {
+    /// True for a file that another process still has open for writing:
+    /// read it again later.
+    pub fn is_busy(&self) -> bool {
+        matches!(self, FileRead::Refused(why) if why.ends_with(STILL_WRITING))
+    }
+}
+
+/// The end of the `Refused` text for a file still open for writing.
+const STILL_WRITING: &str = "is still open for writing";
+
 /// The pinned exchange folder.
 pub struct Exchange {
     path: PathBuf,
@@ -211,7 +222,7 @@ impl JobDir {
 }
 
 #[cfg(windows)]
-mod imp {
+pub(crate) mod imp {
     use std::ffi::OsString;
     use std::fs::File;
     use std::io::{self, Read, Write};
@@ -252,18 +263,18 @@ mod imp {
         DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
         FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
         FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
-        FILE_DISPOSITION_INFO_EX, FILE_FULL_DIR_INFO, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
-        FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_TRAVERSE,
-        FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
-        FileFullDirectoryInfo, FileFullDirectoryRestartInfo, FileStandardInfo,
-        GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle,
-        WRITE_DAC, WRITE_OWNER,
+        FILE_DISPOSITION_INFO_EX, FILE_EXECUTE, FILE_FULL_DIR_INFO, FILE_GENERIC_EXECUTE,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
+        FILE_TRAVERSE, FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo,
+        FileDispositionInfoEx, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
+        FileStandardInfo, GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
+        SetFileInformationByHandle, WRITE_DAC, WRITE_OWNER,
     };
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    use super::{CLEANUP_MAX_DEPTH, Entry, FileRead};
+    use super::{CLEANUP_MAX_DEPTH, Entry, FileRead, STILL_WRITING};
 
     pub type Dir = OwnedHandle;
 
@@ -624,7 +635,7 @@ mod imp {
         Ok(())
     }
 
-    /// True when `path`, opened by name now, is the folder `h`.
+    /// True when `path`, opened by name now, is the folder (or file) `h`.
     pub fn same_folder(h: &OwnedHandle, path: &Path) -> io::Result<bool> {
         use std::os::windows::fs::OpenOptionsExt;
         let f = std::fs::OpenOptions::new()
@@ -865,6 +876,208 @@ mod imp {
         result
     }
 
+    /// Access bits that let a holder change an object or what it holds.
+    const WRITE_BITS: u32 = 0x2 // FILE_WRITE_DATA, FILE_ADD_FILE
+        | 0x4 // FILE_APPEND_DATA, FILE_ADD_SUBDIRECTORY
+        | 0x10 // FILE_WRITE_EA
+        | 0x40 // FILE_DELETE_CHILD
+        | 0x100 // FILE_WRITE_ATTRIBUTES
+        | DELETE
+        | WRITE_DAC
+        | WRITE_OWNER
+        | 0x1000_0000 // GENERIC_ALL
+        | 0x4000_0000; // GENERIC_WRITE
+    /// The access-denied ACE types; any other DACL entry may allow.
+    const DENY_TYPES: [u8; 4] = [1, 6, 0xA, 0xC];
+    /// Medium integrity (`S-1-16-8192`).
+    const MEDIUM_RID: u32 = 8192;
+
+    /// The restricted-token SIDs, RESTRICTED and WRITE RESTRICTED: a grant
+    /// to either lets a restricted (sandboxed) token pass its second check.
+    const RESTRICTED_SIDS: [&str; 2] = ["S-1-5-12", "S-1-5-33"];
+
+    /// Why the object with descriptor `d` is not trusted for session mode,
+    /// or `None`. Refused: a null DACL; a label below Medium, or a Medium or
+    /// higher label without no-write-up; an allow entry with write access
+    /// for any app-container or capability SID (`S-1-15-...`, listed in
+    /// `sids` or not), the Low label SID, a restricted-token SID or one of
+    /// `sids`; an allow entry of another type than the plain one with write
+    /// access. Inherit-only entries count too: they reach the folders
+    /// below. Ordinary principals (the owner, users, administrators,
+    /// SYSTEM) pass: named sandbox groups cannot be told apart from them.
+    pub fn untrusted(d: &Descriptor, sids: &[String]) -> Option<String> {
+        let Some(dacl) = &d.dacl else {
+            return Some("it has a null DACL, so anyone can write it".into());
+        };
+        for ace in &d.label {
+            if ace.kind != SYSTEM_MANDATORY_LABEL_ACE_TYPE {
+                continue;
+            }
+            let rid = ace
+                .sid
+                .strip_prefix("S-1-16-")
+                .and_then(|r| r.parse::<u32>().ok());
+            match rid {
+                Some(r)
+                    if r >= MEDIUM_RID && ace.mask & SYSTEM_MANDATORY_LABEL_NO_WRITE_UP != 0 => {}
+                Some(r) if r >= MEDIUM_RID => {
+                    return Some("its integrity label has no no-write-up".into());
+                }
+                _ => return Some("it has an integrity label below Medium".into()),
+            }
+        }
+        for ace in dacl {
+            if DENY_TYPES.contains(&ace.kind) || ace.mask & WRITE_BITS == 0 {
+                continue;
+            }
+            if ace.kind != ACCESS_ALLOWED_ACE_TYPE {
+                return Some(format!(
+                    "it has an allow entry of type {} with write access",
+                    ace.kind
+                ));
+            }
+            let sandbox = ace.sid.starts_with("S-1-15-")
+                || ace.sid == LOW_LABEL_SID
+                || RESTRICTED_SIDS.contains(&ace.sid.as_str())
+                || sids.iter().any(|s| s.eq_ignore_ascii_case(&ace.sid));
+            if sandbox {
+                return Some(format!("it gives write access to {}", ace.sid));
+            }
+        }
+        None
+    }
+
+    /// Open each part of `path` from the volume root, relative to the one
+    /// before, refusing reparse points, and check each with `untrusted`.
+    /// The last part is a file when `file` is true, else a folder; with
+    /// `read`, at most that many bytes of the file are read through its
+    /// checked handle. Returns the folder handles, held without delete
+    /// sharing, and the bytes.
+    pub fn pin_trusted(
+        path: &Path,
+        file: bool,
+        read: Option<usize>,
+        sids: &[String],
+    ) -> io::Result<(Vec<OwnedHandle>, Option<Vec<u8>>)> {
+        walk_trusted(path, file, read, sids, false)
+    }
+
+    /// `pin_trusted` for the file `path`, whose checked handle is held too,
+    /// without write or delete sharing: while it is held, the file cannot
+    /// be changed, renamed, replaced or deleted. Returns the folder handles
+    /// and the file's handle.
+    pub fn pin_file(path: &Path, sids: &[String]) -> io::Result<(Vec<OwnedHandle>, OwnedHandle)> {
+        let (mut pins, _) = walk_trusted(path, true, None, sids, true)?;
+        let file = pins
+            .pop()
+            .ok_or_else(|| io::Error::other("no file was opened"))?;
+        Ok((pins, file))
+    }
+
+    fn walk_trusted(
+        path: &Path,
+        file: bool,
+        read: Option<usize>,
+        sids: &[String],
+        keep: bool,
+    ) -> io::Result<(Vec<OwnedHandle>, Option<Vec<u8>>)> {
+        let parts: Vec<Component> = path.components().collect();
+        let drive = match parts.first() {
+            Some(Component::Prefix(p)) => match p.kind() {
+                Prefix::Disk(d) | Prefix::VerbatimDisk(d) => d as char,
+                _ => return Err(io::Error::other("it is not on a drive letter path")),
+            },
+            _ => return Err(io::Error::other("it is not an absolute path")),
+        };
+        if parts.get(1) != Some(&Component::RootDir) || parts.len() < 3 {
+            return Err(io::Error::other("it is not an absolute path below a drive"));
+        }
+        let check = |h: &OwnedHandle, what: &str| -> io::Result<()> {
+            refuse_reparse(h, what)?;
+            let d = descriptor(h)
+                .map_err(|e| io::Error::other(format!("read the security of {what}: {e}")))?;
+            match untrusted(&d, sids) {
+                Some(why) => Err(io::Error::other(format!("{what}: {why}"))),
+                None => Ok(()),
+            }
+        };
+        let access = FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL;
+        let volume = nt_create(
+            None,
+            &wide(&format!("\\??\\{drive}:\\")),
+            access,
+            0,
+            PIN_SHARE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE,
+            null(),
+        )
+        .map_err(nt_error)?;
+        check(&volume, &format!("{drive}:\\"))?;
+        let mut pins = vec![volume];
+        let last = parts.len() - 1;
+        for (i, part) in parts.iter().enumerate().skip(2) {
+            let Component::Normal(name) = part else {
+                return Err(io::Error::other("the path holds . or .."));
+            };
+            let name = name
+                .to_str()
+                .ok_or_else(|| io::Error::other("the path is not valid Unicode"))?;
+            let leaf = i == last && file;
+            let (access, share, options) = if leaf {
+                // A held file needs a data access: a handle with none does
+                // not take part in sharing, so it would block nothing.
+                let data = match (read, keep) {
+                    (Some(_), _) => FILE_READ_DATA,
+                    (None, true) => FILE_EXECUTE,
+                    (None, false) => 0,
+                };
+                (
+                    data | FILE_READ_ATTRIBUTES | READ_CONTROL,
+                    FILE_SHARE_READ,
+                    FILE_NON_DIRECTORY_FILE,
+                )
+            } else {
+                (access, PIN_SHARE, FILE_DIRECTORY_FILE)
+            };
+            let h = nt_create(
+                pins.last(),
+                &component(name)?,
+                access,
+                0,
+                share,
+                FILE_OPEN,
+                options,
+                null(),
+            )
+            .map_err(|s| {
+                io::Error::new(nt_error(s).kind(), format!("open {name}: {}", nt_error(s)))
+            })?;
+            check(&h, name)?;
+            if leaf {
+                let bytes = match read {
+                    Some(cap) => {
+                        let mut bytes = Vec::new();
+                        File::from(h).take(cap as u64 + 1).read_to_end(&mut bytes)?;
+                        if bytes.len() > cap {
+                            return Err(io::Error::other(format!("{name} is over {cap} bytes")));
+                        }
+                        Some(bytes)
+                    }
+                    None => {
+                        if keep {
+                            pins.push(h);
+                        }
+                        None
+                    }
+                };
+                return Ok((pins, bytes));
+            }
+            pins.push(h);
+        }
+        Ok((pins, None))
+    }
+
     /// Set the DACL (and its protection) and the owner of `h`. For tests
     /// that build a folder with another descriptor.
     #[cfg(test)]
@@ -1078,7 +1291,7 @@ mod imp {
             Ok(h) => h,
             Err(STATUS_OBJECT_NAME_NOT_FOUND) => return FileRead::Missing,
             Err(STATUS_SHARING_VIOLATION) => {
-                return FileRead::Refused(format!("{name} is still open for writing"));
+                return FileRead::Refused(format!("{name} {STILL_WRITING}"));
             }
             Err(STATUS_FILE_IS_A_DIRECTORY) => {
                 return FileRead::Refused(format!("{name} is a folder"));
@@ -1843,6 +2056,51 @@ mod tests {
     fn descriptor_of(path: &Path) -> Descriptor {
         let f = fs::File::open(path).unwrap();
         imp::descriptor(&OwnedHandle::from(f)).unwrap()
+    }
+
+    #[test]
+    fn session_trust_refuses_every_sandbox_principal_and_no_other() {
+        let with = |ace: Ace| Descriptor {
+            owner: user(),
+            protected: false,
+            dacl: Some(vec![
+                allow(FILE_ALL_ACCESS, INHERIT_FLAGS, imp::SYSTEM_SID),
+                ace,
+            ]),
+            label: vec![],
+        };
+        let listed = ["S-1-5-21-1-2-3-1001".to_string()];
+        // An inherit-only grant on the root reaches every folder below it.
+        let inherit_only = INHERIT_FLAGS | 0x8;
+        for sid in [
+            SID,
+            "S-1-15-3-1024-9-9-9",
+            "S-1-15-2-1",
+            "S-1-15-2-2",
+            imp::LOW_LABEL_SID,
+            "S-1-5-12",
+            "S-1-5-33",
+            listed[0].as_str(),
+        ] {
+            for flags in [0, INHERIT_FLAGS, inherit_only] {
+                let why = imp::untrusted(&with(allow(MODIFY, flags, sid)), &listed);
+                assert!(why.is_some_and(|w| w.contains(sid)), "{sid} {flags}");
+            }
+        }
+        // Normal-user trust: the owner, users, administrators and SYSTEM.
+        for sid in [
+            user().as_str(),
+            "S-1-5-11",
+            "S-1-5-32-545",
+            "S-1-5-32-544",
+            imp::SYSTEM_SID,
+        ] {
+            let d = with(allow(MODIFY, INHERIT_FLAGS, sid));
+            assert_eq!(imp::untrusted(&d, &listed), None, "{sid}");
+        }
+        // Read access for a sandbox SID is fine.
+        let read = with(allow(0x1200a9, INHERIT_FLAGS, "S-1-15-2-1"));
+        assert_eq!(imp::untrusted(&read, &listed), None);
     }
 
     fn junction(link: &Path, target: &Path) {

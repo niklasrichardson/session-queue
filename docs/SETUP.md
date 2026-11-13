@@ -15,6 +15,7 @@ Set up `cq` in three parts, in this order:
 | Codex desktop app or Codex CLI chat | [Set up a Codex chat](agents/CODEX.md#set-up-a-codex-chat) |
 | Codex, a fresh run per task (`cq dispatch`) | [Codex dispatch worker](agents/CODEX-DISPATCH.md) |
 | Antigravity CLI (experimental) | [Antigravity CLI setup](agents/ANTIGRAVITY.md) |
+| Antigravity CLI or App, an open session (experimental, Windows) | [Session mode](agents/ANTIGRAVITY.md#session-mode) |
 | Any other agent, or a script | [Other agents](agents/OTHER-AGENTS.md) |
 
 What has been tested with each, and its limits, is in the README's [support table](../README.md#support-by-agent-and-surface).
@@ -89,6 +90,7 @@ A name that will be idle for a long time can sleep. `cq sleep --as A B` writes a
 What sleep stops depends on the wake route:
 
 - **A watcher** (`--to-inbox`, `--to-codex`, `--to-agy`, Monitor mode) sees the record, prints `CQ-SLEEP by=... reason="..."` and exits 7. After that, no watcher wakes the session until someone runs `cq wake` and starts its watcher again.
+- **A session-mode watcher** (`--to-agy-session`) keeps running while the name sleeps, but claims nothing and wakes nothing. `cq wake` is enough; nothing needs to start again.
 - **Polling** is not stopped by `cq sleep`. A scheduled run still starts and still costs a model turn. `cq list` still lists the `UNCLAIMED` messages, after a first line `ASLEEP by=... reason="..."`. So pause the agent's own scheduler as well, and resume it after `cq wake`. The polling rules must end the run with no other work when `cq list` prints an `ASLEEP` line.
 
 To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/coordinators`.
