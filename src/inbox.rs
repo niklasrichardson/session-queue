@@ -210,6 +210,13 @@ impl<T: Transport, C: Clock> Inbox<T, C> {
     }
 }
 
+/// The Claude Code inbox as a wake transport (`src/wake.rs`).
+impl<T: Transport, C: Clock> crate::wake::Wake for Inbox<T, C> {
+    fn post(&mut self, text: &str) -> io::Result<()> {
+        Inbox::post(self, text)
+    }
+}
+
 impl<T: Transport, C: Clock> Sink for Inbox<T, C> {
     fn line(&mut self, line: &str) -> io::Result<()> {
         if self.held.is_empty() {

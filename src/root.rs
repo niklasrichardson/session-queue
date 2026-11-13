@@ -78,23 +78,43 @@ impl Root {
         Ok(Self { path: raw })
     }
 
+    /// The build's `CQ_DEFAULT_ROOT`, and nothing from the environment
+    /// (`cq watch --to-agy-session`). `None` for a build without it, or
+    /// with a relative one.
+    pub fn build_default() -> Option<Self> {
+        BUILD_DEFAULT_ROOT
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .map(|path| Self { path })
+    }
+
     /// A root at `path`, for unit tests.
     #[cfg(test)]
     pub(crate) fn at(path: PathBuf) -> Self {
         Self { path }
     }
 
+    /// A root at `path`, for session mode's inputs (`src/session.rs`),
+    /// which choose the path themselves.
+    pub(crate) fn pinned(path: PathBuf) -> Self {
+        Self { path }
+    }
+
     /// Read `CQ_ROOT` and check that `cq init` has created the layout.
     pub fn open() -> Result<Self> {
         let root = Self::from_env()?;
-        let ready = TOP_DIRS.iter().all(|d| root.path.join(d).is_dir());
-        if !ready {
+        if !root.ready() {
             return Err(CqError::error(format!(
                 "queue root {} is missing or not initialised; run `cq init` first",
                 root.path.display()
             )));
         }
         Ok(root)
+    }
+
+    /// `cq init` has created the layout.
+    pub fn ready(&self) -> bool {
+        TOP_DIRS.iter().all(|d| self.path.join(d).is_dir())
     }
 
     /// Create the layout. Safe to run more than once.

@@ -15,6 +15,19 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Antigravity session mode on Windows, 13 November 2026
+
+`cq watch --to-agy-session` (cq 1.17.0, [issue #104](https://github.com/niklasrichardson/session-queue/issues/104)). Checked on Windows 11 with `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --workspace`. The watcher itself was not run live.
+
+- `src/broker/session/tests.rs` (20 tests, fake session, fake link and fake clock): restart from each phase, never NEW-WORK once `started` exists and never RESUME twice; a valid reply; an info read; an invalid reply that stays the same for 60 seconds, and one that keeps changing; exit 8 after 3 wakes with no `started`, and a new round on the next start; exit 8 on process exit, on 3 failed connects and on 4 failed agentapi calls (1, 2 and 4 s apart); an address that changed owner; nothing claimed and no deadline while asleep; a sender outside `allow_from`; a print-mode record refused; the exact wake texts.
+- `src/session/tests.rs` (18 tests, fake process tree and real folders): a hostile environment (every variable but the address and the cross-checks points at a decoy root) changes nothing; no build root; a Low-labelled root; an inheritable Modify entry on the root for a capability SID that the policy does not list (the live S1 finding); a config writable by the sandbox SID; a junction; no policy table; the strict policy; an agentapi variable that names another program; no address, and an error that never shows the address; an address owned by another process; parents that started after their child; the nearest launcher; `ANTIGRAVITY_CONVERSATION_ID` that differs from the policy; the real process and listener tables.
+- `src/exchange.rs`: the trust check refuses a write grant (direct, inheritable or inherit-only) to any `S-1-15-...` SID, the Low SID, RESTRICTED, WRITE RESTRICTED and a listed SID, and passes the owner, users, Authenticated Users, administrators and SYSTEM.
+- `src/main.rs`: `--to-agy-session` takes only `--as` and `--takeover`; the stop line for each exit.
+
+Live tests by the owner on 13 November 2026, CLI and App, with `agentapi` but not with this watcher: see [Open gates](agents/ANTIGRAVITY.md#open-gates). S1 environment, A5 and A12 passed; A7 found `ANTIGRAVITY_CONVERSATION_ID`; A8 found that a wake is not an interrupt; S1 writes failed on a root with a capability-SID Modify entry, which the start check now refuses, and the CLI's file tool wrote in the queue root with no prompt (likely `allowNonWorkspaceAccess: true`, not re-tested; now a documented setup rule).
+
+Not verified: an end-to-end run of the watcher with a real session; S1 writes on a fixed root; the Unix build (no Unix target here; CI builds it).
+
 ## cq-top context column on Windows, 12 November 2026
 
 cq 1.16.0 / cq-top 0.5.0: the Overview Watchers table and the `--html` dashboard show each watcher's session context ([issue #102](https://github.com/niklasrichardson/session-queue/issues/102)). Checked on Windows 11 with `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (cq-top: 92 tests, 0 failed). CI passed on Windows, macOS and Linux. Not yet checked live in a terminal.

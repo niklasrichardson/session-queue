@@ -26,6 +26,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use jiff::tz::TimeZone;
 
@@ -46,8 +47,9 @@ pub struct Config {
     pub tz_label: Option<String>,
 }
 
-/// The keys the file may hold.
-const KEYS: [&str; 3] = ["rules", "tz", "tz_label"];
+/// The keys the file may hold. `agy-session` is read only by
+/// `cq watch --to-agy-session` (`src/session.rs`).
+const KEYS: [&str; 4] = ["rules", "tz", "tz_label", "agy-session"];
 
 impl Config {
     /// Read `config.toml` in `root`. A missing file gives no settings and no
@@ -70,11 +72,22 @@ impl Config {
             (!problems.is_empty()).then(|| format!("{}: {}", path.display(), problems.join("; ")));
         (config, warning)
     }
+
+    /// `load` for bytes already read, from `config.toml` in `root`.
+    pub fn from_bytes(bytes: &[u8], root: &Path) -> (Config, Option<String>) {
+        let (config, problems) = match text_of(bytes) {
+            Ok(text) => parse(text, root),
+            Err(problem) => (Config::default(), vec![problem.to_owned()]),
+        };
+        let warning = (!problems.is_empty())
+            .then(|| format!("{}: {}", root.join(FILE).display(), problems.join("; ")));
+        (config, warning)
+    }
 }
 
 /// The file's text without a UTF-8 byte order mark (Windows Notepad can
 /// write one), or the problem that makes the whole file unusable.
-fn text_of(bytes: &[u8]) -> Result<&str, &'static str> {
+pub fn text_of(bytes: &[u8]) -> Result<&str, &'static str> {
     if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
         return Err("UTF-16 text; save it as UTF-8. The file is ignored");
     }
@@ -97,7 +110,7 @@ fn parse(text: &str, root: &Path) -> (Config, Vec<String>) {
     let mut problems = Vec::new();
     for key in table.keys().filter(|k| !KEYS.contains(&k.as_str())) {
         problems.push(format!(
-            "unknown key {key:?} is ignored; the keys are rules, tz and tz_label"
+            "unknown key {key:?} is ignored; the keys are rules, tz, tz_label and agy-session"
         ));
     }
     let mut string = |key: &str| match table.get(key) {
@@ -165,6 +178,19 @@ fn non_empty(s: &str) -> Option<String> {
 }
 
 static INSTALLED: OnceLock<Config> = OnceLock::new();
+/// Set once by `ignore_env`.
+static NO_ENV: AtomicBool = AtomicBool::new(false);
+
+/// Read no setting from the environment for the rest of this process
+/// (`cq watch --to-agy-session`): only the file and the build's values.
+pub fn ignore_env() {
+    NO_ENV.store(true, Ordering::SeqCst);
+}
+
+/// True after `ignore_env`.
+pub fn env_ignored() -> bool {
+    NO_ENV.load(Ordering::SeqCst)
+}
 
 /// Use `config` for this process. Call it once, before the first local time
 /// or rules lookup: a later call has no effect.
@@ -181,7 +207,12 @@ pub fn installed() -> &'static Config {
 /// the file's value, the build's value. Values are trimmed; empty ones are
 /// skipped.
 pub fn candidates(var: &str, file: Option<&str>, build: Option<&str>) -> Vec<String> {
-    candidates_from(std::env::var(var).ok(), file, build)
+    let env = if env_ignored() {
+        None
+    } else {
+        std::env::var(var).ok()
+    };
+    candidates_from(env, file, build)
 }
 
 fn candidates_from(env: Option<String>, file: Option<&str>, build: Option<&str>) -> Vec<String> {

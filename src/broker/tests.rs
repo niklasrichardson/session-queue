@@ -133,7 +133,7 @@ impl Log {
     }
 }
 
-type Broker = AgyBroker<Fake, FakeClock>;
+type Broker = AgyBroker<PrintTurn<Fake>, FakeClock>;
 
 struct Env {
     _dir: tempfile::TempDir,
@@ -211,7 +211,7 @@ impl Env {
     }
 
     fn state(&self, id: &str) -> JobState {
-        read_record(&self.record(id)).unwrap()
+        read_record(&self.record(id), SCHEMA).unwrap()
     }
 
     fn inbox(&self, name: &str) -> Vec<Message> {

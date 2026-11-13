@@ -29,8 +29,11 @@ pub mod record;
 pub mod requeue;
 pub mod root;
 pub mod send;
+#[cfg(windows)]
+pub mod session;
 pub mod sleep;
 pub mod timefmt;
+pub mod wake;
 pub mod watch;
 
 pub use error::{CqError, Result};

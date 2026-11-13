@@ -885,7 +885,7 @@ fn snapshot_at(root: &cq::Root, beats: &mut Beats, now: i64, limits: &Limits) ->
             .and_then(|r| r.version);
         let agent = match (modes.get(name), sessions.get(name)) {
             (Some(Mode::Codex), _) => Some(sessions::Agent::Codex),
-            (Some(Mode::Agy), _) => Some(sessions::Agent::Gemini),
+            (Some(Mode::Agy | Mode::AgySession), _) => Some(sessions::Agent::Gemini),
             (_, Some(k)) if k.starts_with("local_") => Some(sessions::Agent::Claude),
             _ => None,
         };

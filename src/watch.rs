@@ -139,6 +139,10 @@ pub struct WatchOptions {
     /// Where `--to-inbox` posts, for the watcher record. `None` records no
     /// target.
     pub target: Option<record::Target>,
+    /// `--to-agy-session`: what the watcher wakes, for the record. Such a
+    /// watcher keeps running while asleep (its sink then claims and wakes
+    /// nothing), and reads no setting from the environment.
+    pub session: Option<record::SessionTarget>,
 }
 
 impl WatchOptions {
@@ -154,6 +158,7 @@ impl WatchOptions {
             idle_after: idle::DEFAULT_IDLE_AFTER,
             idle_every: idle::DEFAULT_EVERY,
             target: None,
+            session: None,
         }
     }
 }
@@ -207,8 +212,10 @@ impl<W: Write> Sink for Lines<W> {
 pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<Ended> {
     let name = opts.name.as_str();
     check_name("--as", name)?;
-    // Asleep at start: take no lock and record nothing.
-    if let Some(rec) = sleep::read(root, name) {
+    // Asleep at start: take no lock and record nothing. A session-mode
+    // watcher cannot be restarted from outside, so it runs on, asleep.
+    let stays = opts.session.is_some();
+    if !stays && let Some(rec) = sleep::read(root, name) {
         say_asleep(out, &rec);
         out.stopped("asleep", Ended::Asleep);
         let _ = writeln!(io::stderr(), "cq watch: exiting: asleep");
@@ -217,15 +224,15 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     root.ensure_session_dirs(name)?;
     // Read before the lock, so a bad setting exits 64 with nothing to undo.
     let coordinator = sleep::is_coordinator(root, name);
-    let overdue_limits = if coordinator {
-        Some(overdue::Limits::from_env()?)
-    } else {
-        None
+    let overdue_limits = match (coordinator, stays) {
+        (false, _) => None,
+        (true, false) => Some(overdue::Limits::from_env()?),
+        (true, true) => Some(overdue::Limits::default()),
     };
-    let lock_stale = if coordinator {
-        Some(lock::stale_after_from_env()?)
-    } else {
-        None
+    let lock_stale = match (coordinator, stays) {
+        (false, _) => None,
+        (true, false) => Some(lock::stale_after_from_env()?),
+        (true, true) => Some(Duration::from_secs(lock::DEFAULT_STALE_MINUTES * 60)),
     };
     let started = Instant::now();
     let deadline = opts.max_seconds.map(|s| started + Duration::from_secs(s));
@@ -237,7 +244,9 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
     // Before the pid file, so a reader that finds this PID finds its record.
     // Without it, session-start asks for a restart, so a failure only costs
     // one.
-    if let Err(e) = Record::this_process(opts.target.clone()).write(root, name) {
+    let mut record = Record::this_process(opts.target.clone());
+    record.session = opts.session.clone();
+    if let Err(e) = record.write(root, name) {
         eprintln!("cq watch: could not record the watcher for {name}: {e}");
     }
     let pid_file = root.pid_file(name);
@@ -317,7 +326,7 @@ pub fn watch(root: &Root, opts: &WatchOptions, out: &mut impl Sink) -> Result<En
             };
             break Ok((reason, Ended::Normal));
         }
-        if let Some(rec) = sleep::read(root, name) {
+        if !stays && let Some(rec) = sleep::read(root, name) {
             say_asleep(out, &rec);
             break Ok(("asleep".to_owned(), Ended::Asleep));
         }

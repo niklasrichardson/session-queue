@@ -14,6 +14,10 @@
 //! runs and recovery both use it. A completion is saved in
 //! `completion.json` before `cq done` runs.
 //!
+//! How a job's work starts is a `Launcher`: `PrintTurn` runs one `agy`
+//! print turn per job; `SessionWake` (`src/broker/session.rs`, for
+//! `cq watch --to-agy-session`) wakes the open Antigravity session instead.
+//!
 //! Without `--agy-broker`, `--to-agy` is unchanged (`src/agy.rs`).
 
 use std::ffi::OsString;
@@ -41,8 +45,10 @@ use crate::timefmt::{self, rfc3339};
 use crate::watch::{Ended, Sink};
 use crate::{Root, done, fsutil, members};
 
-/// The job record schema.
+/// The job record schema of print mode.
 pub const SCHEMA: &str = "cq-agy-job/1";
+/// The job record schema of session mode (`--to-agy-session`).
+pub const SESSION_SCHEMA: &str = "cq-agy-job/2";
 /// The request file schema.
 pub const REQUEST_SCHEMA: &str = "cq-agy-request/1";
 /// The most bytes of `reply.json` that are read; a larger file is invalid.
@@ -77,6 +83,10 @@ pub enum Phase {
     Prepared,
     Launching,
     Running,
+    /// Session mode: the session was asked to start the job.
+    Waking,
+    /// Session mode: the session created `started`.
+    Woken,
     Ended,
     Completing,
     Completed,
@@ -110,6 +120,12 @@ pub enum End {
     Exited,
     TimedOut,
     Stopped,
+    /// Session mode: a valid `reply.json`.
+    Replied,
+    /// Session mode: a `reply.json` that stayed invalid.
+    Invalid,
+    /// Session mode: no reply by the end of the reminder deadline.
+    NoReply,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +160,24 @@ pub struct Verdict {
 }
 
 impl Verdict {
+    /// A session-mode verdict: `end` with the read of `reply.json`.
+    pub fn session(
+        end: End,
+        reply_check: ReplyCheck,
+        problem: Option<String>,
+        reply: Option<Reply>,
+    ) -> Self {
+        Verdict {
+            end,
+            exit_code: None,
+            agy_status: None,
+            conversation: Conversation::Same,
+            reply_check,
+            reply_problem: problem,
+            reply,
+        }
+    }
+
     /// A turn that did not end on its own: nothing was read.
     pub fn not_read(end: End) -> Self {
         Verdict {
@@ -168,6 +202,35 @@ pub struct Launch {
     pub deadline: String,
 }
 
+/// The kind of a job record; `None` (no field) is a print-mode record.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobKind {
+    Session,
+}
+
+/// Session mode: the wake, deadline and reminder state of a job. Durable in
+/// the record, so a restart neither resends a wake nor a reminder, nor
+/// restarts a deadline. Times are RFC 3339.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WakeState {
+    /// The start of the current ack round.
+    pub round: String,
+    /// The NEW-WORK wakes of this round, each saved before it was sent.
+    pub wakes: Vec<String>,
+    /// No ack by this time ends the round (exit 8).
+    pub ack_deadline: String,
+    /// When `started` was first seen.
+    pub acked: Option<String>,
+    /// No reply by this time sends the one RESUME.
+    pub reply_deadline: Option<String>,
+    /// When the RESUME was saved as sent; it is never sent again.
+    pub reminder: Option<String>,
+    /// No reply by this time after the RESUME holds the job for review.
+    pub review_at: Option<String>,
+}
+
 /// `state.json`. Each write carries every earlier value too.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -186,6 +249,11 @@ pub struct JobState {
     pub reason: Option<String>,
     pub held_in: Option<Phase>,
     pub updated: String,
+    /// `session` for a session-mode record (schema 2).
+    #[serde(default, rename = "kind", skip_serializing_if = "Option::is_none")]
+    pub job_kind: Option<JobKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<WakeState>,
 }
 
 /// `completion.json`: the completion `decide()` gave, bound to the job.
@@ -329,6 +397,7 @@ pub fn decide(
     match v.end {
         End::TimedOut => return Err(format!("the turn ran past {} s", TURN_TIMEOUT.as_secs())),
         End::Stopped => return Err("the watcher stopped while the turn ran".into()),
+        End::Replied | End::Invalid | End::NoReply => return decide_session(kind, v, id, nonce),
         End::Exited => {}
     }
     match v.conversation {
@@ -382,12 +451,45 @@ pub fn decide(
     }
 }
 
+/// `decide()` for the session-mode ends.
+fn decide_session(
+    kind: MsgType,
+    v: &Verdict,
+    id: &str,
+    nonce: &str,
+) -> std::result::Result<Finish, String> {
+    match v.end {
+        End::Replied => {
+            let r = match (&v.reply_check, &v.reply) {
+                (ReplyCheck::Valid, Some(r)) if r.id == id && r.nonce == nonce => r,
+                _ => return Err("the verdict says replied but holds no reply for this job".into()),
+            };
+            check_fields(r, kind).map_err(|e| format!("the stored reply is not valid: {e}"))?;
+            match r.outcome {
+                Outcome::Read => Ok(Finish::Done),
+                Outcome::Reply => Ok(Finish::Reply {
+                    status: r.status.unwrap_or(Status::Failed),
+                    text: r.text.clone().unwrap_or_default(),
+                }),
+                Outcome::Reject => Ok(Finish::Reject {
+                    text: r.text.clone().unwrap_or_default(),
+                }),
+            }
+        }
+        End::Invalid if kind == MsgType::Task => Ok(Finish::Reply {
+            status: Status::Failed,
+            text: NO_REPLY.into(),
+        }),
+        End::Invalid => Ok(Finish::Done),
+        End::NoReply => Err("the session wrote no reply, also after the reminder".into()),
+        _ => Err("not a session-mode verdict".into()),
+    }
+}
+
 /// True when `v` is from a turn that read the message (a valid `read`).
 fn was_read(v: Option<&Verdict>) -> bool {
     v.is_some_and(|v| {
-        v.exit_code == Some(0)
-            && v.agy_status.as_deref() == Some(SUCCESS)
-            && v.reply.as_ref().is_some_and(|r| r.outcome == Outcome::Read)
+        was_success(v) && v.reply.as_ref().is_some_and(|r| r.outcome == Outcome::Read)
     })
 }
 
@@ -543,7 +645,7 @@ pub struct Config {
 
 /// What the current job waits for.
 #[derive(Debug)]
-enum Stage {
+pub enum Stage {
     Sort,
     Prepare,
     Launch,
@@ -551,7 +653,8 @@ enum Stage {
     Complete { finish: Finish },
 }
 
-struct Job {
+/// The job the broker works on.
+pub struct Job {
     dir: PathBuf,
     state: JobState,
     message: Option<Message>,
@@ -559,7 +662,8 @@ struct Job {
     stage: Stage,
 }
 
-enum Step {
+/// What a stage asks of the broker next.
+pub enum Step {
     /// Go on with the next stage now.
     Next,
     /// Wait for a later tick.
@@ -568,11 +672,42 @@ enum Step {
     Finished,
 }
 
+/// How a job's work is started and watched. The broker owns the record, the
+/// exchange folder and the completion; a launcher owns only its own phases.
+/// Each call gets the whole broker, so a launcher reaches its own state as
+/// `b.launcher`.
+pub trait Launcher: Sized {
+    /// The record schema this launcher writes and recovers.
+    const SCHEMA: &'static str;
+    /// The record kind (`None`: no `kind` field).
+    const KIND: Option<JobKind>;
+    /// Start the prepared job.
+    fn launch<C: Clock>(b: &mut AgyBroker<Self, C>, job: &mut Job, now: Instant) -> Result<Step>;
+    /// Watch the started job until it has a verdict.
+    fn running<C: Clock>(
+        b: &mut AgyBroker<Self, C>,
+        job: &mut Job,
+        started: Instant,
+        now: Instant,
+    ) -> Result<Step>;
+    /// Recovery of a record left in a phase after `prepared` and before
+    /// `ended`. Sets the stage, or holds the job.
+    fn recover<C: Clock>(b: &mut AgyBroker<Self, C>, job: &mut Job) -> Result<()>;
+    /// The watcher stops while the job runs.
+    fn stopped<C: Clock>(b: &mut AgyBroker<Self, C>, job: &mut Job) -> Result<()>;
+    /// After a fatal error in `job`.
+    fn abandon<C: Clock>(b: &mut AgyBroker<Self, C>, job: &mut Job);
+    /// False while no new message may be claimed.
+    fn may_claim<C: Clock>(_b: &AgyBroker<Self, C>) -> bool {
+        true
+    }
+}
+
 /// A `Sink` that runs one broker job at a time.
-pub struct AgyBroker<R: TurnRunner, C: Clock> {
+pub struct AgyBroker<L: Launcher, C: Clock> {
     cfg: Config,
     root: Root,
-    runner: R,
+    launcher: L,
     clock: C,
     log: Box<dyn Write>,
     exchange: Option<Exchange>,
@@ -584,12 +719,35 @@ pub struct AgyBroker<R: TurnRunner, C: Clock> {
     failures: u32,
     retry_at: Option<Instant>,
     error: Option<CqError>,
-    timeout: Duration,
-    /// A turn was started and not yet seen to end or stopped.
-    turn_live: bool,
 }
 
-impl AgyBroker<AgyProcess, SystemClock> {
+/// Print mode: one `agy -p` turn per job.
+pub struct PrintTurn<R: TurnRunner> {
+    runner: R,
+    timeout: Duration,
+    /// A turn was started and not yet seen to end or stopped.
+    live: bool,
+}
+
+impl<R: TurnRunner> PrintTurn<R> {
+    fn poll(&mut self) -> Option<io::Result<Option<i32>>> {
+        let result = self.runner.poll();
+        if result.is_some() {
+            self.live = false;
+        }
+        result
+    }
+
+    /// Stop the turn, once.
+    fn stop(&mut self) {
+        if self.live {
+            self.runner.stop();
+            self.live = false;
+        }
+    }
+}
+
+impl AgyBroker<PrintTurn<AgyProcess>, SystemClock> {
     /// The real watcher. Exit 64 for bad settings or an `agy` executable
     /// that cannot be found.
     pub fn start(root: Root, cfg: Config) -> Result<Self> {
@@ -621,7 +779,7 @@ fn read_capped_text(path: &Path, cap: u64) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
+impl<R: TurnRunner, C: Clock> AgyBroker<PrintTurn<R>, C> {
     pub fn with(root: Root, cfg: Config, runner: R, clock: C, log: Box<dyn Write>) -> Result<Self> {
         let mut cfg = cfg;
         cfg.conversation = cfg.conversation.trim().to_owned();
@@ -661,10 +819,180 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
                 Some(_) => {}
             }
         }
-        Ok(Self {
+        let launcher = PrintTurn {
+            runner,
+            timeout: TURN_TIMEOUT,
+            live: false,
+        };
+        Ok(Self::build(root, cfg, launcher, clock, log))
+    }
+
+    fn read_verdict(&self, job: &Job, code: Option<i32>) -> Verdict {
+        let out = job
+            .state
+            .launch
+            .as_ref()
+            .map(|l| read_capped_text(&l.stdout, OUT_CAP))
+            .unwrap_or_default();
+        let reply = match &job.folder {
+            Some(f) => f.read_capped(REPLY, REPLY_CAP),
+            None => FileRead::Refused("the exchange job folder is not open".into()),
+        };
+        verdict(
+            code,
+            &out,
+            &self.cfg.conversation,
+            reply,
+            job.state.kind,
+            &job.state.id,
+            job.state.nonce.as_deref().unwrap_or_default(),
+        )
+    }
+}
+
+impl<R: TurnRunner> Launcher for PrintTurn<R> {
+    const SCHEMA: &'static str = SCHEMA;
+    const KIND: Option<JobKind> = None;
+
+    fn launch<C: Clock>(b: &mut AgyBroker<Self, C>, job: &mut Job, now: Instant) -> Result<Step> {
+        let folder = job.folder.as_ref().expect("prepared");
+        let dir = folder.path().to_owned();
+        if let Err(why) = b.folder_trusted(folder) {
+            return Err(b.hold(job, why));
+        }
+        let mut args = vec![
+            "--conversation".to_owned(),
+            b.cfg.conversation.clone(),
+            "--add-dir".to_owned(),
+            dir.display().to_string(),
+            "-p".to_owned(),
+            prompt(&b.cfg.name, b.cfg.prompt.as_deref(), &dir),
+        ];
+        args.extend(["--output-format".to_owned(), "json".to_owned()]);
+        let spec = TurnSpec {
+            bin: b.cfg.bin.clone(),
+            args,
+            stdout: job.dir.join("agy.out"),
+            stderr: job.dir.join("agy.err"),
+            dir,
+        };
+        let deadline = timefmt::now()
+            .checked_add(jiff::SignedDuration::try_from(b.launcher.timeout).unwrap_or_default())
+            .map(rfc3339)
+            .unwrap_or_default();
+        let mut command = vec![Path::new(&spec.bin).display().to_string()];
+        command.extend(spec.args.iter().cloned());
+        job.state.launch = Some(Launch {
+            command,
+            stdout: spec.stdout.clone(),
+            stderr: spec.stderr.clone(),
+            deadline,
+        });
+        // Durable before the spawn: from here on, agy may have run.
+        b.set_phase(job, Phase::Launching)?;
+        match b.launcher.runner.start(&spec) {
+            Ok(pid) => {
+                b.launcher.live = true;
+                b.retry_at = None;
+                job.state.pid = pid;
+                b.set_phase(job, Phase::Running)?;
+                job.stage = Stage::Running { started: now };
+                let id = job.state.id.clone();
+                b.say(&format!("started agy job {id}"));
+                Ok(Step::Next)
+            }
+            Err(e) => {
+                // The child starts suspended, so a spawn error means no agy
+                // code ran: back to `prepared`, and try again.
+                job.state.launch = None;
+                b.set_phase(job, Phase::Prepared)?;
+                b.failures += 1;
+                if b.failures >= POST_TRIES {
+                    return Err(CqError::new(
+                        exit::AGY_TURN_FAILED,
+                        format!(
+                            "could not start agy {} times in a row ({e}); agy job {} stays claimed in phase prepared",
+                            b.failures, job.state.id
+                        ),
+                    ));
+                }
+                let wait = RETRY_FIRST * 2u32.pow(b.failures - 1);
+                eprintln!(
+                    "cq watch: could not start agy, trying again in {} s ({e})",
+                    wait.as_secs()
+                );
+                b.retry_at = Some(now + wait);
+                Ok(Step::Wait)
+            }
+        }
+    }
+
+    fn running<C: Clock>(
+        b: &mut AgyBroker<Self, C>,
+        job: &mut Job,
+        started: Instant,
+        now: Instant,
+    ) -> Result<Step> {
+        match b.launcher.poll() {
+            None if now >= started + b.launcher.timeout => {
+                b.launcher.stop();
+                b.ended(job, Verdict::not_read(End::TimedOut))?;
+                Ok(Step::Next)
+            }
+            None => Ok(Step::Wait),
+            Some(Err(e)) => {
+                b.launcher.stop();
+                Err(b.hold(job, format!("could not wait for agy: {e}")))
+            }
+            Some(Ok(code)) => {
+                let v = b.read_verdict(job, code);
+                b.ended(job, v)?;
+                Ok(Step::Next)
+            }
+        }
+    }
+
+    fn recover<C: Clock>(b: &mut AgyBroker<Self, C>, job: &mut Job) -> Result<()> {
+        Err(b.hold(job, "the turn may have run, and its verdict is unknown"))
+    }
+
+    /// A running turn is never left behind: look once whether it ended,
+    /// else stop it and hold the job.
+    fn stopped<C: Clock>(b: &mut AgyBroker<Self, C>, job: &mut Job) -> Result<()> {
+        match b.launcher.poll() {
+            Some(Ok(code)) => {
+                let v = b.read_verdict(job, code);
+                b.ended(job, v)
+            }
+            _ => {
+                b.launcher.stop();
+                b.ended(job, Verdict::not_read(End::Stopped))
+            }
+        }
+    }
+
+    /// A turn that may still run is stopped and the job held, as its
+    /// verdict is unknown. The caller keeps the original error; a hold that
+    /// cannot be written leaves the record in `launching` or `running`,
+    /// which the next start holds too.
+    fn abandon<C: Clock>(b: &mut AgyBroker<Self, C>, job: &mut Job) {
+        if !b.launcher.live {
+            return;
+        }
+        b.launcher.stop();
+        if job.state.phase != Phase::NeedsReview {
+            let e = b.hold(job, "the watcher failed while the turn ran");
+            eprintln!("cq watch: {e}");
+        }
+    }
+}
+
+impl<L: Launcher, C: Clock> AgyBroker<L, C> {
+    fn build(root: Root, cfg: Config, launcher: L, clock: C, log: Box<dyn Write>) -> Self {
+        Self {
             cfg,
             root,
-            runner,
+            launcher,
             clock,
             log,
             exchange: None,
@@ -675,9 +1003,7 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
             failures: 0,
             retry_at: None,
             error: None,
-            timeout: TURN_TIMEOUT,
-            turn_live: false,
-        })
+        }
     }
 
     fn say(&mut self, text: &str) {
@@ -700,6 +1026,20 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
 
     fn exchange(&self) -> &Exchange {
         self.exchange.as_ref().expect("opened at start")
+    }
+
+    /// agy finds the job folder by its path: it must still be this one, and
+    /// nobody outside this user and root may be able to change that before
+    /// agy opens it (the Unix trust rule).
+    fn folder_trusted(&self, folder: &JobDir) -> std::result::Result<(), String> {
+        self.exchange()
+            .check_trust(folder)
+            .map_err(|e| format!("the exchange path is no longer trusted: {e}"))
+            .and_then(|()| {
+                folder
+                    .check_path()
+                    .map_err(|e| format!("the exchange job folder moved: {e}"))
+            })
     }
 
     fn write_state(&self, job: &mut Job) -> Result<()> {
@@ -814,27 +1154,11 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
                 if self.root.pause().exists() || self.retry_at.is_some_and(|t| now < t) {
                     return Ok(Step::Wait);
                 }
-                self.launch(job, now)
+                L::launch(self, job, now)
             }
             Stage::Running { started } => {
                 let started = *started;
-                match self.poll_turn() {
-                    None if now >= started + self.timeout => {
-                        self.stop_turn();
-                        self.ended(job, Verdict::not_read(End::TimedOut))?;
-                        Ok(Step::Next)
-                    }
-                    None => Ok(Step::Wait),
-                    Some(Err(e)) => {
-                        self.stop_turn();
-                        Err(self.hold(job, format!("could not wait for agy: {e}")))
-                    }
-                    Some(Ok(code)) => {
-                        let v = self.read_verdict(job, code);
-                        self.ended(job, v)?;
-                        Ok(Step::Next)
-                    }
-                }
+                L::running(self, job, started, now)
             }
             Stage::Complete { finish } => {
                 if self.root.pause().exists() {
@@ -843,113 +1167,6 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
                 let finish = finish.clone();
                 self.finish(job, &finish)?;
                 Ok(Step::Finished)
-            }
-        }
-    }
-
-    fn read_verdict(&self, job: &Job, code: Option<i32>) -> Verdict {
-        let out = job
-            .state
-            .launch
-            .as_ref()
-            .map(|l| read_capped_text(&l.stdout, OUT_CAP))
-            .unwrap_or_default();
-        let reply = match &job.folder {
-            Some(f) => f.read_capped(REPLY, REPLY_CAP),
-            None => FileRead::Refused("the exchange job folder is not open".into()),
-        };
-        verdict(
-            code,
-            &out,
-            &self.cfg.conversation,
-            reply,
-            job.state.kind,
-            &job.state.id,
-            job.state.nonce.as_deref().unwrap_or_default(),
-        )
-    }
-
-    fn launch(&mut self, job: &mut Job, now: Instant) -> Result<Step> {
-        let folder = job.folder.as_ref().expect("prepared");
-        let dir = folder.path().to_owned();
-        // agy finds the folder by its path: it must still be this one, and
-        // nobody outside this user and root may be able to change that
-        // before agy opens it (the Unix trust rule).
-        let checked = self
-            .exchange()
-            .check_trust(folder)
-            .map_err(|e| format!("the exchange path is no longer trusted: {e}"))
-            .and_then(|()| {
-                folder
-                    .check_path()
-                    .map_err(|e| format!("the exchange job folder moved: {e}"))
-            });
-        if let Err(why) = checked {
-            return Err(self.hold(job, why));
-        }
-        let mut args = vec![
-            "--conversation".to_owned(),
-            self.cfg.conversation.clone(),
-            "--add-dir".to_owned(),
-            dir.display().to_string(),
-            "-p".to_owned(),
-            prompt(&self.cfg.name, self.cfg.prompt.as_deref(), &dir),
-        ];
-        args.extend(["--output-format".to_owned(), "json".to_owned()]);
-        let spec = TurnSpec {
-            bin: self.cfg.bin.clone(),
-            args,
-            stdout: job.dir.join("agy.out"),
-            stderr: job.dir.join("agy.err"),
-            dir,
-        };
-        let deadline = timefmt::now()
-            .checked_add(jiff::SignedDuration::try_from(self.timeout).unwrap_or_default())
-            .map(rfc3339)
-            .unwrap_or_default();
-        let mut command = vec![Path::new(&spec.bin).display().to_string()];
-        command.extend(spec.args.iter().cloned());
-        job.state.launch = Some(Launch {
-            command,
-            stdout: spec.stdout.clone(),
-            stderr: spec.stderr.clone(),
-            deadline,
-        });
-        // Durable before the spawn: from here on, agy may have run.
-        self.set_phase(job, Phase::Launching)?;
-        match self.runner.start(&spec) {
-            Ok(pid) => {
-                self.turn_live = true;
-                self.retry_at = None;
-                job.state.pid = pid;
-                self.set_phase(job, Phase::Running)?;
-                job.stage = Stage::Running { started: now };
-                let id = job.state.id.clone();
-                self.say(&format!("started agy job {id}"));
-                Ok(Step::Next)
-            }
-            Err(e) => {
-                // The child starts suspended, so a spawn error means no agy
-                // code ran: back to `prepared`, and try again.
-                job.state.launch = None;
-                self.set_phase(job, Phase::Prepared)?;
-                self.failures += 1;
-                if self.failures >= POST_TRIES {
-                    return Err(CqError::new(
-                        exit::AGY_TURN_FAILED,
-                        format!(
-                            "could not start agy {} times in a row ({e}); agy job {} stays claimed in phase prepared",
-                            self.failures, job.state.id
-                        ),
-                    ));
-                }
-                let wait = RETRY_FIRST * 2u32.pow(self.failures - 1);
-                eprintln!(
-                    "cq watch: could not start agy, trying again in {} s ({e})",
-                    wait.as_secs()
-                );
-                self.retry_at = Some(now + wait);
-                Ok(Step::Wait)
             }
         }
     }
@@ -1008,7 +1225,7 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
                 }
                 Ok(Step::Finished) => self.scan_due = true,
                 Err(e) => {
-                    self.abandon(&mut job);
+                    L::abandon(self, &mut job);
                     return Err(e);
                 }
             }
@@ -1016,40 +1233,9 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
         Ok(())
     }
 
-    /// After a fatal error in `job`: a turn that may still run is stopped
-    /// and the job held, as its verdict is unknown. The caller keeps the
-    /// original error; a hold that cannot be written leaves the record in
-    /// `launching` or `running`, which the next start holds too.
-    fn abandon(&mut self, job: &mut Job) {
-        if !self.turn_live {
-            return;
-        }
-        self.stop_turn();
-        if job.state.phase != Phase::NeedsReview {
-            let e = self.hold(job, "the watcher failed while the turn ran");
-            eprintln!("cq watch: {e}");
-        }
-    }
-
-    fn poll_turn(&mut self) -> Option<io::Result<Option<i32>>> {
-        let result = self.runner.poll();
-        if result.is_some() {
-            self.turn_live = false;
-        }
-        result
-    }
-
-    /// Stop the turn, once.
-    fn stop_turn(&mut self) {
-        if self.turn_live {
-            self.runner.stop();
-            self.turn_live = false;
-        }
-    }
-
     /// Claim the oldest message in the inbox, if it is time to look.
     fn scan(&mut self) -> Result<()> {
-        if self.job.is_some() || self.root.pause().exists() {
+        if self.job.is_some() || self.root.pause().exists() || !L::may_claim(self) {
             return Ok(());
         }
         let now = self.clock.now();
@@ -1073,7 +1259,7 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
         let mut job = Job {
             dir,
             state: JobState {
-                schema: SCHEMA.into(),
+                schema: L::SCHEMA.into(),
                 id: id.clone(),
                 phase: Phase::Claimed,
                 from: message.from.clone(),
@@ -1086,6 +1272,8 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
                 reason: None,
                 held_in: None,
                 updated: String::new(),
+                job_kind: L::KIND,
+                wake: None,
             },
             message: Some(message),
             folder: None,
@@ -1136,7 +1324,7 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
                 .map_err(|e| CqError::io("read agy job record", e))?
                 .path();
             if path.is_dir() {
-                states.push((path.clone(), read_record(&path)?));
+                states.push((path.clone(), read_record(&path, L::SCHEMA)?));
             }
         }
         for id in fsutil::json_stems(&self.root.processing(&self.cfg.name), is_valid_id) {
@@ -1236,11 +1424,8 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
             Phase::Claimed | Phase::Prepared => {
                 return Err(self.hold(&mut job, "the message is no longer claimed"));
             }
-            Phase::Launching | Phase::Running => {
-                return Err(self.hold(
-                    &mut job,
-                    "the turn may have run, and its verdict is unknown",
-                ));
+            Phase::Launching | Phase::Running | Phase::Waking | Phase::Woken => {
+                L::recover(self, &mut job)?;
             }
             Phase::Ended => {
                 let Some(v) = job.state.verdict.clone() else {
@@ -1304,12 +1489,12 @@ impl<R: TurnRunner, C: Clock> AgyBroker<R, C> {
 }
 
 fn was_success(v: &Verdict) -> bool {
-    v.exit_code == Some(0) && v.agy_status.as_deref() == Some(SUCCESS)
+    v.end == End::Replied || (v.exit_code == Some(0) && v.agy_status.as_deref() == Some(SUCCESS))
 }
 
 /// Read and check one record. Refuses (exit 5) a missing, torn or unknown
 /// record; it is never treated as an earlier phase.
-pub fn read_record(dir: &Path) -> Result<JobState> {
+pub fn read_record(dir: &Path, schema: &str) -> Result<JobState> {
     let path = dir.join(STATE);
     let refuse = |why: String| {
         CqError::refused(format!(
@@ -1320,8 +1505,15 @@ pub fn read_record(dir: &Path) -> Result<JobState> {
     let bytes = fs::read(&path).map_err(|e| refuse(format!("{STATE} cannot be read ({e})")))?;
     let state: JobState = serde_json::from_slice(&bytes)
         .map_err(|e| refuse(format!("{STATE} is torn or not a broker record ({e})")))?;
-    if state.schema != SCHEMA {
-        return Err(refuse(format!("schema {:?} is not {SCHEMA}", state.schema)));
+    if state.schema != schema {
+        return Err(refuse(format!(
+            "schema {:?} is not {schema}; it is from the other agy watcher mode",
+            state.schema
+        )));
+    }
+    let session = schema == SESSION_SCHEMA;
+    if session != (state.job_kind == Some(JobKind::Session)) {
+        return Err(refuse("its kind does not match its schema".into()));
     }
     if dir.file_name().and_then(|n| n.to_str()) != Some(state.id.as_str()) {
         return Err(refuse("the record ID is not the folder name".into()));
@@ -1357,7 +1549,7 @@ pub fn default_exchange(root: &Root, name: &str) -> PathBuf {
     root.path().join("agy-exchange").join(name)
 }
 
-impl<R: TurnRunner, C: Clock> Sink for AgyBroker<R, C> {
+impl<L: Launcher, C: Clock> Sink for AgyBroker<L, C> {
     /// A `CQ-NEW` line only asks for an inbox scan; the rest are dropped.
     fn line(&mut self, line: &str) -> io::Result<()> {
         if line.starts_with("CQ-NEW ") {
@@ -1379,27 +1571,16 @@ impl<R: TurnRunner, C: Clock> Sink for AgyBroker<R, C> {
         Ok(())
     }
 
-    /// A running turn is never left behind: look once whether it ended,
-    /// else stop it and hold the job.
+    /// A running job is never left behind: `Launcher::stopped` decides.
     fn stopped(&mut self, _reason: &str, _ended: Ended) -> bool {
         let Some(mut job) = self.job.take() else {
             return true;
         };
-        if let Stage::Running { .. } = job.stage {
-            let result = match self.poll_turn() {
-                Some(Ok(code)) => {
-                    let v = self.read_verdict(&job, code);
-                    self.ended(&mut job, v)
-                }
-                _ => {
-                    self.stop_turn();
-                    self.ended(&mut job, Verdict::not_read(End::Stopped))
-                }
-            };
-            if let Err(e) = result {
-                eprintln!("cq watch: {e}");
-                return true;
-            }
+        if let Stage::Running { .. } = job.stage
+            && let Err(e) = L::stopped(self, &mut job)
+        {
+            eprintln!("cq watch: {e}");
+            return true;
         }
         if let Stage::Complete { finish } = &job.stage
             && !self.root.pause().exists()
@@ -1414,7 +1595,7 @@ impl<R: TurnRunner, C: Clock> Sink for AgyBroker<R, C> {
 
     fn failed(&mut self, e: io::Error) -> Result<String> {
         if let Some(mut job) = self.job.take() {
-            self.abandon(&mut job);
+            L::abandon(self, &mut job);
         }
         Err(self
             .error
@@ -1422,6 +1603,9 @@ impl<R: TurnRunner, C: Clock> Sink for AgyBroker<R, C> {
             .unwrap_or_else(|| CqError::new(exit::AGY_TURN_FAILED, format!("agy broker: {e}"))))
     }
 }
+
+mod session;
+pub use session::{SessionWake, Timing};
 
 #[cfg(test)]
 mod tests;
