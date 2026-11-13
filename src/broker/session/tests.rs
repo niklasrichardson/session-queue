@@ -103,6 +103,7 @@ struct LinkState {
     alive: Cell<bool>,
     reachable: Cell<bool>,
     owned: Cell<bool>,
+    program: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -117,6 +118,9 @@ impl Link for FakeLink {
     }
     fn owned(&mut self) -> bool {
         self.0.owned.get()
+    }
+    fn program(&mut self) -> bool {
+        self.0.program.get()
     }
 }
 
@@ -171,6 +175,7 @@ impl Env {
                 alive: Cell::new(true),
                 reachable: Cell::new(true),
                 owned: Cell::new(true),
+                program: Cell::new(true),
             })),
         }
     }
@@ -641,6 +646,146 @@ fn while_asleep_nothing_is_claimed_and_no_deadline_runs() {
     env.after(&mut b, SECOND);
     assert_eq!(env.session.posts().len(), 2);
     assert_eq!(env.wake(&id).wakes.len(), 1);
+}
+
+#[test]
+fn a_swapped_agentapi_program_stops_the_watcher_before_the_wake() {
+    let env = Env::new();
+    env.link.0.program.set(false);
+    let id = env.send(MsgType::Task);
+    let mut b = env.broker();
+    let e = b.tick().expect_err("the tick must fail");
+    let e = b.failed(e).unwrap_err();
+    assert_eq!(e.code, exit::INBOX_GONE);
+    assert!(e.message.contains("agentapi program"), "{e}");
+    assert!(env.session.posts().is_empty());
+    assert_eq!(env.state(&id).phase, Phase::Waking);
+}
+
+/// The watcher with no job: none, asleep, or paused.
+fn idle(hold: &str) -> Env {
+    let env = Env::new();
+    match hold {
+        "asleep" => fs::write(env.root.sleep_file(NAME), "").unwrap(),
+        "paused" => fs::write(env.root.pause(), "").unwrap(),
+        _ => {}
+    }
+    env
+}
+
+#[test]
+fn an_idle_watcher_stops_with_exit_8_when_the_session_process_exits() {
+    for hold in ["none", "asleep", "paused"] {
+        let env = idle(hold);
+        let mut b = env.broker();
+        b.tick().unwrap();
+        env.after(&mut b, MINUTE);
+        env.link.0.alive.set(false);
+        let e = env.fails_after(&mut b, SECOND);
+        assert_eq!(e.code, exit::INBOX_GONE, "{hold}: {e}");
+        assert!(e.message.contains("process has exited"), "{hold}: {e}");
+    }
+}
+
+#[test]
+fn an_idle_watcher_stops_with_exit_8_after_three_failed_connects() {
+    for hold in ["none", "asleep", "paused"] {
+        let env = idle(hold);
+        env.link.0.reachable.set(false);
+        let mut b = env.broker();
+        b.tick().unwrap();
+        env.after(&mut b, 30 * SECOND);
+        let e = env.fails_after(&mut b, 30 * SECOND);
+        assert_eq!(e.code, exit::INBOX_GONE, "{hold}: {e}");
+        assert!(e.message.contains("3 connects"), "{hold}: {e}");
+        assert!(env.session.posts().is_empty());
+    }
+}
+
+#[test]
+fn while_paused_after_the_first_wake_no_wake_goes_out_and_no_deadline_runs() {
+    let env = Env::new();
+    let id = env.send(MsgType::Task);
+    let mut b = env.broker();
+    b.tick().unwrap();
+    assert_eq!(env.session.posts().len(), 1);
+    fs::write(env.root.pause(), "").unwrap();
+    // Past both retries and the ack deadline.
+    env.after(&mut b, 2 * MINUTE);
+    env.after(&mut b, 4 * MINUTE);
+    env.after(&mut b, 14 * MINUTE);
+    env.after(&mut b, SECOND);
+    assert_eq!(env.session.posts().len(), 1, "no wake while paused");
+    assert_eq!(env.wake(&id).wakes.len(), 1);
+    assert_eq!(env.state(&id).phase, Phase::Waking);
+
+    // As after sleep: the ack round that ran out starts again.
+    fs::remove_file(env.root.pause()).unwrap();
+    env.after(&mut b, SECOND);
+    assert_eq!(env.session.posts().len(), 2);
+    assert_eq!(env.wake(&id).wakes.len(), 1);
+}
+
+#[test]
+fn while_paused_across_the_reply_deadline_no_resume_goes_out() {
+    let env = Env::new();
+    env.session.set(|s| s.ack = true);
+    let id = env.send(MsgType::Task);
+    let mut b = env.broker();
+    b.tick().unwrap();
+    env.after(&mut b, SECOND);
+    assert_eq!(env.state(&id).phase, Phase::Woken);
+    fs::write(env.root.pause(), "").unwrap();
+    env.after(&mut b, 61 * MINUTE);
+    env.after(&mut b, 15 * MINUTE);
+    assert_eq!(env.session.posts().len(), 1, "no RESUME while paused");
+    assert!(env.wake(&id).reminder.is_none());
+    assert_eq!(env.state(&id).phase, Phase::Woken);
+
+    // The due RESUME goes out once PAUSE is gone.
+    fs::remove_file(env.root.pause()).unwrap();
+    env.after(&mut b, SECOND);
+    let posts = env.session.posts();
+    assert_eq!(posts.len(), 2);
+    assert!(posts[1].contains("was already started"), "{}", posts[1]);
+}
+
+#[test]
+fn a_restart_holds_a_session_job_whose_message_was_finished_and_sends_no_wake() {
+    for (phase, done) in [(Phase::Waking, true), (Phase::Woken, false)] {
+        let env = Env::new();
+        env.session.set(|s| s.ack = phase == Phase::Woken);
+        let id = env.send(MsgType::Task);
+        let mut b = env.broker();
+        b.tick().unwrap();
+        env.after(&mut b, SECOND);
+        assert_eq!(env.state(&id).phase, phase);
+        drop(b);
+        // `cq done` or a rejection while no watcher ran.
+        let to = if done {
+            env.root.done(NAME)
+        } else {
+            env.root.rejected(NAME)
+        };
+        fs::create_dir_all(&to).unwrap();
+        fs::rename(
+            message_file(&env.root.processing(NAME), &id),
+            message_file(&to, &id),
+        )
+        .unwrap();
+        let posts = env.session.posts().len();
+
+        // Late enough for a new ack round or the RESUME.
+        let e = env.fails_after(&mut env.broker(), 61 * MINUTE);
+        assert_eq!(e.code, exit::AGY_TURN_FAILED, "{phase:?}: {e}");
+        assert!(e.message.contains("no longer claimed"), "{phase:?}: {e}");
+        assert_eq!(env.session.posts().len(), posts, "{phase:?}: no wake");
+        let state = env.state(&id);
+        assert_eq!(
+            (state.phase, state.held_in),
+            (Phase::NeedsReview, Some(phase))
+        );
+    }
 }
 
 #[test]

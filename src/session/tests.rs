@@ -136,7 +136,8 @@ impl Fixture {
         }
         fs::create_dir(f.path("bin")).unwrap();
         fs::write(f.exe(), "").unwrap();
-        fs::write(f.path("bin/language_server.exe"), "").unwrap();
+        fs::create_dir(f.path("app")).unwrap();
+        fs::write(f.path("app/language_server.exe"), "").unwrap();
         Some(f)
     }
 
@@ -149,7 +150,7 @@ impl Fixture {
     }
 
     fn system(&self) -> FakeSystem {
-        FakeSystem::new(self.path("bin/language_server.exe"))
+        FakeSystem::new(self.path("app/language_server.exe"))
     }
 
     fn build_with(
@@ -232,7 +233,7 @@ fn a_hostile_environment_changes_nothing() {
             return good_env(var);
         }
         if var == AGENTAPI_VAR {
-            return Some(f.path("bin/language_server.exe").into_os_string());
+            return Some(f.path("app/language_server.exe").into_os_string());
         }
         if var == CONVERSATION_VAR {
             // Trusted input, set by Antigravity; it must match the policy.
@@ -254,7 +255,7 @@ fn a_hostile_environment_changes_nothing() {
         ),
         (15, 30, 10)
     );
-    assert_eq!(inputs.agentapi, f.path("bin/language_server.exe"));
+    assert_eq!(inputs.agentapi, f.path("app/language_server.exe"));
     assert_eq!(inputs.launcher, SERVER);
     assert_eq!(
         inputs.settings.rules.as_deref().map(Path::new),
@@ -373,6 +374,62 @@ fn an_agentapi_variable_naming_another_program_is_refused() {
     };
     let r = f.build_with(f.path("cq"), f.system(), &env);
     assert_eq!(code(r), exit::USAGE);
+}
+
+#[test]
+fn an_agentapi_folder_writable_by_the_sandbox_is_refused() {
+    use crate::exchange::imp::INHERIT_FLAGS;
+    use windows_sys::Win32::Storage::FileSystem::{READ_CONTROL, WRITE_DAC};
+    let Some(f) = Fixture::new() else { return };
+    let before = f.files();
+    let h = open_with(&f.path("app"), READ_CONTROL | WRITE_DAC);
+    let mut aces = descriptor(&h).unwrap().dacl.unwrap();
+    aces.push(allow(MODIFY, INHERIT_FLAGS, SID));
+    set_dacl(&h, &aces, false).unwrap();
+    drop(h);
+    let e = f.build().err().expect("refused");
+    assert_eq!(e.code, exit::USAGE);
+    assert!(e.message.contains("the agentapi program"), "{e}");
+    assert!(e.message.contains(SID), "{e}");
+    assert_eq!(f.files(), before);
+}
+
+#[test]
+fn a_low_labelled_agentapi_folder_is_refused() {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ALL_ACCESS, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+    };
+    let Some(f) = Fixture::new() else { return };
+    let h = open_with(&f.path("app"), READ_CONTROL | WRITE_DAC);
+    let d = descriptor(&h).unwrap();
+    let mut aces = d.dacl.unwrap();
+    aces.push(allow(FILE_ALL_ACCESS, 0, &d.owner));
+    set_dacl(&h, &aces, false).unwrap();
+    drop(h);
+    set_low_label(&open_with(&f.path("app"), READ_CONTROL | WRITE_OWNER)).unwrap();
+    let m = message(f.build());
+    assert!(m.contains("the agentapi program"), "{m}");
+}
+
+/// The program cannot be swapped while the watcher runs, and a path that
+/// opens another file fails the check before each wake.
+#[test]
+fn the_agentapi_program_stays_pinned_and_a_swap_is_seen() {
+    let Some(f) = Fixture::new() else { return };
+    let program = f.path("app/language_server.exe");
+    let mut inputs = f.build().unwrap();
+    assert!(inputs.link.program());
+    assert!(fs::rename(&program, f.path("app/old.exe")).is_err());
+    assert!(fs::remove_file(&program).is_err());
+    assert!(fs::rename(f.path("app"), f.path("app2")).is_err());
+    assert!(fs::write(&program, "MZ").is_err());
+    // As if the path now opened another file.
+    inputs.link.program = f.exe();
+    assert!(!inputs.link.program());
+    inputs.link.program = f.path("app/missing.exe");
+    assert!(!inputs.link.program());
+    drop(inputs);
+    fs::rename(&program, f.path("app/old.exe")).unwrap();
 }
 
 #[test]
@@ -594,6 +651,7 @@ fn the_os_finds_this_process_and_its_listener() {
 
 #[test]
 fn the_link_sees_the_listener_and_the_process() {
+    use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
     let mut link = SessionLink {
@@ -601,8 +659,10 @@ fn the_link_sees_the_listener_and_the_process() {
         pid: std::process::id(),
         address: Address::parse(&format!("127.0.0.1:{port}")).unwrap(),
         system: Box::new(Os),
+        image: open_with(&std::env::current_exe().unwrap(), FILE_READ_ATTRIBUTES),
+        program: std::env::current_exe().unwrap(),
     };
-    assert!(link.alive() && link.reachable() && link.owned());
+    assert!(link.alive() && link.reachable() && link.owned() && link.program());
     drop(l);
     assert!(!link.reachable());
     assert!(!link.owned());

@@ -13,10 +13,11 @@
 //!
 //! The watcher stops with exit 8 when the session is gone: its process has
 //! exited, 3 TCP connects in a row to its language server failed, or
-//! agentapi failed 4 times in a row. A job stays in its phase then, and the
-//! next start goes on with it. While the name is asleep, nothing is claimed
-//! and nothing is sent, and no deadline ends a job; the reply and `started`
-//! are still read.
+//! agentapi failed 4 times in a row. It probes on every tick, also with no
+//! job, while asleep and while paused. A job stays in its phase then, and
+//! the next start goes on with it. While the name is asleep or PAUSE
+//! exists, nothing is claimed and nothing is sent, and no deadline ends a
+//! job; the reply and `started` are still read.
 
 use std::io::Write;
 use std::path::Path;
@@ -195,7 +196,9 @@ impl<W: Wake, K: Link, C: Clock> AgyBroker<SessionWake<W, K>, C> {
     }
 
     /// Send `text`, up to `POST_TRIES` times with a doubling wait. Before
-    /// each try, the address must still belong to the session's process.
+    /// each try, the address must still belong to the session's process,
+    /// and the agentapi path must still open the checked file (exit 8: the
+    /// next start checks the program again).
     fn post(&mut self, text: &str) -> Result<()> {
         let mut wait = RETRY_FIRST;
         let mut last = String::new();
@@ -203,6 +206,11 @@ impl<W: Wake, K: Link, C: Clock> AgyBroker<SessionWake<W, K>, C> {
             if !self.launcher.link.owned() {
                 return Err(gone(
                     "the language server address no longer belongs to the session's process",
+                ));
+            }
+            if !self.launcher.link.program() {
+                return Err(gone(
+                    "the agentapi program's path no longer opens the file checked at start",
                 ));
             }
             match self.launcher.wake.post(text) {
@@ -420,7 +428,6 @@ impl<W: Wake, K: Link> Launcher for SessionWake<W, K> {
         _started: Instant,
         now: Instant,
     ) -> Result<Step> {
-        b.probe(now)?;
         if b.launcher.next_poll.is_some_and(|t| now < t) {
             return Ok(Step::Wait);
         }
@@ -450,7 +457,8 @@ impl<W: Wake, K: Link> Launcher for SessionWake<W, K> {
             }
             _ => {}
         }
-        if b.asleep() {
+        // PAUSE holds every wake as sleep does, and its deadlines too.
+        if b.asleep() || b.root.pause().exists() {
             b.launcher.slept = true;
             return Ok(Step::Wait);
         }
@@ -518,6 +526,12 @@ impl<W: Wake, K: Link> Launcher for SessionWake<W, K> {
     /// Nothing new is claimed while the name is asleep.
     fn may_claim<C: Clock>(b: &AgyBroker<Self, C>) -> bool {
         !b.asleep()
+    }
+
+    /// The session is probed on every tick, also with no job, while asleep
+    /// and while paused: a gone session ends the watcher and frees the name.
+    fn watch<C: Clock>(b: &mut AgyBroker<Self, C>, now: Instant) -> Result<()> {
+        b.probe(now)
     }
 }
 

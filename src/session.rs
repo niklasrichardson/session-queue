@@ -4,8 +4,9 @@
 //! Nothing here reads `std::env` or `Root::from_env`. The root is the
 //! build's `CQ_DEFAULT_ROOT`; the policy is the `[agy-session.NAME]` table
 //! of its `config.toml`; the binary and the address are tied to the
-//! launching session's own process. The root, `config.toml` and `cq.exe`,
-//! and every folder above them, must not be writable from the sandbox.
+//! launching session's own process. The root, `config.toml`, `cq.exe` and
+//! the agentapi program, and every folder above them, must not be writable
+//! from the sandbox.
 //! Every refusal is exit 64, before any queue write.
 //!
 //! The language server address and the CSRF token are never printed,
@@ -188,8 +189,8 @@ pub struct SessionInputs {
     /// The launching session's process ID.
     pub launcher: u32,
     pub link: SessionLink,
-    /// The root, `config.toml` and `cq.exe` folders, held open without
-    /// delete sharing for the watcher's life.
+    /// The root, `config.toml`, `cq.exe` and agentapi program folders, held
+    /// open without delete sharing for the watcher's life.
     pub pins: Vec<OwnedHandle>,
 }
 
@@ -245,6 +246,16 @@ impl SessionInputs {
                  session mode runs only that one"
             )));
         }
+        // The program every wake runs gets the cq.exe checks, and stays
+        // pinned: each wake first checks that its path still opens this file.
+        let (more, image) = imp::pin_file(&agentapi, sids).map_err(|e| {
+            CqError::usage(format!(
+                "the agentapi program (the launching session's own) fails the session-mode \
+                 checks: {e}. Its path must have no links or junctions and must not be \
+                 writable from the sandbox"
+            ))
+        })?;
+        pins.extend(more);
         let address = (src.env)(crate::wake::ADDRESS_VAR)
             .and_then(|v| v.into_string().ok())
             .ok_or_else(|| {
@@ -277,14 +288,16 @@ impl SessionInputs {
             settings,
             warning,
             conversation,
-            agentapi,
-            launcher,
             link: SessionLink {
                 process,
                 pid: launcher,
                 address,
                 system: src.system,
+                image,
+                program: agentapi.clone(),
             },
+            agentapi,
+            launcher,
             pins,
         })
     }
@@ -462,6 +475,10 @@ pub struct SessionLink {
     pid: u32,
     address: Address,
     system: Box<dyn System>,
+    /// The agentapi program, held open without write or delete sharing,
+    /// and its path.
+    image: OwnedHandle,
+    program: PathBuf,
 }
 
 impl Link for SessionLink {
@@ -480,6 +497,10 @@ impl Link for SessionLink {
         self.system
             .listeners()
             .is_ok_and(|l| self.address.problem(&l, self.pid).is_none())
+    }
+
+    fn program(&mut self) -> bool {
+        imp::same_folder(&self.image, &self.program).unwrap_or(false)
     }
 }
 

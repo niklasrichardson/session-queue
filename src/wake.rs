@@ -30,6 +30,9 @@ pub trait Link {
     /// The address's listening socket still belongs to the launching
     /// process. Checked before each wake.
     fn owned(&mut self) -> bool;
+    /// The agentapi program's path still opens the file that was checked
+    /// at start. Checked before each wake.
+    fn program(&mut self) -> bool;
 }
 
 /// The variables the agentapi child gets; every other one is removed, so

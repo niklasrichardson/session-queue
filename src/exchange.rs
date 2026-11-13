@@ -263,13 +263,13 @@ pub(crate) mod imp {
         DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
         FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
         FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
-        FILE_DISPOSITION_INFO_EX, FILE_FULL_DIR_INFO, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
-        FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_TRAVERSE,
-        FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
-        FileFullDirectoryInfo, FileFullDirectoryRestartInfo, FileStandardInfo,
-        GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle,
-        WRITE_DAC, WRITE_OWNER,
+        FILE_DISPOSITION_INFO_EX, FILE_EXECUTE, FILE_FULL_DIR_INFO, FILE_GENERIC_EXECUTE,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
+        FILE_TRAVERSE, FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo,
+        FileDispositionInfoEx, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
+        FileStandardInfo, GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
+        SetFileInformationByHandle, WRITE_DAC, WRITE_OWNER,
     };
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -635,7 +635,7 @@ pub(crate) mod imp {
         Ok(())
     }
 
-    /// True when `path`, opened by name now, is the folder `h`.
+    /// True when `path`, opened by name now, is the folder (or file) `h`.
     pub fn same_folder(h: &OwnedHandle, path: &Path) -> io::Result<bool> {
         use std::os::windows::fs::OpenOptionsExt;
         let f = std::fs::OpenOptions::new()
@@ -959,6 +959,28 @@ pub(crate) mod imp {
         read: Option<usize>,
         sids: &[String],
     ) -> io::Result<(Vec<OwnedHandle>, Option<Vec<u8>>)> {
+        walk_trusted(path, file, read, sids, false)
+    }
+
+    /// `pin_trusted` for the file `path`, whose checked handle is held too,
+    /// without write or delete sharing: while it is held, the file cannot
+    /// be changed, renamed, replaced or deleted. Returns the folder handles
+    /// and the file's handle.
+    pub fn pin_file(path: &Path, sids: &[String]) -> io::Result<(Vec<OwnedHandle>, OwnedHandle)> {
+        let (mut pins, _) = walk_trusted(path, true, None, sids, true)?;
+        let file = pins
+            .pop()
+            .ok_or_else(|| io::Error::other("no file was opened"))?;
+        Ok((pins, file))
+    }
+
+    fn walk_trusted(
+        path: &Path,
+        file: bool,
+        read: Option<usize>,
+        sids: &[String],
+        keep: bool,
+    ) -> io::Result<(Vec<OwnedHandle>, Option<Vec<u8>>)> {
         let parts: Vec<Component> = path.components().collect();
         let drive = match parts.first() {
             Some(Component::Prefix(p)) => match p.kind() {
@@ -1003,7 +1025,13 @@ pub(crate) mod imp {
                 .ok_or_else(|| io::Error::other("the path is not valid Unicode"))?;
             let leaf = i == last && file;
             let (access, share, options) = if leaf {
-                let data = if read.is_some() { FILE_READ_DATA } else { 0 };
+                // A held file needs a data access: a handle with none does
+                // not take part in sharing, so it would block nothing.
+                let data = match (read, keep) {
+                    (Some(_), _) => FILE_READ_DATA,
+                    (None, true) => FILE_EXECUTE,
+                    (None, false) => 0,
+                };
                 (
                     data | FILE_READ_ATTRIBUTES | READ_CONTROL,
                     FILE_SHARE_READ,
@@ -1036,7 +1064,12 @@ pub(crate) mod imp {
                         }
                         Some(bytes)
                     }
-                    None => None,
+                    None => {
+                        if keep {
+                            pins.push(h);
+                        }
+                        None
+                    }
                 };
                 return Ok((pins, bytes));
             }

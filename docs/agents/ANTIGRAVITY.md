@@ -127,7 +127,7 @@ All before any queue write; each failure is exit 64.
 - **If the root check fails.** In a live test the sandboxed shell could create files in the queue root and its folders, because the root's DACL had an inheritable Modify entry for a capability SID (`S-1-15-3-1024-...`). The start check refuses such a root. Remove the entry (and any like it on the folders above) before you use session mode; cq never changes the root's ACL itself.
 - The conversation: `ANTIGRAVITY_CONVERSATION_ID`, which Antigravity sets and the session cannot change (each run-command call is a fresh process with no environment parameter). With `conversation` in the table as well, the two must match. Without the variable, the table's value is used. Neither, or a value that is not one line: exit 64.
 - The launching session: the nearest `agy.exe` (CLI) or `language_server.exe` (App) above the watcher in the process tree, where each parent started before its child.
-- The agentapi binary: that process's own image, run as `IMAGE agentapi send-message ID TEXT`. `PATH` is not searched. If `ANTIGRAVITY_AGENTAPI_EXE` names another file: exit 64.
+- The agentapi binary: that process's own image, run as `IMAGE agentapi send-message ID TEXT`. `PATH` is not searched. If `ANTIGRAVITY_AGENTAPI_EXE` names another file: exit 64. The image and every folder above it get the same checks as `cq.exe`. The watcher holds the image and its folders open for its life, so while it runs, the image cannot be changed, renamed, replaced or deleted, and its folders cannot be renamed. Before each wake it checks that the path still opens the same file (volume serial and file index); if not, it sends nothing and stops with exit 8, and the next start checks the program again.
 - The address: `ANTIGRAVITY_LS_ADDRESS` must be a loopback host and port, and every listening socket a connect could reach must belong to the launching process. Checked again before each wake.
 - The agentapi child gets only `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, `SystemRoot`, `TEMP` and `TMP`. cq never prints, logs or records the token or the address.
 
@@ -141,12 +141,13 @@ All before any queue write; each failure is exit 64.
    - info or result: `{"id": ID, "nonce": NONCE, "outcome": "read"}`.
 5. The watcher reads the folder every second. A valid reply finishes the message. A reply that is not valid and stays the same for 60 seconds gives the sender a `failed` reply. No reply after `reply_minutes`: one RESUME wake ("... was already started. Do not start it again. ..."); none after `resume_minutes` more: the job needs review, exit 11.
 
-A restart reads the job record and the folder before any wake: it never sends NEW-WORK once `started` exists, and never sends the RESUME wake twice. `woken` with `started` gone: needs review. Held jobs are handled as in [broker mode](#held-jobs).
+A restart reads the job record and the folder before any wake: it never sends NEW-WORK once `started` exists, and never sends the RESUME wake twice. `woken` with `started` gone: needs review. A `waking` or `woken` job whose message is no longer claimed (for example, finished with `cq done` or rejected while no watcher ran): needs review, exit 11, and no wake. Held jobs are handled as in [broker mode](#held-jobs).
 
 ### While it runs
 
-- **Session end.** The watcher stops with exit 8 when the launching process exits, after 3 failed TCP connects to the address in a row (every 30 s), or when agentapi fails 4 times in a row (1, 2 and 4 s apart). In the App one language server serves many conversations, so closing one conversation trips none of these; the next job then ends with exit 8 after `ack_minutes`.
+- **Session end.** The watcher stops with exit 8 when the launching process exits, after 3 failed TCP connects to the address in a row (every 30 s), or when agentapi fails 4 times in a row (1, 2 and 4 s apart). It checks the process and the address on every tick, also with no job, while asleep and under `PAUSE`, so a watcher whose session has gone frees NAME. In the App one language server serves many conversations, so closing one conversation trips none of these; the next job then ends with exit 8 after `ack_minutes`.
 - **Sleep.** While NAME is asleep the watcher keeps running, claims nothing and wakes nothing. Deadlines that ran out during the sleep start again on `cq wake`.
+- **PAUSE.** While `PAUSE` exists the watcher claims nothing, finishes nothing and sends no wake: no NEW-WORK retry and no RESUME. It still reads `started` and `reply.json`. Deadlines work as for sleep: one that ran out under `PAUSE` starts again when `PAUSE` is removed, and a due RESUME then goes out at once.
 - **Second start.** Exit 5. The stop line says "already running for this conversation; nothing to do" when the holder is a session-mode watcher for the same conversation, else "NAME is held by another watcher; ask the user". Only a person decides on `--takeover`.
 - **Stop line.** When the watcher ends, its last stdout line is `cq watch (NAME) stopped: REASON. WHAT TO DO`. "Start the watcher again with the same line" follows exit 8. "Do not restart; tell the user" follows exit 5, 11 and 64. Progress lines go to stderr.
 - **A wake during a turn.** A wake does not interrupt a running turn and does not cancel a running command. It arrives inside that turn as a system message at the next tool-response boundary (live test, CLI and App). So the session may get the NEW-WORK text in the middle of other work. The `started` rule still applies: create it as a new file, and stop if it exists.
@@ -166,7 +167,7 @@ Live tests on 13 November 2026, CLI and App, with `agentapi` and the sandbox but
 | A8 | A wake during a turn is not an interrupt (see [While it runs](#while-it-runs)). v1 is not blocked. |
 | A12 | `send-message` delivers with exactly `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, `SystemRoot`, `TEMP` and `TMP`. Without the conversation variable the message shows as from the system. |
 
-Still open: S1 writes on a fixed root, and an end-to-end run of this watcher. The token is not protected from the session: the sandboxed shell already sees it and the address.
+Still open: S1 writes on a fixed root, an end-to-end run of this watcher, and the agentapi image checks and hold on a real Antigravity install. The token is not protected from the session: the sandboxed shell already sees it and the address.
 
 ## Open conversation
 

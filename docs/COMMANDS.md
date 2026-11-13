@@ -308,6 +308,8 @@ Experimental, cq 1.17.0, Windows only (exit 64 elsewhere). `cq watch --as B --to
 - **Start checks.** Root, `config.toml` and `cq.exe` trust, the launching `agy.exe` or `language_server.exe`, the agentapi binary and the language-server address. Each failure is exit 64, before any queue write.
 - **Per message.** Claim, write `request.json`, record the wake, send the NEW-WORK wake. The session creates `started`, then writes `reply.json`. No `started` after `ack_minutes` (default 15): exit 8. No reply after `reply_minutes` (default 60): one RESUME wake; none after `resume_minutes` (default 10) more: needs review, exit 11.
 - **Asleep.** The watcher does not exit 7. It keeps running, claims nothing and wakes nothing until `cq wake`.
+- **PAUSE.** The watcher claims nothing, finishes nothing and sends no wake while `PAUSE` exists. Deadlines work as for sleep.
+- **Session gone.** The watcher checks the launching process and the address on every tick, also with no job, while asleep and under `PAUSE`, and exits 8 when the session has gone.
 - **Stop line.** The last stdout line is `cq watch (B) stopped: REASON. WHAT TO DO`. Progress lines go to stderr.
 - **Status.** `cq status` shows `mode=agy-session`.
 
@@ -358,7 +360,7 @@ asleep name=B by=lead reason="done for today" watcher=stopped why="no pid file" 
 | 5 | Refused: bad name, body over 20 KB, hop limit, a pair, recipient or sender limit, `PAUSE`, missing parent, a watcher already running, `done --reply` or `send --reply-to` on a `result` or `info`, or `sleep` of another name by a name that is not a coordinator. `lock`: a bad lock name, `--as owner`, `--for` over 200 characters, `--owner` or `break` by a name that is not a coordinator, or a session acting as a name other than its recorded one. `watch --agy-broker`: a job record that is torn, unknown or needs review, a claimed message without a record, or more than one unfinished record. `watch --to-agy-session`: also a watcher that already holds the name. |
 | 6 | `done`: the message is not claimed by this session. `requeue`: the message is not in this session's `rejected/` folder. |
 | 7 | `watch`: the name is asleep (`sleep/<name>` exists). Do not re-arm. `status`: the name is asleep. |
-| 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. `watch --to-agy-session`: the launching process exited, the address failed 3 connects in a row, agentapi failed 4 times in a row, or no `started` came within `ack_minutes`. Start the watcher again with the same line. |
+| 8 | `watch --to-inbox`: the session's inbox could not be reached after 4 tries. The session has probably ended. `watch --to-agy-session`: the launching process exited, the address failed 3 connects in a row, agentapi failed 4 times in a row, the agentapi path no longer opens the file checked at start, or no `started` came within `ack_minutes`. Start the watcher again with the same line. |
 | 9 | `watch --to-codex`: `codex queue` failed 4 times in a row. Nothing wakes the Codex chat until the watcher is started again. |
 | 10 | `status`: no watcher runs for the name, and it is not asleep. |
 | 11 | `watch --to-agy`: an `agy` turn failed 4 times in a row, or ran in another conversation. Nothing wakes the conversation until the watcher is started again. With `--agy-broker`: a job needs review, or `agy` could not start 4 times in a row. With `--to-agy-session`: a job needs review. |

@@ -701,6 +701,11 @@ pub trait Launcher: Sized {
     fn may_claim<C: Clock>(_b: &AgyBroker<Self, C>) -> bool {
         true
     }
+    /// Runs on every tick, with or without a job, also while asleep or
+    /// paused.
+    fn watch<C: Clock>(_b: &mut AgyBroker<Self, C>, _now: Instant) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A `Sink` that runs one broker job at a time.
@@ -1424,6 +1429,11 @@ impl<L: Launcher, C: Clock> AgyBroker<L, C> {
             Phase::Claimed | Phase::Prepared => {
                 return Err(self.hold(&mut job, "the message is no longer claimed"));
             }
+            // The session may be woken again: never for a message that was
+            // finished or moved while no watcher ran.
+            Phase::Waking | Phase::Woken if !claimed => {
+                return Err(self.hold(&mut job, "the message is no longer claimed"));
+            }
             Phase::Launching | Phase::Running | Phase::Waking | Phase::Woken => {
                 L::recover(self, &mut job)?;
             }
@@ -1563,6 +1573,8 @@ impl<L: Launcher, C: Clock> Sink for AgyBroker<L, C> {
             self.startup().map_err(|e| self.fail(e))?;
             self.ready = true;
         }
+        let now = self.clock.now();
+        L::watch(self, now).map_err(|e| self.fail(e))?;
         self.advance().map_err(|e| self.fail(e))?;
         if self.job.is_none() {
             self.scan().map_err(|e| self.fail(e))?;
