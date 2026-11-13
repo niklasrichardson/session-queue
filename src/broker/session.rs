@@ -195,14 +195,25 @@ impl<W: Wake, K: Link, C: Clock> AgyBroker<SessionWake<W, K>, C> {
         sleep::is_asleep(&self.root, &self.cfg.name)
     }
 
-    /// Send `text`, up to `POST_TRIES` times with a doubling wait. Before
-    /// each try, the address must still belong to the session's process,
-    /// and the agentapi path must still open the checked file (exit 8: the
-    /// next start checks the program again).
-    fn post(&mut self, text: &str) -> Result<()> {
+    /// No wake may go out: the name is asleep or PAUSE exists.
+    fn held(&self) -> bool {
+        self.asleep() || self.root.pause().exists()
+    }
+
+    /// Send `text`, up to `POST_TRIES` times with a doubling wait. False
+    /// when the wake was deferred: before each try, a held name (`held`)
+    /// stops it, and the deadlines then work as after sleep. Before each
+    /// try, the address must still belong to the session's process, and
+    /// the agentapi path must still open the checked file (exit 8: the next
+    /// start checks the program again).
+    fn post(&mut self, text: &str) -> Result<bool> {
         let mut wait = RETRY_FIRST;
         let mut last = String::new();
         for tries in 1..=POST_TRIES {
+            if self.held() {
+                self.launcher.slept = true;
+                return Ok(false);
+            }
             if !self.launcher.link.owned() {
                 return Err(gone(
                     "the language server address no longer belongs to the session's process",
@@ -214,7 +225,7 @@ impl<W: Wake, K: Link, C: Clock> AgyBroker<SessionWake<W, K>, C> {
                 ));
             }
             match self.launcher.wake.post(text) {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(true),
                 Err(e) => last = e.to_string(),
             }
             if tries < POST_TRIES {
@@ -361,7 +372,15 @@ impl<W: Wake, K: Link, C: Clock> AgyBroker<SessionWake<W, K>, C> {
             self.write_state(job)?;
             let dir = job.folder.as_ref().expect("prepared").path().to_owned();
             let text = new_work(&self.cfg.name, &dir);
-            self.post(&text)?;
+            if !self.post(&text)? {
+                // Not counted: it goes out again once the name is free.
+                if let Some(w) = job.state.wake.as_mut() {
+                    w.wakes.pop();
+                }
+                self.write_state(job)?;
+                self.say(&format!("deferred the wake for agy job {}", job.state.id));
+                return Ok(());
+            }
             self.say(&format!(
                 "woke the session for agy job {} ({} of {})",
                 job.state.id,
@@ -387,7 +406,19 @@ impl<W: Wake, K: Link, C: Clock> AgyBroker<SessionWake<W, K>, C> {
                 self.write_state(job)?;
                 let dir = job.folder.as_ref().expect("prepared").path().to_owned();
                 let text = resume(&self.cfg.name, &job.state.id, &dir);
-                self.post(&text)?;
+                if !self.post(&text)? {
+                    // Still due: it goes out once the name is free.
+                    if let Some(w) = job.state.wake.as_mut() {
+                        w.reminder = None;
+                        w.review_at = None;
+                    }
+                    self.write_state(job)?;
+                    self.say(&format!(
+                        "deferred the reminder of agy job {}",
+                        job.state.id
+                    ));
+                    return Ok(());
+                }
                 self.say(&format!("reminded the session of agy job {}", job.state.id));
             }
             None => {}
@@ -458,7 +489,7 @@ impl<W: Wake, K: Link> Launcher for SessionWake<W, K> {
             _ => {}
         }
         // PAUSE holds every wake as sleep does, and its deadlines too.
-        if b.asleep() || b.root.pause().exists() {
+        if b.held() {
             b.launcher.slept = true;
             return Ok(Step::Wait);
         }

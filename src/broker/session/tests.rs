@@ -40,6 +40,8 @@ struct SessionState {
     skipped: u32,
     /// The next this many posts fail.
     fail: u32,
+    /// A failed post creates this file (PAUSE or a sleep flag).
+    on_fail: Option<PathBuf>,
 }
 
 #[derive(Clone, Default)]
@@ -75,6 +77,9 @@ impl Wake for FakeSession {
         s.posts.push(text.to_owned());
         if s.fail > 0 {
             s.fail -= 1;
+            if let Some(f) = &s.on_fail {
+                fs::write(f, "")?;
+            }
             return Err(io::Error::other("agentapi exited 1"));
         }
         if let Some(dir) = between(text, "First create ", &format!("/{STARTED}")) {
@@ -748,6 +753,77 @@ fn while_paused_across_the_reply_deadline_no_resume_goes_out() {
     let posts = env.session.posts();
     assert_eq!(posts.len(), 2);
     assert!(posts[1].contains("was already started"), "{}", posts[1]);
+}
+
+/// PAUSE and the name's sleep flag.
+fn holds(env: &Env) -> [PathBuf; 2] {
+    [env.root.pause(), env.root.sleep_file(NAME)]
+}
+
+#[test]
+fn a_hold_during_a_failed_new_work_call_defers_it_until_the_name_is_free() {
+    for i in 0..2 {
+        let env = Env::new();
+        let flag = holds(&env)[i].clone();
+        let hold = &flag;
+        env.session.set(|s| {
+            s.fail = 1;
+            s.on_fail = Some(flag.clone());
+        });
+        let id = env.send(MsgType::Task);
+        let mut b = env.broker();
+        b.tick().unwrap();
+        assert_eq!(env.session.posts().len(), 1, "{hold:?}: no second call");
+        assert!(env.wake(&id).wakes.is_empty(), "{hold:?}: not counted");
+        env.after(&mut b, 3 * MINUTE);
+        env.after(&mut b, 20 * MINUTE);
+        assert_eq!(env.session.posts().len(), 1, "{hold:?}: none while held");
+        assert_eq!(env.state(&id).phase, Phase::Waking);
+
+        fs::remove_file(&flag).unwrap();
+        env.after(&mut b, SECOND);
+        let posts = env.session.posts();
+        assert_eq!(posts.len(), 2, "{hold:?}");
+        assert!(posts[1].starts_with("cq: queue job for"), "{}", posts[1]);
+        assert_eq!(env.wake(&id).wakes.len(), 1);
+    }
+}
+
+#[test]
+fn a_hold_during_a_failed_resume_call_keeps_it_due_and_it_goes_out_once() {
+    for i in 0..2 {
+        let env = Env::new();
+        let flag = holds(&env)[i].clone();
+        env.session.set(|s| s.ack = true);
+        let id = env.send(MsgType::Task);
+        let mut b = env.broker();
+        b.tick().unwrap();
+        env.after(&mut b, SECOND);
+        assert_eq!(env.state(&id).phase, Phase::Woken);
+        env.session.set(|s| {
+            s.fail = 1;
+            s.on_fail = Some(flag.clone());
+        });
+        env.after(&mut b, 60 * MINUTE);
+        assert_eq!(env.session.posts().len(), 2, "{flag:?}: one failed RESUME");
+        let wake = env.wake(&id);
+        assert!(
+            wake.reminder.is_none() && wake.review_at.is_none(),
+            "{flag:?}: not counted as sent"
+        );
+        env.after(&mut b, 30 * MINUTE);
+        assert_eq!(env.session.posts().len(), 2, "{flag:?}: none while held");
+        assert_eq!(env.state(&id).phase, Phase::Woken);
+
+        fs::remove_file(&flag).unwrap();
+        env.after(&mut b, SECOND);
+        let posts = env.session.posts();
+        assert_eq!(posts.len(), 3, "{flag:?}");
+        assert!(posts[2].contains("was already started"), "{}", posts[2]);
+        assert!(env.wake(&id).reminder.is_some());
+        env.after(&mut b, 5 * MINUTE);
+        assert_eq!(env.session.posts().len(), 3, "{flag:?}: sent once");
+    }
 }
 
 #[test]
