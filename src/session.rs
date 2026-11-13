@@ -45,7 +45,9 @@ const MAX_MINUTES: u64 = 24 * 60;
 /// value is exit 64.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
-    pub conversation: String,
+    /// Optional: `CONVERSATION_VAR` is the source; this is used only when
+    /// that is missing, and must match it when both are set.
+    pub conversation: Option<String>,
     pub allow_from: Vec<String>,
     /// In v1, exactly one: the SID the exchange folder grants write to.
     /// The root checks refuse a write grant to it too.
@@ -58,7 +60,7 @@ pub struct Policy {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Table {
-    conversation: String,
+    conversation: Option<String>,
     allow_from: Vec<String>,
     sandbox_sids: Vec<String>,
     #[serde(default = "ack_default")]
@@ -95,7 +97,7 @@ impl Policy {
             .clone()
             .try_into()
             .map_err(|e: toml::de::Error| bad(e.message().to_owned()))?;
-        if t.conversation.is_empty() || t.conversation.chars().any(breaks_line) {
+        if t.conversation.as_deref().is_some_and(|c| !one_line(c)) {
             return Err(bad("conversation must be one non-empty line".into()));
         }
         if t.allow_from.is_empty() {
@@ -304,28 +306,39 @@ fn pin(
     })
 }
 
-/// The one place that picks where the conversation ID comes from: the
-/// owner's policy. `CONVERSATION_VAR` only cross-checks it.
-pub fn conversation_of(policy: &Policy, env: &dyn Fn(&str) -> Option<OsString>) -> Result<String> {
-    cross_check(CONVERSATION_VAR, env, &policy.conversation)?;
-    Ok(policy.conversation.clone())
+fn one_line(s: &str) -> bool {
+    !s.is_empty() && !s.chars().any(breaks_line)
 }
 
-/// When the cross-check variable `var` is set, it must name `conversation`.
-fn cross_check(
-    var: &str,
-    env: &dyn Fn(&str) -> Option<OsString>,
-    conversation: &str,
-) -> Result<()> {
-    if var.is_empty() {
-        return Ok(());
-    }
-    match env(var).filter(|v| !v.is_empty()) {
-        Some(v) if v != conversation => Err(CqError::usage(format!(
-            "{var} names another conversation than the policy in {}",
+/// The one place that picks where the conversation ID comes from.
+/// `CONVERSATION_VAR` is the source: Antigravity sets it, and the session
+/// cannot change the environment of a command it runs (live test S1). The
+/// policy's `conversation` is the fallback when the variable is missing,
+/// and must match it when both are set. Neither: exit 64.
+pub fn conversation_of(policy: &Policy, env: &dyn Fn(&str) -> Option<OsString>) -> Result<String> {
+    let var = match env(CONVERSATION_VAR).filter(|v| !v.is_empty()) {
+        None => None,
+        Some(v) => Some(
+            v.into_string()
+                .ok()
+                .filter(|v| one_line(v))
+                .ok_or_else(|| {
+                    CqError::usage(format!("{CONVERSATION_VAR} is not one line of text"))
+                })?,
+        ),
+    };
+    match (var, &policy.conversation) {
+        (Some(v), Some(c)) if v != *c => Err(CqError::usage(format!(
+            "{CONVERSATION_VAR} names another conversation than `conversation` in {}",
             config::FILE
         ))),
-        _ => Ok(()),
+        (Some(v), _) => Ok(v),
+        (None, Some(c)) => Ok(c.clone()),
+        (None, None) => Err(CqError::usage(format!(
+            "{CONVERSATION_VAR} is not set and {} has no `conversation`; start the watcher \
+             from an Antigravity session",
+            config::FILE
+        ))),
     }
 }
 

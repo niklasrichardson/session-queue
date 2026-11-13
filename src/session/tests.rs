@@ -235,7 +235,7 @@ fn a_hostile_environment_changes_nothing() {
             return Some(f.path("bin/language_server.exe").into_os_string());
         }
         if var == CONVERSATION_VAR {
-            // Can only confirm the policy's ID; any other value refuses.
+            // Trusted input, set by Antigravity; it must match the policy.
             return Some("conv-1".into());
         }
         // CQ_ROOT, LOCALAPPDATA, USERPROFILE, HOME, CQ_SESSION_ID, CQ_RULES,
@@ -260,7 +260,8 @@ fn a_hostile_environment_changes_nothing() {
         inputs.settings.rules.as_deref().map(Path::new),
         Some(f.path("cq").join("rules.md").as_path())
     );
-    // Only the address and the cross-checks are read from the environment.
+    // Only the address, the conversation and the agentapi cross-check are
+    // read from the environment.
     for var in asked.borrow().iter() {
         assert!(
             [ADDRESS_VAR, AGENTAPI_VAR, CONVERSATION_VAR].contains(&var.as_str()),
@@ -471,12 +472,44 @@ fn the_nearest_launcher_is_found_and_none_is_refused() {
 }
 
 #[test]
-fn a_conversation_variable_that_differs_from_the_policy_is_refused() {
-    let env = |v: &str| (v == "CONV_TEST").then(|| OsString::from("other"));
-    let e = cross_check("CONV_TEST", &env, "conv-1").unwrap_err();
-    assert_eq!(e.code, exit::USAGE);
-    assert!(cross_check("CONV_TEST", &env, "other").is_ok());
-    assert!(cross_check("UNSET_TEST", &env, "conv-1").is_ok());
+fn the_conversation_comes_from_the_variable_then_the_policy() {
+    let policy = |c: Option<&str>| {
+        let mut p = Policy::parse(POLICY, NAME).unwrap();
+        p.conversation = c.map(str::to_owned);
+        p
+    };
+    let var = |id: &'static str| move |v: &str| (v == CONVERSATION_VAR).then(|| OsString::from(id));
+    let unset = |_: &str| None;
+    let empty = var("");
+    // The variable alone, or both the same: the variable.
+    assert_eq!(
+        conversation_of(&policy(None), &var("env-1")).unwrap(),
+        "env-1"
+    );
+    assert_eq!(
+        conversation_of(&policy(Some("env-1")), &var("env-1")).unwrap(),
+        "env-1"
+    );
+    // No variable (or an empty one): the policy's value.
+    assert_eq!(
+        conversation_of(&policy(Some("conv-1")), &unset).unwrap(),
+        "conv-1"
+    );
+    assert_eq!(
+        conversation_of(&policy(Some("conv-1")), &empty).unwrap(),
+        "conv-1"
+    );
+    // Both and different, neither, or a variable with a line break: exit 64.
+    for (p, env) in [
+        (
+            policy(Some("conv-1")),
+            &var("env-1") as &dyn Fn(&str) -> Option<OsString>,
+        ),
+        (policy(None), &unset),
+        (policy(None), &var("a\nb")),
+    ] {
+        assert_eq!(conversation_of(&p, env).unwrap_err().code, exit::USAGE);
+    }
 }
 
 #[test]
@@ -503,14 +536,17 @@ fn the_antigravity_conversation_variable_is_cross_checked() {
 fn the_policy_table_is_strict() {
     let p = Policy::parse(POLICY, NAME).unwrap();
     assert_eq!(p.sandbox_sids, [SID]);
+    assert_eq!(p.conversation.as_deref(), Some("conv-1"));
+    let none = Policy::parse(&POLICY.replace("conversation = \"conv-1\"", ""), NAME).unwrap();
+    assert_eq!(none.conversation, None);
     let bad = [
         (
             "an unknown key",
             POLICY.replace("reply_minutes", "reply_mins"),
         ),
         (
-            "no conversation",
-            POLICY.replace("conversation = \"conv-1\"", ""),
+            "an empty conversation",
+            POLICY.replace("\"conv-1\"", "\"\""),
         ),
         ("empty allow_from", POLICY.replace("[\"lead\"]", "[]")),
         ("a bad sender", POLICY.replace("\"lead\"", "\"../x\"")),

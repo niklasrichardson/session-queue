@@ -84,7 +84,7 @@ C:\<cq folder>\cq.exe watch --as NAME --to-agy-session
 ### Setup
 
 1. **Build.** Build `cq` with `CQ_DEFAULT_ROOT` set to the queue root. Session mode uses only that root and exits 64 in a build without it. It ignores `CQ_ROOT` and every other setting from the environment.
-2. **Install.** Put `cq.exe` in a folder whose path has no spaces, **outside every Antigravity and Codex workspace**, and that no sandbox can write: no Low label and no write grant to a sandbox principal on the file or any folder above it. The watcher checks the ACLs at start (exit 64), but it cannot check two things, so they are setup rules:
+2. **Install.** Put `cq.exe` in a folder whose path has no spaces, for example `C:\<cq folder>\cq.exe`. No sandbox may write it: no Low label and no write grant to a sandbox principal on the file or any folder above it. **No agent workspace (Antigravity, Codex or Claude) may contain the queue root or the `cq.exe` folder.** The watcher checks the ACLs at start (exit 64), but it cannot check two things, so they are setup rules:
    - **Workspaces.** The agent's file tool runs outside the OS sandbox, so the ACL checks do not bind it. In a live test the CLI's file tool wrote into a `cq.exe` folder inside its workspace with no prompt, although the folder's ACL refused the sandboxed shell. It also wrote files in the queue root, outside its workspace, with no prompt; the likely cause is `"allowNonWorkspaceAccess": true` in the CLI's `settings.json` (not yet confirmed by a re-test). So:
      - set `allowNonWorkspaceAccess` to `false` in any CLI that hosts a session-mode watcher;
      - keep the queue root and `cq.exe` outside that session's workspace, and outside every folder listed in its trusted workspaces.
@@ -103,7 +103,6 @@ C:\<cq folder>\cq.exe watch --as NAME --to-agy-session
 
 ```toml
 [agy-session.NAME]
-conversation = "ID"
 allow_from = ["lead"]
 sandbox_sids = ["S-1-15-3-..."]
 reply_minutes = 60
@@ -111,7 +110,7 @@ reply_minutes = 60
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `conversation` | yes | The conversation ID that each wake goes to. It is never taken from the environment. |
+| `conversation` | no | A fallback conversation ID. Each wake goes to `ANTIGRAVITY_CONVERSATION_ID`, which Antigravity sets in the session's shell. If both are set and differ: exit 64. If the variable is missing, this value is used; if both are missing: exit 64. |
 | `allow_from` | yes | The senders whose messages wake the session. A task from any other sender is rejected unread; other types are finished unread. |
 | `sandbox_sids` | yes | Exactly one SID in this version: the sandbox SID that gets Modify on the exchange folder. The root checks also refuse a write grant to it. CLI and App may differ. |
 | `ack_minutes` | no, 15 | No `started` this long after the first wake: exit 8. |
@@ -126,7 +125,7 @@ All before any queue write; each failure is exit 64.
 
 - The root is the build's `CQ_DEFAULT_ROOT`. The root, `config.toml` and `cq.exe`: no junction or link anywhere in the path, no Low label, and no write grant, direct or inheritable, on the object or any folder above it, to any app-container or capability SID (`S-1-15-2-...`, `S-1-15-3-...`, listed in `sandbox_sids` or not), the Low label SID, RESTRICTED (`S-1-5-12`), WRITE RESTRICTED (`S-1-5-33`) or a `sandbox_sids` entry. The owner, users, Authenticated Users, administrators and SYSTEM may write: that is ordinary user trust. The root folders stay held open for the watcher's life.
 - **If the root check fails.** In a live test the sandboxed shell could create files in the queue root and its folders, because the root's DACL had an inheritable Modify entry for a capability SID (`S-1-15-3-1024-...`). The start check refuses such a root. Remove the entry (and any like it on the folders above) before you use session mode; cq never changes the root's ACL itself.
-- The conversation: if `ANTIGRAVITY_CONVERSATION_ID` is set (Antigravity sets it in the session's shell), it must equal `conversation` in the table, else exit 64. The table stays the source of the ID.
+- The conversation: `ANTIGRAVITY_CONVERSATION_ID`, which Antigravity sets and the session cannot change (each run-command call is a fresh process with no environment parameter). With `conversation` in the table as well, the two must match. Without the variable, the table's value is used. Neither, or a value that is not one line: exit 64.
 - The launching session: the nearest `agy.exe` (CLI) or `language_server.exe` (App) above the watcher in the process tree, where each parent started before its child.
 - The agentapi binary: that process's own image, run as `IMAGE agentapi send-message ID TEXT`. `PATH` is not searched. If `ANTIGRAVITY_AGENTAPI_EXE` names another file: exit 64.
 - The address: `ANTIGRAVITY_LS_ADDRESS` must be a loopback host and port, and every listening socket a connect could reach must belong to the launching process. Checked again before each wake.
@@ -163,7 +162,7 @@ Live tests on 13 November 2026, CLI and App, with `agentapi` and the sandbox but
 | S1 environment | Pass. Each run-command call is a fresh PowerShell process: environment, working folder, functions and aliases never carry over, and the tool has no environment or working-folder parameter. |
 | S1 writes | **Fail on the test machine**: the root's DACL gave a capability SID inheritable Modify, so the sandboxed shell could write the queue. The start check now refuses that root. The CLI's file tool also wrote in the queue root with no prompt, likely because of `allowNonWorkspaceAccess` (see [Setup](#setup)); cq cannot check that. To pass: fix the ACL and the setting, then confirm that nothing the session runs, shell or file tool, can write the root, `config.toml` or `cq.exe`. |
 | A5 | Pass: the `cq.exe` path checks hold for the installed path. |
-| A7 | Antigravity sets `ANTIGRAVITY_CONVERSATION_ID` to the conversation ID; cq cross-checks it. |
+| A7 | Antigravity sets `ANTIGRAVITY_CONVERSATION_ID` to the conversation ID; cq uses it, with the table's `conversation` as an optional fallback and check. |
 | A8 | A wake during a turn is not an interrupt (see [While it runs](#while-it-runs)). v1 is not blocked. |
 | A12 | `send-message` delivers with exactly `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, `SystemRoot`, `TEMP` and `TMP`. Without the conversation variable the message shows as from the system. |
 

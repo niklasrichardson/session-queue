@@ -50,8 +50,8 @@ pub const ADDRESS_VAR: &str = "ANTIGRAVITY_LS_ADDRESS";
 /// only: the binary run is the launching session's own image.
 pub const AGENTAPI_VAR: &str = "ANTIGRAVITY_AGENTAPI_EXE";
 /// The conversation ID Antigravity sets in the session's shell (live test
-/// A7, both surfaces). A cross-check only: when set, it must equal the
-/// policy's `conversation`, which stays the one source of the ID.
+/// A7, both surfaces). The source of the ID; `session::conversation_of`
+/// says how the policy's optional `conversation` falls back and checks it.
 pub const CONVERSATION_VAR: &str = "ANTIGRAVITY_CONVERSATION_ID";
 
 /// The longest one agentapi call may take.
