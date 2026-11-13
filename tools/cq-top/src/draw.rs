@@ -495,17 +495,34 @@ fn bar(ratio: f64, width: u16, style: Style, t: &Theme) -> Line<'static> {
 }
 
 /// Which columns fit in `room` cells. Each column is (header, width, priority), one cell
-/// apart; a narrow terminal drops the highest priority numbers first.
+/// apart; a narrow terminal drops the highest priority numbers first. A column that does not
+/// fit leaves its room to narrower columns with higher numbers.
 fn fit_columns(cols: &[(&str, u16, u8)], room: u16) -> Vec<bool> {
+    fit(cols, room, false)
+}
+
+/// As `fit_columns`, but once a column does not fit, no column with a higher number is kept.
+fn fit_columns_strict(cols: &[(&str, u16, u8)], room: u16) -> Vec<bool> {
+    fit(cols, room, true)
+}
+
+fn fit(cols: &[(&str, u16, u8)], room: u16, strict: bool) -> Vec<bool> {
     let mut by_prio: Vec<usize> = (0..cols.len()).collect();
     by_prio.sort_by_key(|&i| cols[i].2);
     let mut keep = vec![false; cols.len()];
     let mut used = 0u16;
+    // The priority of the first column that did not fit.
+    let mut cut: Option<u8> = None;
     for i in by_prio {
+        if strict && cut.is_some_and(|c| c < cols[i].2) {
+            continue;
+        }
         let need = cols[i].1 + u16::from(used > 0);
         if used + need <= room {
             keep[i] = true;
             used += need;
+        } else {
+            cut.get_or_insert(cols[i].2);
         }
     }
     keep
@@ -539,13 +556,15 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
     header(f, head, root, s, bodies, Screen::Overview, t);
 
     let name_w = name_width("watcher", s.watchers.iter().map(|w| w.name.as_str()));
-    // Columns: header, width, priority. The version goes first in a narrow terminal.
-    let cols: [(&str, u16, u8); 11] = [
+    // Columns: header, width, priority. In a narrow terminal the context goes first, then
+    // the version.
+    let cols: [(&str, u16, u8); 12] = [
         ("watcher", name_w, 0),
         ("heartbeat", 14, 0),
         ("mode", 7, 0),
         ("pid", 8, 0),
         ("session", 10, 0),
+        ("context", 7, 2),
         ("queued", 7, 0),
         ("claimed", 8, 0),
         ("done", 6, 0),
@@ -553,7 +572,8 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
         ("dead", 5, 0),
         ("version", 8, 1),
     ];
-    let keep = fit_columns(&cols, watchers.width.saturating_sub(2));
+    // Strict, so the context never shows while the version is dropped.
+    let keep = fit_columns_strict(&cols, watchers.width.saturating_sub(2));
     let rows = s.watchers.iter().map(|w| {
         let (txt, style) = match w.beat_age {
             _ if w.asleep => ("asleep".into(), t.info),
@@ -579,6 +599,7 @@ fn draw_overview(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 mode,
                 Cell::from(w.pid.clone()),
                 Cell::from(w.session.clone()),
+                context_cell(watcher_session(s, w).and_then(|r| r.context), t),
                 Cell::from(w.queued.to_string()),
                 Cell::from(w.claimed.to_string()),
                 Cell::from(w.done.to_string()),
@@ -764,6 +785,30 @@ pub fn session_watcher<'a>(s: &'a Snapshot, row: &sessions::Row) -> Option<&'a W
                     && w.folder.as_deref() == Some(row.folder_key.as_str())
             })
         })
+}
+
+/// The session a watcher runs beside: the row `session_watcher` gives this watcher, so the
+/// Overview and the Sessions screen agree. A row whose process runs the watcher comes before
+/// one that only remembers it. `None` when no row has it.
+pub fn watcher_session<'a>(s: &'a Snapshot, w: &Watcher) -> Option<&'a sessions::Row> {
+    let rows = || s.sessions.rows.iter();
+    rows()
+        .find(|r| r.cq_name.as_deref() == Some(w.name.as_str()))
+        .or_else(|| rows().find(|r| session_watcher(s, r).is_some_and(|x| x.name == w.name)))
+}
+
+/// A context figure. Only this cell is coloured when the context is large; a dim dash
+/// without a figure.
+fn context_cell(tokens: Option<u64>, t: &Theme) -> Cell<'static> {
+    use sessions::Context;
+    match tokens {
+        Some(n) => Cell::from(sessions::count(n)).style(match sessions::context(n) {
+            Context::Normal => t.text,
+            Context::Warn => t.hot,
+            Context::Bad => t.bad,
+        }),
+        None => Cell::from("-").style(t.dim),
+    }
 }
 
 /// The state shown for a session, and whether it is a warning (idle with cq messages).
@@ -970,7 +1015,7 @@ fn machine_box(
 /// Code session, Codex thread and Antigravity conversation. Only counts, times, model
 /// names and titles are shown, never message text.
 fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &Theme) {
-    use sessions::{Context, State, bytes, count, usd};
+    use sessions::{State, bytes, count, usd};
     let [head, strip, table] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(MACHINE_ROWS),
@@ -1044,15 +1089,7 @@ fn draw_sessions(f: &mut Frame, root: &Path, s: &Snapshot, bodies: bool, t: &The
                 } else {
                     Cell::from(row.model.clone())
                 },
-                // Only the context cell is coloured when the context is large.
-                match row.context {
-                    Some(n) => Cell::from(count(n)).style(match sessions::context(n) {
-                        Context::Normal => t.text,
-                        Context::Warn => t.hot,
-                        Context::Bad => t.bad,
-                    }),
-                    None => dash(),
-                },
+                context_cell(row.context, t),
                 opt(row.tokens_today.map(count)),
                 if claude {
                     Cell::from(usd(row.cost_today))
@@ -1177,7 +1214,23 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap;
+    use super::{fit_columns, fit_columns_strict, wrap};
+
+    /// Only the strict fit stops at the first column that does not fit; columns with the
+    /// same number still fill the room.
+    #[test]
+    fn strict_fit_keeps_the_priority_order() {
+        let cols = [("a", 4, 0), ("b", 4, 0), ("wide", 9, 1), ("narrow", 8, 2)];
+        // 4 + 1 + 4 = 9 cells for the main columns; "wide" needs 10 more, "narrow" 9.
+        assert_eq!(fit_columns(&cols, 18), [true, true, false, true]);
+        assert_eq!(fit_columns_strict(&cols, 18), [true, true, false, false]);
+        assert_eq!(fit_columns_strict(&cols, 19), [true, true, true, false]);
+        assert_eq!(fit_columns_strict(&cols, 28), [true, true, true, true]);
+        // A main column that does not fit leaves room to the other main column only.
+        let cols = [("a", 6, 0), ("b", 9, 0), ("c", 3, 0), ("d", 1, 1)];
+        assert_eq!(fit_columns_strict(&cols, 12), [true, false, true, false]);
+        assert_eq!(fit_columns(&cols, 12), [true, false, true, true]);
+    }
 
     #[test]
     fn wrap_fits_words_splits_long_ones_and_marks_a_cut() {

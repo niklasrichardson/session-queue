@@ -311,14 +311,20 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
         "<section class=\"card\"><h2>Watchers</h2><div class=\"scroll\"><table>\
          <thead><tr><th>Name</th><th>Heartbeat</th><th>Mode</th><th class=\"n\">Queued</th>\
          <th class=\"n\">Claimed</th><th class=\"n\">Done</th><th class=\"n\">Rejected</th>\
-         <th class=\"n\">Dead</th><th>PID</th><th>Session</th><th>Version</th></tr></thead><tbody>"
+         <th class=\"n\">Dead</th><th>PID</th><th>Session</th><th class=\"n\">Context</th>\
+         <th>Version</th></tr></thead><tbody>"
     );
     for w in &s.watchers {
+        // The context of the session the watcher runs beside, as in the Sessions table.
+        let context = draw::watcher_session(s, w)
+            .and_then(|r| r.context)
+            .map_or_else(|| "<span class=\"dim\">-</span>".to_string(), context_cell);
         let _ = write!(
             b,
             "<tr><td class=\"nowrap\"><strong>{}</strong></td><td class=\"nowrap\">{}</td><td>{}</td>\
              <td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
-             <td class=\"n\">{}</td><td class=\"dim\">{}</td><td class=\"dim\">{}</td><td class=\"nowrap\">{}</td></tr>",
+             <td class=\"n\">{}</td><td class=\"dim\">{}</td><td class=\"dim\">{}</td><td class=\"n\">{context}</td>\
+             <td class=\"nowrap\">{}</td></tr>",
             esc(&w.name),
             heartbeat_chip(w),
             mode_cell(s, w),
@@ -344,7 +350,7 @@ pub fn dashboard(root: &Path, s: &Snapshot) -> String {
         );
     }
     if s.watchers.is_empty() {
-        b.push_str("<tr><td colspan=\"11\" class=\"dim\">No watchers.</td></tr>");
+        b.push_str("<tr><td colspan=\"12\" class=\"dim\">No watchers.</td></tr>");
     }
     b.push_str("</tbody></table></div></section>");
 
