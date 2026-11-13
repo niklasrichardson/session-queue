@@ -412,6 +412,50 @@ fn check_reply_takes_only_a_strict_reply_for_this_job() {
     assert!(check_reply(good, info, "i", "n").is_err());
 }
 
+/// The `{...}` shapes in a `reply_format` text.
+fn shapes(text: &str) -> Vec<&str> {
+    text.match_indices('{')
+        .map(|(i, _)| &text[i..=i + text[i..].find('}').expect("closed")])
+        .collect()
+}
+
+#[test]
+fn reply_format_gives_shapes_that_check_reply_takes() {
+    let (id, nonce) = (
+        "2026-11-13T12-00-00Z-a\"b",
+        "0123456789abcdef0123456789abcdef",
+    );
+    let task = reply_format(MsgType::Task, id, nonce);
+    let found = shapes(&task);
+    assert_eq!(found.len(), 2, "{task}");
+    for shape in &found {
+        assert!(
+            check_reply(shape.as_bytes(), MsgType::Task, id, nonce).is_ok(),
+            "{shape}"
+        );
+    }
+    assert!(
+        found[0].contains(r#""outcome": "reply", "status": "ok""#),
+        "{task}"
+    );
+    assert!(found[1].contains(r#""outcome": "reject""#), "{task}");
+    assert!(
+        task.contains(&format!("at most {MAX_BODY_BYTES} UTF-8 bytes")),
+        "{task}"
+    );
+    assert!(task.contains("\"ok\" or \"failed\""), "{task}");
+    for kind in [MsgType::Info, MsgType::Result] {
+        let read = reply_format(kind, id, nonce);
+        let found = shapes(&read);
+        assert_eq!(found.len(), 1, "{read}");
+        assert!(
+            check_reply(found[0].as_bytes(), kind, id, nonce).is_ok(),
+            "{read}"
+        );
+        assert!(check_reply(found[0].as_bytes(), MsgType::Task, id, nonce).is_err());
+    }
+}
+
 #[test]
 fn verdict_reads_agy_status_conversation_and_the_reply() {
     let out = format!("noise\n{{\"status\":\"SUCCESS\",\"conversation_id\":\"{CONV}\"}}\n");
@@ -579,6 +623,10 @@ fn a_task_gets_the_turns_reply_and_no_message_text_reaches_the_prompt_or_log() {
     let req = &s.requests[0];
     assert_eq!(req["schema"], REQUEST_SCHEMA);
     assert_eq!(req["outcomes"], json!(["reply", "reject"]));
+    assert_eq!(
+        req["reply_format"],
+        reply_format(MsgType::Task, &id, req["nonce"].as_str().unwrap())
+    );
     assert!(req["message"].get("from_session_id").is_none());
     assert_eq!(req["message"]["body"], format!("{SECRET} body"));
     let seen = format!("{:?}\n{}", spec.args, env.log.text());

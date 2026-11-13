@@ -517,6 +517,23 @@ pub fn new_nonce() -> String {
     format!("{:016x}{:016x}", part(1), part(2))
 }
 
+/// The exact `reply.json` shapes for a message of `kind`, as fixed text
+/// that only cq-made values fill: the turn copies it, so it never has to
+/// guess a field.
+pub fn reply_format(kind: MsgType, id: &str, nonce: &str) -> String {
+    let lit = |s: &str| serde_json::to_string(s).expect("JSON");
+    let head = format!("{{\"id\": {}, \"nonce\": {}, ", lit(id), lit(nonce));
+    let shapes = match kind {
+        MsgType::Task => format!(
+            "To answer: {head}\"outcome\": \"reply\", \"status\": \"ok\", \"text\": \"...\"}} (\"status\" is \"ok\" or \"failed\"). To reject: {head}\"outcome\": \"reject\", \"text\": \"the reason\"}}. \"text\" is required, not only white space, and at most {MAX_BODY_BYTES} UTF-8 bytes."
+        ),
+        _ => format!("{head}\"outcome\": \"read\"}}. No \"status\" and no \"text\"."),
+    };
+    format!(
+        "Write {REPLY} in one write: one JSON object, UTF-8, at most {REPLY_CAP} bytes, with exactly these fields and no others. {shapes}"
+    )
+}
+
 /// `request.json` for `message`: the message without its session IDs.
 pub fn request_json(name: &str, nonce: &str, message: &Message) -> Vec<u8> {
     let mut m = serde_json::to_value(message).expect("JSON");
@@ -531,6 +548,7 @@ pub fn request_json(name: &str, nonce: &str, message: &Message) -> Vec<u8> {
         "nonce": nonce,
         "outcomes": offered(message.kind),
         "reply_max_bytes": MAX_BODY_BYTES,
+        "reply_format": reply_format(message.kind, &message.id, nonce),
         "message": m,
     }))
     .expect("JSON")

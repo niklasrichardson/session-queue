@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/cq/agy-reply.v1.json",
   "title": "cq agy broker reply",
-  "description": "reply.json, written by the agy turn in its exchange job folder: UTF-8 (one UTF-8 BOM is allowed; UTF-16 and NUL bytes are refused), at most 65536 bytes, no other fields. The watcher reads it only after every process of the turn has stopped, and only if it is a regular file with one link that no process holds open for writing.",
+  "description": "reply.json, written by the agy turn or session in its exchange job folder, in one write: UTF-8 (one UTF-8 BOM is allowed; UTF-16 and NUL bytes are refused), at most 65536 bytes, no other fields. request.json \"reply_format\" gives the exact shape of each offered outcome: a reply needs status and text, a reject needs text and no status, a read has neither. The watcher reads it only if it is a regular file with one link that no process holds open for writing. In broker mode (--agy-broker) it reads it once, after every process of the turn has stopped. In session mode (--to-agy-session) it reads it every second: a valid reply finishes the job, and one that is not valid and stays the same for 60 seconds gives the sender a failed reply.",
   "type": "object",
   "required": ["id", "nonce", "outcome"],
   "additionalProperties": false,
