@@ -50,7 +50,10 @@ pub const SCHEMA: &str = "cq-agy-job/1";
 /// The job record schema of session mode (`--to-agy-session`).
 pub const SESSION_SCHEMA: &str = "cq-agy-job/2";
 /// The request file schema.
-pub const REQUEST_SCHEMA: &str = "cq-agy-request/1";
+/// `/2` added `reply_format`. A print-mode job from cq 1.15 or 1.16 may
+/// still have a `/1` request on recovery; its prompt does not use the
+/// field, and recovery never reads the request.
+pub const REQUEST_SCHEMA: &str = "cq-agy-request/2";
 /// The most bytes of `reply.json` that are read; a larger file is invalid.
 pub const REPLY_CAP: usize = 64 * 1024;
 /// The inbox is scanned at least this often, also without a `CQ-NEW` line.
@@ -1635,7 +1638,7 @@ impl<L: Launcher, C: Clock> Sink for AgyBroker<L, C> {
 }
 
 mod session;
-pub use session::{SessionWake, Timing};
+pub use session::{SessionWake, Timing, is_not_taken, not_taken};
 
 #[cfg(test)]
 mod tests;

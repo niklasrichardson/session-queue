@@ -436,6 +436,40 @@ fn woken_with_started_gone_needs_review() {
 // --- The flow ------------------------------------------------------------------
 
 #[test]
+fn a_restart_holds_a_session_job_whose_request_is_not_v2() {
+    for phase in [Phase::Waking, Phase::Woken] {
+        let env = Env::new();
+        env.session.set(|s| s.ack = phase == Phase::Woken);
+        let id = env.send(MsgType::Task);
+        let mut b = env.broker();
+        b.tick().unwrap();
+        env.after(&mut b, SECOND);
+        assert_eq!(env.state(&id).phase, phase);
+        drop(b);
+        let path = env.folder(&id).join(REQUEST);
+        let mut req: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        req["schema"] = json!("cq-agy-request/1");
+        req.as_object_mut().unwrap().remove("reply_format");
+        let old = serde_json::to_vec(&req).unwrap();
+        fs::write(&path, &old).unwrap();
+        let posts = env.session.posts().len();
+
+        // Late enough for any wake.
+        let e = env.fails_after(&mut env.broker(), 90 * MINUTE);
+        assert_eq!(e.code, exit::AGY_TURN_FAILED, "{phase:?}: {e}");
+        assert!(e.message.contains("cq-agy-request/2"), "{phase:?}: {e}");
+        let state = env.state(&id);
+        assert_eq!(
+            (state.phase, state.held_in),
+            (Phase::NeedsReview, Some(phase))
+        );
+        assert_eq!(env.session.posts().len(), posts, "{phase:?}: no wake");
+        assert_eq!(fs::read(&path).unwrap(), old, "{phase:?}: not rewritten");
+        assert!(env.claimed(&id));
+    }
+}
+
+#[test]
 fn a_reply_copied_from_reply_format_finishes_the_job() {
     for (kind, shape) in [(MsgType::Task, 0), (MsgType::Task, 1), (MsgType::Info, 0)] {
         let env = Env::new();

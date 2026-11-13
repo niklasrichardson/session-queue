@@ -854,6 +854,28 @@ fn a_record_left_prepared_is_prepared_again_with_a_new_nonce() {
 }
 
 #[test]
+fn a_print_mode_job_with_a_v1_request_still_recovers() {
+    // A job prepared by cq 1.15 or 1.16, before reply_format.
+    let env = Env::new();
+    env.fake.set(|s| {
+        s.spawn_errors = 1;
+        s.reply = Some(answer("reply", Some("ok"), Some("ok")));
+    });
+    let id = env.send("boss", MsgType::Task);
+    env.broker().tick().unwrap();
+    assert_eq!(env.state(&id).phase, Phase::Prepared);
+    let path = default_exchange(&env.root, NAME).join(&id).join(REQUEST);
+    let mut req: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    req["schema"] = json!("cq-agy-request/1");
+    req.as_object_mut().unwrap().remove("reply_format");
+    fs::write(&path, serde_json::to_vec(&req).unwrap()).unwrap();
+    let mut b = env.broker();
+    b.tick().unwrap();
+    assert_eq!(env.state(&id).phase, Phase::Completed);
+    assert_eq!(env.inbox("boss")[0].body, "ok");
+}
+
+#[test]
 fn a_record_left_claimed_with_a_job_folder_is_prepared_again() {
     // A stop after the job folder (and maybe request.json) was made but
     // before `prepared` was saved.

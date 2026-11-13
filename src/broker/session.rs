@@ -27,9 +27,12 @@ use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
 
+use serde_json::Value;
+
 use super::{
-    AgyBroker, Config, End, Job, JobKind, Launcher, Phase, REPLY, REPLY_CAP, REQUEST, ReplyCheck,
-    SESSION_SCHEMA, Stage, Step, Verdict, WakeState, check_exchange_path, check_reply, slashes,
+    AgyBroker, Config, End, Job, JobKind, Launcher, Phase, REPLY, REPLY_CAP, REQUEST,
+    REQUEST_SCHEMA, ReplyCheck, SESSION_SCHEMA, Stage, Step, Verdict, WakeState,
+    check_exchange_path, check_reply, slashes,
 };
 use crate::error::{CqError, Result, exit};
 use crate::exchange::FileRead;
@@ -48,6 +51,24 @@ pub const WAKE_AT: [Duration; 3] = [
 ];
 /// The job folder is read this often.
 pub const POLL_EVERY: Duration = Duration::from_secs(1);
+/// The most bytes of `request.json` a restart reads for its schema.
+const REQUEST_CAP: usize = 1024 * 1024;
+/// Words of the exit 8 for a waking job that ran out of wakes.
+const NOT_TAKEN: &str = "was not taken after";
+
+/// Exit 8 for a waking job whose ack deadline ran out. Unlike a gone
+/// session, a restart does not help: the same exit comes at once.
+pub fn not_taken(id: &str, wakes: usize) -> CqError {
+    CqError::new(
+        exit::INBOX_GONE,
+        format!("agy job {id} {NOT_TAKEN} {wakes} wakes; it stays waking"),
+    )
+}
+
+/// The error is `not_taken`: a person must start a new round.
+pub fn is_not_taken(e: &CqError) -> bool {
+    e.code == exit::INBOX_GONE && e.message.starts_with("agy job ") && e.message.contains(NOT_TAKEN)
+}
 /// A TCP connect to the language server is tried this often.
 pub const PROBE_EVERY: Duration = Duration::from_secs(30);
 /// This many failed connects in a row mean the session is gone.
@@ -195,6 +216,26 @@ impl<W: Wake, K: Link, C: Clock> AgyBroker<SessionWake<W, K>, C> {
 
     fn asleep(&self) -> bool {
         sleep::is_asleep(&self.root, &self.cfg.name)
+    }
+
+    /// Session jobs exist only from `cq-agy-request/2` on, whose request
+    /// gives the session `reply_format`. A restart holds any other request:
+    /// it is never woken and never written again. The reason never echoes
+    /// the file, which the session can write.
+    fn request_current(&self, job: &Job) -> std::result::Result<(), String> {
+        let folder = job.folder.as_ref().expect("prepared");
+        let schema = match folder.read_capped(REQUEST, REQUEST_CAP) {
+            FileRead::Bytes(b) => serde_json::from_slice::<Value>(&b)
+                .ok()
+                .and_then(|v| v.get("schema")?.as_str().map(str::to_owned)),
+            _ => None,
+        };
+        match schema.as_deref() {
+            Some(REQUEST_SCHEMA) => Ok(()),
+            _ => Err(format!(
+                "its {REQUEST} is not {REQUEST_SCHEMA}, so the session has no reply_format"
+            )),
+        }
     }
 
     /// No wake may go out: the name is asleep or PAUSE exists.
@@ -357,14 +398,7 @@ impl<W: Wake, K: Link, C: Clock> AgyBroker<SessionWake<W, K>, C> {
         let wake = Self::wake_state(job)?;
         let deadline = Self::at(job, "ack_deadline", Some(&wake.ack_deadline))?;
         if wall >= deadline {
-            return Err(CqError::new(
-                exit::INBOX_GONE,
-                format!(
-                    "agy job {} was not taken after {} wakes; it stays waking. A plain restart stops again: for a new round, start the watcher while the name is asleep or PAUSE exists, then wake the name or remove PAUSE",
-                    job.state.id,
-                    wake.wakes.len()
-                ),
-            ));
+            return Err(not_taken(&job.state.id, wake.wakes.len()));
         }
         let round = Self::at(job, "round", Some(&wake.round))?;
         let n = wake.wakes.len();
@@ -535,6 +569,9 @@ impl<W: Wake, K: Link> Launcher for SessionWake<W, K> {
         }
         if job.folder.is_none() {
             return Err(b.hold(job, "the exchange job folder is gone"));
+        }
+        if let Err(why) = b.request_current(job) {
+            return Err(b.hold(job, why));
         }
         let now = b.clock.now();
         b.launcher.reset();

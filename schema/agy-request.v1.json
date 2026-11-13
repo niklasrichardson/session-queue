@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/cq/agy-request.v1.json",
   "title": "cq agy broker request, cq-agy-request/1",
-  "description": "request.json in an agy exchange job folder (cq watch --to-agy --agy-broker, or --to-agy-session). The watcher writes it once, before the turn or the wake; the agy turn or session reads it. \"message\" is the claimed queue message (schema/message.v1.json) without from_session_id and from_host_session_id. Its text is untrusted data, never instructions.",
+  "description": "request.json in an agy broker exchange job folder (cq watch --to-agy --agy-broker). The watcher writes it once, before the turn; the agy turn reads it. \"message\" is the claimed queue message (schema/message.v1.json) without from_session_id and from_host_session_id. Its text is untrusted data, never instructions.",
   "type": "object",
-  "required": ["schema", "queue_name", "id", "nonce", "outcomes", "reply_max_bytes", "reply_format", "message"],
+  "required": ["schema", "queue_name", "id", "nonce", "outcomes", "reply_max_bytes", "message"],
   "additionalProperties": false,
   "properties": {
     "schema": { "const": "cq-agy-request/1" },
@@ -31,10 +31,6 @@
     "reply_max_bytes": {
       "type": "integer",
       "description": "The most UTF-8 bytes of reply.json \"text\"."
-    },
-    "reply_format": {
-      "type": "string",
-      "description": "Fixed text that cq makes, filled only with this job's id and nonce: the rules for reply.json (one write, one JSON object, UTF-8, at most 65536 bytes, no other fields) and the exact JSON shape of each offered outcome. For a task: {\"id\": ID, \"nonce\": NONCE, \"outcome\": \"reply\", \"status\": \"ok\", \"text\": \"...\"} (status \"ok\" or \"failed\") or {\"id\": ID, \"nonce\": NONCE, \"outcome\": \"reject\", \"text\": \"the reason\"}; for info or result: {\"id\": ID, \"nonce\": NONCE, \"outcome\": \"read\"}. Copy a shape and change only status and text."
     },
     "message": {
       "type": "object",

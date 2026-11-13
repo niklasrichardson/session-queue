@@ -766,9 +766,14 @@ fn watch_agy_broker(
 /// the stop line, which the session reads as the command's output.
 fn watch_agy_session(name: &str, takeover: bool) -> Result<i32> {
     let result = run_agy_session(name, takeover);
-    println!("cq watch ({name}) stopped: {}", stop_advice(name, &result));
+    println!("{}", stop_line(name, &result));
     let _ = io::stdout().flush();
     result
+}
+
+/// The last stdout line of a session-mode watcher.
+fn stop_line(name: &str, result: &Result<i32>) -> String {
+    format!("cq watch ({name}) stopped: {}", stop_advice(name, result))
 }
 
 /// The stop line after `cq watch (NAME) stopped: `: why, and what to do.
@@ -778,6 +783,12 @@ fn stop_advice(name: &str, result: &Result<i32>) -> String {
         Err(e) => e,
     };
     match e.code {
+        // A restart would stop again at once: only a person can give the job
+        // a new round.
+        exit::INBOX_GONE if cq::broker::is_not_taken(e) => format!(
+            "{}. A restart stops again at once. For a new round, the user puts {name} to sleep (cq sleep) or creates PAUSE, has this session start the watcher, then runs cq wake {name} or removes PAUSE. Do not restart; tell the user.",
+            e.message
+        ),
         exit::INBOX_GONE => format!("{}. Start the watcher again with the same line.", e.message),
         exit::REFUSED if e.message.contains("already running") => {
             if same_session_holds(name) {
@@ -1711,7 +1722,15 @@ mod tests {
             exit::INBOX_GONE,
             "the session cannot be reached: x",
         ));
-        assert!(stop_advice("w", &gone).ends_with("Start the watcher again with the same line."));
+        assert_eq!(
+            stop_line("w", &gone),
+            "cq watch (w) stopped: the session cannot be reached: x. Start the watcher again with the same line."
+        );
+        let expired = Err(cq::broker::not_taken("ID1", 3));
+        assert_eq!(
+            stop_line("w", &expired),
+            "cq watch (w) stopped: agy job ID1 was not taken after 3 wakes; it stays waking. A restart stops again at once. For a new round, the user puts w to sleep (cq sleep) or creates PAUSE, has this session start the watcher, then runs cq wake w or removes PAUSE. Do not restart; tell the user."
+        );
         for code in [exit::AGY_TURN_FAILED, exit::USAGE, exit::REFUSED] {
             let e = Err(CqError::new(code, "a job needs review"));
             assert!(
