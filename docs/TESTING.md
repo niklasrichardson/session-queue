@@ -24,9 +24,9 @@ Tested live in the desktop app on Windows: re-arming after each 30-minute watche
 - `src/exchange.rs`: the trust check refuses a write grant (direct, inheritable or inherit-only) to any `S-1-15-...` SID, the Low SID, RESTRICTED, WRITE RESTRICTED and a listed SID, and passes the owner, users, Authenticated Users, administrators and SYSTEM.
 - `src/main.rs`: `--to-agy-session` takes only `--as` and `--takeover`; the complete stop line for each exit, and for the exit 8 of a `waking` job past `ack_minutes` (the steps for a new round, then "Do not restart; tell the user.").
 
-Live tests by the owner on 13 November 2026, CLI and App, with `agentapi` but not with this watcher: see [Open gates](agents/ANTIGRAVITY.md#open-gates). S1 environment, A5 and A12 passed; A7 found `ANTIGRAVITY_CONVERSATION_ID`; A8 found that a wake is not an interrupt; S1 writes failed on a root with a capability-SID Modify entry, which the start check now refuses, and the CLI's file tool wrote in the queue root with no prompt (likely `allowNonWorkspaceAccess: true`, not re-tested; now a documented setup rule).
+Live tests by the owner on 13 November 2026, CLI and App: see [Live gates](agents/ANTIGRAVITY.md#live-gates). S1 environment, S1 writes on a fixed root, A5, A6, A10 and A12 passed; A7 found `ANTIGRAVITY_CONVERSATION_ID`; A8 found that a wake is not an interrupt. S1 writes first failed on a root with a capability-SID Modify entry, which the start check now refuses. An end-to-end run in the CLI passed.
 
-Not verified: an end-to-end run of the watcher with a real session; S1 writes on a fixed root; the Unix build (no Unix target here; CI builds it).
+Not verified: an end-to-end run in the App; an Antigravity update while the watcher runs; the Unix build (no Unix target here; CI builds it).
 
 ## cq-top context column on Windows, 12 November 2026
 
