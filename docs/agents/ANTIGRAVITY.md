@@ -75,7 +75,7 @@ Live test, 11 Nov 2026, Windows 11, real `agy`, 2 turns: the turn could use the 
 
 ## Session mode
 
-Experimental, cq 1.17.0, Windows only (exit 64 elsewhere). The open Antigravity session (CLI or App) starts the watcher itself, once, as a background command that bypasses the sandbox. For each message the watcher wakes that same session with `agentapi send-message`, through the exchange folder of [broker mode](#broker-mode). A wake from inside the session works; the agentapi call needs the token that Antigravity gives only to processes that it starts. The full watcher is not yet tested live (see [open gates](#open-gates)).
+Experimental, cq 1.17.0, Windows only (exit 64 elsewhere). The open Antigravity session (CLI or App) starts the watcher itself, once, as a background command that bypasses the sandbox. For each message the watcher wakes that same session with `agentapi send-message`, through the exchange folder of [broker mode](#broker-mode). A wake from inside the session works; the agentapi call needs the token that Antigravity gives only to processes that it starts. For the live test results, see [Live gates](#live-gates).
 
 ```text
 C:\<cq folder>\cq.exe watch --as NAME --to-agy-session
@@ -163,20 +163,23 @@ Only sleep or `PAUSE` starts a deadline that ran out again (see below). So the s
 - **Cross-surface sends fail silently.** A wake to a conversation of the other surface (CLI to App, or App to CLI) is not delivered, and agentapi does not say so. The ack timeout then gives exit 8.
 - **Coordinators.** As in broker mode, a session-mode name can only reply: it cannot send queue messages, and gets no `CQ-WAKE` or `CQ-OVERDUE` lines.
 
-### Open gates
+### Live gates
 
-Live tests on 13 November 2026, CLI and App, with `agentapi` and the sandbox but not yet with this watcher:
+Live tests on 13 November 2026, CLI and App. The first runs used `agentapi` and the sandbox without this watcher; the end-to-end runs used the watcher in a CLI session.
 
 | Gate | Result |
 | --- | --- |
 | S1 environment | Pass. Each run-command call is a fresh PowerShell process: environment, working folder, functions and aliases never carry over, and the tool has no environment or working-folder parameter. |
-| S1 writes | **Fail on the test machine**: the root's DACL gave a capability SID inheritable Modify, so the sandboxed shell could write the queue. The start check now refuses that root. The CLI's file tool also wrote in the queue root with no prompt, likely because of `allowNonWorkspaceAccess` (see [Setup](#setup)); cq cannot check that. To pass: fix the ACL and the setting, then confirm that nothing the session runs, shell or file tool, can write the root, `config.toml` or `cq.exe`. |
+| S1 writes | Pass on a fixed root, CLI and App. The sandboxed shell was refused writes to the root, its folders (including the `agy-exchange` parent) and the `cq.exe` folder. The per-name exchange folder and its job folders are writable by the session, by design. The file tool asked for approval for each write outside the workspace; never approve one for the root or the `cq.exe` folder. The first run failed: the root's DACL gave a capability SID inheritable Modify, which the start check now refuses, and the CLI's file tool wrote in the root with no prompt, likely because of `allowNonWorkspaceAccess` or a trusted workspace above the root (see [Setup](#setup)). cq cannot check Antigravity's settings. |
 | A5 | Pass: the `cq.exe` path checks hold for the installed path. |
+| A6 | Pass: ending the background task from Antigravity ends the watcher process. |
 | A7 | Antigravity sets `ANTIGRAVITY_CONVERSATION_ID` to the conversation ID; cq uses it, with the table's `conversation` as an optional fallback and check. |
 | A8 | A wake during a turn is not an interrupt (see [While it runs](#while-it-runs)). v1 is not blocked. |
+| A10 | Pass: the sandboxed shell reached the exchange folder with no extra traverse grant on the root. |
 | A12 | `send-message` delivers with exactly `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, `SystemRoot`, `TEMP` and `TMP`. Without the conversation variable the message shows as from the system. |
+| End to end | Pass in the CLI with `agy.exe` as the agentapi image: the watcher started from the session with no prompt, claimed the task, woke the session, got the `started` ack and the reply, and the sender got the result in 42 s. A watcher restart in the same session also needed no prompt. The first run found that `request.json` gave no reply format; `cq-agy-request/2` adds `reply_format`. |
 
-Still open: S1 writes on a fixed root, an end-to-end run of this watcher, and the agentapi image checks and hold on a real Antigravity install. The token is not protected from the session: the sandboxed shell already sees it and the address.
+Not tested live: the end-to-end run in the App, and an Antigravity update while the watcher holds the agentapi image. The token is not protected from the session: the sandboxed shell already sees it and the address.
 
 ## Open conversation
 
