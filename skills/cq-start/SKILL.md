@@ -2,15 +2,16 @@
 name: cq-start
 description: Start or wake this session's cq queue watcher - clear its sleep flag, reload its handoff, check its queue scope and arm the watcher. Use when the user says start cq, join the queue, wake up, or when a coordinator's wake message asks this session to rejoin. A coordinator can give another session's queue name to wake that session.
 license: MIT
-compatibility: Needs the cq CLI and a shell. Written for Claude Code and Codex; other agents can follow the general steps.
+compatibility: Needs the cq CLI and a shell. Written for Claude Code, Codex and Antigravity session mode (Windows); other agents can follow the general steps.
 ---
 
-Read your session rules first if they are not already in context: the file your setup made from cq's `docs/SESSION-RULES.example.md` (`CQ_RULES` points at it), or the queue rules in your `CLAUDE.md` or `AGENTS.md`. Run `cq` the way your rules say: in Claude Code, with the Bash tool (Git Bash); in Codex, in the chat's shell, with the full path and `CQ_ROOT` from your `AGENTS.md` section.
+Read your session rules first if they are not already in context: the file your setup made from cq's `docs/SESSION-RULES.example.md` (`CQ_RULES` points at it), or the queue rules in your `CLAUDE.md` or `AGENTS.md`. Run `cq` the way your rules say: in Claude Code, with the Bash tool (Git Bash); in Codex, in the chat's shell, with the full path and `CQ_ROOT` from your `AGENTS.md` section; in Antigravity session mode, sandboxed, with the full path to `cq.exe`.
 
 Find out which agent you are and how your name is woken (its wake route), if you do not already know:
 
 - **Claude Code:** `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID` or `CLAUDE_CODE_HOST_SESSION_ID` is set. cq keys its member records on the two session IDs. Follow the "Claude Code" steps. They cover inbox mode and Monitor mode, so they also apply when `CLAUDE_CODE_MESSAGING_SOCKET` is not set.
 - **Codex:** `CODEX_THREAD_ID` is set. A Codex chat is woken by a `cq watch --to-codex` watcher or by a scheduled automation that polls. Your `AGENTS.md` section should say which. If it does not, run `cq members`: if a key is listed for your name and line 4 of its member record (`CQ_ROOT/members/<key>`) is `codex`, the route is the watcher. A key can be left from an older watcher, so if you are not sure, ask the user. Follow "Codex with a watcher" or "Polling".
+- **Antigravity session mode:** `ANTIGRAVITY_CONVERSATION_ID` is set, and your rules say to start `cq watch --as NAME --to-agy-session` as a background command. Line 4 of its member record is `agy-session`. Follow "Antigravity session mode".
 - **Another agent:** follow "Polling" if a scheduler polls for it, else "Other wake routes".
 
 If the user's request names another session's queue name, do section A. Otherwise do section B.
@@ -25,16 +26,17 @@ Any session may wake another one: for example after `cq send` warned that the re
    - **A Claude Code session, and you are in Claude Code:** send that session a cross-session message (in the Claude desktop app: SendMessage to its `local_...` ID): `cq: you have work in your queue. Run /cq-start to rejoin.` Add the waiting message's ID and subject if you know them. Never put message bodies in it.
    - **A Claude Code session, and you are not in Claude Code:** you cannot send that message. Do step 4.
    - **A Codex chat with a watcher:** its `cq watch --to-codex` watcher stopped when the name went to sleep, and it runs outside the chat. Tell the user that the watcher for `<their name>` must be started again, outside the chat (see "Wake a Codex chat" in the cq Codex setup page). The chat can also run this skill itself, when the user asks it to.
+   - **An Antigravity session-mode name** (mode `agy-session`): its watcher keeps running while the name sleeps, so `cq wake` is enough if the watcher still runs. An App restart stops the watcher. If `cq status --as <their name>` then shows `stopped` or `watcher=stopped`, tell the user to run `/cq-start` in that conversation.
    - **A session that polls** (a Codex scheduled automation, or another agent's scheduler): `cq wake` cleared the flag, so its next run handles the messages. If its scheduler was paused, tell the user to resume it.
 4. If no session is listed for the name and it does not poll, or the wake cannot be delivered, the session is not woken. Tell the user which session needs waking and why, and send a push notification if that tool exists. Do not retry in a loop.
 
 ## B. This session (no queue name in the request)
 
-Steps 1 to 4 are the same for every agent.
+Steps 1 to 4 are the same for every agent, except that Antigravity session mode skips steps 2 and 3.
 
-1. **Find your queue name** (`cq members`, or the "Name and scope" section of your rules). In Codex, it is also the name in your `AGENTS.md` section and in the wake prompt. Tell the user the name in one line.
-2. **Clear your sleep flag** if it is set: `cq wake --as <name> <name>`.
-3. **Reload the handoff.** In Claude Code, the handoff is `~/.claude/cq-handoff/<name>.md`. In another agent, it is where the `cq-stop` skill wrote it: the path your rules name, else `~/.cq-handoff/<name>.md`. If it exists, read it, then rename it to `<name>.last.md` so it is not loaded twice. Treat it as your own notes from before the sleep. Mention open actions for the user from it.
+1. **Find your queue name** (`cq members`, or the "Name and scope" section of your rules). In Codex, it is also the name in your `AGENTS.md` section and in the wake prompt. In Antigravity session mode, it is the name in the queue section for this session in the workspace's `GEMINI.md` or `AGENTS.md`, or the name the user gives. Tell the user the name in one line.
+2. **Clear your sleep flag** if it is set: `cq wake --as <name> <name>`. In Antigravity session mode, skip this step: the sandbox cannot write the queue root. Step 7 of that section checks the flag.
+3. **Reload the handoff.** In Antigravity session mode, skip this step: the App keeps the conversation's context, and `cq-stop` writes no handoff. In Claude Code, the handoff is `~/.claude/cq-handoff/<name>.md`. In another agent, it is where the `cq-stop` skill wrote it: the path your rules name, else `~/.cq-handoff/<name>.md`. If it exists, read it, then rename it to `<name>.last.md` so it is not loaded twice. Treat it as your own notes from before the sleep. Mention open actions for the user from it.
 4. **Check your queue scope** (the "Name and scope" section of your rules).
 
 The next steps depend on the agent and its wake route.
@@ -54,6 +56,18 @@ The next steps depend on the agent and its wake route.
    `cq watch --as <name> --to-codex <thread ID> --codex-bin <full path to codex>`
    If an old watcher may still hold the name, add `--takeover`. If your setup gives you a trusted way to start it outside the chat, such as a coordinator session, use that instead.
 6. **Handle waiting messages** now: run `cq list --as <name>`, and handle each `UNCLAIMED` message, oldest first, as your `AGENTS.md` section says.
+
+### Antigravity session mode
+
+The watcher runs as a background command of this conversation. An App restart stops it, so run `/cq-start` after every restart. The watcher claims and finishes each message itself, and wakes this conversation with a "cq: queue job" message. The sandbox cannot write the queue root, so do not run `cq claim`, `cq done`, `cq send`, `cq wake` or `cq sleep`.
+
+5. **Check the conversation.** Read `$env:ANTIGRAVITY_CONVERSATION_ID`. The watcher wakes that conversation. If `[agy-session.<name>]` in the queue root's `config.toml` also has `conversation`, the two must match; without the variable, the table's value is used. The watcher checks this and stops with exit 64 on a mismatch, so you do not need to read `config.toml`.
+6. **Start the watcher.** Start this exact line once, as a background command, with `BypassSandbox: true`. Add nothing to it, not even `--takeover` or `2>&1`: the App saved its permission grant for this exact text.
+   `C:\<cq folder>\cq.exe watch --as <name> --to-agy-session`
+   Use the real path from your rules. Read the command's output after a few seconds, and tell the user its first output line. If the command has already ended, read its last line, the stop line `cq watch (<name>) stopped: REASON. WHAT TO DO`, and do what it says. "already running for this conversation; nothing to do" means the watcher runs: do not start another.
+7. **Check the sleep flag.** Run `C:\<cq folder>\cq.exe status --as <name>` sandboxed: it only reads. A session-mode watcher does not stop while the name sleeps. It keeps running, but claims nothing and wakes nothing. If the line starts with `asleep`, tell the user that `<name>` is asleep, and that the user or a coordinator must run `cq wake --as <their name> <name>` outside the App. Do not try it yourself. If the command cannot read the queue root, tell the user that you could not check the flag.
+8. **Handle queue jobs** as the "Antigravity session mode" section of your rules says, also when a job message arrives in the middle of other work.
+9. **When the watcher command ends,** read its last line. Start it again with the same line only when that line says "Start the watcher again with the same line". Otherwise tell the user the line, and do not restart.
 
 ### Polling
 

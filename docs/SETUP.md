@@ -104,12 +104,13 @@ To let a session sleep other sessions, add its name on its own line in `CQ_ROOT/
 
 ### Install the skills
 
-The `cq-start` and `cq-stop` skills in [`skills/`](../skills/) follow the [Agent Skills](https://agentskills.io/specification) format, so one copy works in Claude Code and Codex. Each skill has shared steps, then steps for Claude Code, for Codex and for other agents. Copy both folders to the folder that your agent reads:
+The `cq-start` and `cq-stop` skills in [`skills/`](../skills/) follow the [Agent Skills](https://agentskills.io/specification) format, so one copy works in Claude Code, Codex and Antigravity. Each skill has shared steps, then steps for Claude Code, for Codex, for Antigravity session mode and for other agents. Copy both folders to the folder that your agent reads:
 
 | Agent | Skills folder |
 | --- | --- |
 | Claude Code | `~/.claude/skills/<name>/` |
 | Codex | `~/.agents/skills/<name>/` ([Codex skills guide](https://learn.chatgpt.com/docs/build-skills)). On Windows this is probably `C:\Users\<you>\.agents\skills`: the guide gives only `$HOME/.agents/skills`. |
+| Antigravity (CLI and App) | `~/.gemini/config/skills/<name>/`, for every workspace. A workspace can also have its own copy in `<workspace>/.agents/skills/<name>/`. Run a skill with `/cq-start` or `/cq-stop`. In [session mode](agents/ANTIGRAVITY.md#session-mode), run `/cq-start` after every App restart: the restart stops the watcher. |
 | Other agents | The agent's own skills folder, if it reads Agent Skills |
 
 From the cq repo, in Git Bash:
@@ -117,13 +118,16 @@ From the cq repo, in Git Bash:
 ```bash
 cp -r skills/cq-start skills/cq-stop ~/.claude/skills/
 mkdir -p ~/.agents/skills && cp -r skills/cq-start skills/cq-stop ~/.agents/skills/
+mkdir -p ~/.gemini/config/skills && cp -r skills/cq-start skills/cq-stop ~/.gemini/config/skills/
 ```
 
-In PowerShell 7, for Codex:
+In PowerShell 7, for Codex and Antigravity:
 
 ```powershell
 New-Item -ItemType Directory -Force "$HOME/.agents/skills" | Out-Null
 Copy-Item -Recurse -Force skills/cq-start, skills/cq-stop "$HOME/.agents/skills/"
+New-Item -ItemType Directory -Force "$HOME/.gemini/config/skills" | Out-Null
+Copy-Item -Recurse -Force skills/cq-start, skills/cq-stop "$HOME/.gemini/config/skills/"
 ```
 
 Copy them again after you update the repo. A session runs these skills without being asked, for example `cq-stop` on a `CQ-SLEEP` line, so cq does not make them manual-only. To make your installed copy manual-only anyway: in Claude Code, add `disable-model-invocation: true` to its frontmatter; in Codex, add `agents/openai.yaml` with `allow_implicit_invocation: false` under `policy` ([Codex skills guide](https://learn.chatgpt.com/docs/build-skills)). The session then no longer reacts to `CQ-SLEEP` by itself.
