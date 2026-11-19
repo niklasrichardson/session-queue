@@ -34,7 +34,7 @@ Any session may wake another one: for example after `cq send` warned that the re
 
 Steps 1 to 4 are the same for every agent, except that Antigravity session mode skips steps 2 and 3.
 
-1. **Find your queue name** (`cq members`, or the "Name and scope" section of your rules). In Codex, it is also the name in your `AGENTS.md` section and in the wake prompt. In Antigravity session mode, it is the name in the queue section for this session in the workspace's `GEMINI.md` or `AGENTS.md`, or the name the user gives. Tell the user the name in one line.
+1. **Find your queue name** (`cq members`, or the "Name and scope" section of your rules). In Codex, it is also the name in your `AGENTS.md` section and in the wake prompt. In Antigravity session mode, it is the name in the queue section for this session in the workspace's agent instruction file (`AGENTS.md`, `GEMINI.md` or `CLAUDE.md`), or the name the user gives. Tell the user the name in one line.
 2. **Clear your sleep flag** if it is set: `cq wake --as <name> <name>`. In Antigravity session mode, skip this step: the sandbox cannot write the queue root. Step 7 of that section checks the flag.
 3. **Reload the handoff.** In Antigravity session mode, skip this step: the App keeps the conversation's context, and `cq-stop` writes no handoff. In Claude Code, the handoff is `~/.claude/cq-handoff/<name>.md`. In another agent, it is where the `cq-stop` skill wrote it: the path your rules name, else `~/.cq-handoff/<name>.md`. If it exists, read it, then rename it to `<name>.last.md` so it is not loaded twice. Treat it as your own notes from before the sleep. Mention open actions for the user from it.
 4. **Check your queue scope** (the "Name and scope" section of your rules).
