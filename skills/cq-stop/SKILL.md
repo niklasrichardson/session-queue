@@ -20,6 +20,8 @@ If the user's request names another session's queue name, do section A. Otherwis
 
 Only a coordinator listed in the queue root's `coordinators` file may do this.
 
+In Antigravity session mode, you cannot do this section: the sandbox cannot write the queue root. Give the user the command from step 1, to run outside the App or to pass to a coordinator that can run it. Do not ask for a new sandbox bypass, and do not report that the name is asleep until `cq status --as <their name>` shows it.
+
 1. Run `cq sleep --as <your name> <their name> --reason "<short reason>"`. Exit 5 means you are not a coordinator: tell the user and stop.
 2. What happens next depends on their wake route. `cq members` lists a key only after `cq watch` ran for the name. Line 4 of the member record (`CQ_ROOT/members/<key>`) is the watcher's mode: `inbox` or `monitor` for Claude Code, `codex` for a `--to-codex` watcher. A name with no key is usually woken by polling.
    - **A Claude Code session:** their watcher exits with `CQ-SLEEP` and their session runs this skill (section B) by itself. Do not message them.
@@ -33,7 +35,7 @@ Only a coordinator listed in the queue root's `coordinators` file may do this.
 Do the steps in order. Do not start new work. Steps 1 to 4 are the same for every agent, except that Antigravity session mode skips steps 3 and 4.
 
 1. **Find your queue name** (`cq members`, or the "Name and scope" section of your rules). In Codex, it is also the name in your `AGENTS.md` section and in the wake prompt. In Antigravity session mode, it is the name in the queue section for this session in the workspace's agent instruction file (`AGENTS.md`, `GEMINI.md` or `CLAUDE.md`).
-2. **Check it is safe to sleep.** If you have claimed a message that is not done, or work in progress that is not saved, finish or save it first. If you cannot, tell the user and stop. In Antigravity session mode, a queue job with `started` and no `reply.json` is not done: write its reply first.
+2. **Check it is safe to sleep.** If you have claimed a message that is not done, or work in progress that is not saved, finish or save it first. If you cannot, tell the user and stop. In Antigravity session mode, a queue job with `started` and no `reply.json` is not done: write its reply first. A written `reply.json` is not enough either: the watcher delivers the reply after it reads the file. Wait until the watcher prints `agy job <id> status=...` for that job. If it prints a line that the job needs review or is held, tell the user and stop.
 3. **Save the handoff.** In Antigravity session mode, skip this step: the App keeps the conversation's context, and files outside the workspace need a file-access prompt. In Claude Code, write `~/.claude/cq-handoff/<name>.md`. In another agent, write it to the path your rules name, else `~/.cq-handoff/<name>.md`. In Codex, `~/.cq-handoff` is outside the chat's writable workspace, so expect an approval prompt unless your rules name a path inside the workspace. Create the folder if needed, and replace an older file. Keep it under 400 words. Include:
    - the goal and current state, with file paths, branches, issue and PR links;
    - decisions already made, so the next session does not re-open them;
@@ -64,7 +66,7 @@ After the clear, the SessionStart hook runs `cq session-start`. It sees the slee
 
 The watcher runs as a background command of this conversation, and the sandbox cannot set the sleep flag. So this skill stops the watcher and leaves the flag to the user or a coordinator.
 
-5. **Stop the watcher.** End the background command `C:\<cq folder>\cq.exe watch --as <name> --to-agy-session`. Ending it ends the watcher. Sleep alone does not stop a session-mode watcher. Do not start it again, and do not restart it when its stop line comes.
+5. **Stop the watcher** only after step 2: no job may be between `reply.json` and its `agy job <id> status=...` line. End the background command `C:\<cq folder>\cq.exe watch --as <name> --to-agy-session`. Ending it ends the watcher. Sleep alone does not stop a session-mode watcher. Do not start it again, and do not restart it when its stop line comes.
 6. **Do not clear.** With its watcher stopped, the conversation gets no queue jobs, so it takes no turns for cq.
 7. **Reply** in one short block:
    - the queue name, and that its watcher is stopped;

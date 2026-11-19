@@ -20,6 +20,8 @@ If the user's request names another session's queue name, do section A. Otherwis
 
 Any session may wake another one: for example after `cq send` warned that the receiver is asleep, or on a `CQ-WAKE` line.
 
+In Antigravity session mode, you cannot do this section: the sandbox cannot write the queue root. Give the user the command from step 1, to run outside the App or to pass to a coordinator that can run it. Do not ask for a new sandbox bypass, and do not report that the name is awake until `cq status --as <their name>` shows it.
+
 1. Run `cq wake --as <your name> <their name>`.
 2. Find their session in `cq members` (the session key beside their name). `cq members` lists a key only after `cq watch` ran for the name. Line 4 of the member record (`CQ_ROOT/members/<key>`) is the watcher's mode: `inbox` or `monitor` for Claude Code, `codex` for a `--to-codex` watcher. A name with no key is usually woken by polling, or has no wake route.
 3. Wake the session the way its route needs:
