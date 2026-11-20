@@ -43,6 +43,16 @@ Each wake is a full model turn. In the hand test, a turn took 4 seconds to about
 
 The watcher drops `CQ-WAKE` and `CQ-OVERDUE` lines ([Commands](../COMMANDS.md#wake-an-antigravity-cli-conversation)). So an Antigravity conversation that is a coordinator gets no wake or overdue alerts. See [Lifecycle by agent](../PROTOCOL.md#lifecycle-by-agent).
 
+### Fallback: scheduled polling
+
+Use this only when no watcher can run, neither print mode, [broker mode](#broker-mode) nor [session mode](#session-mode). Not tested with `cq`.
+
+The conversation calls its built-in `schedule` tool with a `CronExpression` (for example `*/10 * * * *`) and a prompt that tells it to run `cq list --as NAME` and handle any `UNCLAIMED` messages. The general rules for polling are in [Other agents](OTHER-AGENTS.md).
+
+- **Cost.** Each run is a model turn, also when the inbox is empty.
+- **No heartbeat.** `cq list` writes no watcher heartbeat and no `members/` record, so [cq-top](../CQ-TOP.md) does not show the conversation as a watcher.
+- **Sleep.** `cq sleep` does not stop the schedule. Cancel the schedule task with `manage_task` (`Action: "kill"`). Also write the prompt so that a run ends with no other work when `cq list` prints an `ASLEEP` line.
+
 ## Broker mode
 
 Experimental, cq 1.15.0, Windows only. On macOS and Linux `--agy-broker` exits 64: the problem it fixes (Low integrity) is Windows only, and the Unix exchange folder would need trust checks that read ACLs (macOS extended ACLs, POSIX ACLs), which cq does not have yet. On Windows, an `agy` turn runs at Low integrity, so it cannot write the queue root, which is Medium. In broker mode the watcher claims and finishes each message itself, and the turn only reads one request file and writes one reply file. The turn needs no write access to the queue root.
