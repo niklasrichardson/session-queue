@@ -22,7 +22,7 @@ cq 1.17.2: finding M3 of [issue #83](https://github.com/niklasrichardson/session
 - Unit tests in `src/fsutil.rs`: a move to a taken name fails as `Exists` and both files keep their text; a move to a free name moves the file; a missing source is `Gone` even when the name is taken; 8 threads that move their own file to one name at the same moment, with no lock, give exactly 1 winner, and the other 7 keep their file.
 - `tests/queue.rs`: `cq done` and `cq done --reject` with a file of the same name already in `done/` or `rejected/` exit 70, replace nothing, and leave the message in `.processing/`.
 
-Not verified: the macOS `renamex_np` path and the Unix hard-link path (no Unix target here; CI builds them).
+Not verified: the macOS `renamex_np` path, the Linux `renameat2` path and the `Unsupported` error on other systems. Only CI compiles them; no Unix target is installed here, and they were not run on a Unix file system.
 
 ## Antigravity session mode on Windows, 13 November 2026
 

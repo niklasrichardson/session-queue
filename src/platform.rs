@@ -258,13 +258,14 @@ mod imp {
     /// A connection to a Claude Code session's inbox socket.
     pub type InboxConn = std::os::unix::net::UnixStream;
 
-    /// Rename `src` to `dst`, failing with `AlreadyExists` when `dst`
-    /// exists. macOS uses `renamex_np(RENAME_EXCL)`, one call. Other systems,
-    /// and macOS file systems without it, make a hard link (which never
-    /// replaces a file) and then remove `src`; for that moment both names
-    /// exist.
+    /// Rename `src` to `dst` in one call that fails with `AlreadyExists`
+    /// when `dst` exists: `renamex_np(RENAME_EXCL)` on macOS,
+    /// `renameat2(RENAME_NOREPLACE)` on Linux. Where the system or the file
+    /// system has no such call, it fails with `Unsupported` and moves
+    /// nothing. There is no fallback: a link-then-remove move could leave a
+    /// message under two names if the process died between the two steps.
     pub fn rename_no_replace(src: &Path, dst: &Path) -> io::Result<()> {
-        #[cfg(target_vendor = "apple")]
+        #[cfg(any(target_vendor = "apple", target_os = "linux"))]
         {
             use std::ffi::CString;
             use std::os::unix::ffi::OsStrExt;
@@ -274,21 +275,47 @@ mod imp {
             };
             let (from, to) = (c(src)?, c(dst)?);
             // SAFETY: both are NUL-terminated C strings that live for the call.
-            if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
-                return Ok(());
-            }
-            let e = io::Error::last_os_error();
-            if !matches!(e.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EINVAL)) {
-                return Err(e);
+            #[cfg(target_vendor = "apple")]
+            let rc = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+            // SAFETY: as above; AT_FDCWD makes both paths relative to the
+            // current folder, as `rename` does.
+            #[cfg(target_os = "linux")]
+            let rc = unsafe {
+                libc::renameat2(
+                    libc::AT_FDCWD,
+                    from.as_ptr(),
+                    libc::AT_FDCWD,
+                    to.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            };
+            if rc == 0 {
+                Ok(())
+            } else {
+                let e = io::Error::last_os_error();
+                let code = e.raw_os_error();
+                if code == Some(libc::ENOTSUP)
+                    || code == Some(libc::EINVAL)
+                    || code == Some(libc::ENOSYS)
+                {
+                    Err(unsupported(&e.to_string()))
+                } else {
+                    Err(e)
+                }
             }
         }
-        std::fs::hard_link(src, dst)?;
-        if let Err(e) = std::fs::remove_file(src) {
-            // Undo, so one message never keeps two names.
-            let _ = std::fs::remove_file(dst);
-            return Err(e);
+        #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+        {
+            let _ = (src, dst);
+            Err(unsupported("this system has no such call"))
         }
-        Ok(())
+    }
+
+    fn unsupported(why: &str) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("no rename that refuses to replace a file ({why}); the queue root needs one"),
+        )
     }
 
     /// The device and inode of an open file. A removed file's inode can be

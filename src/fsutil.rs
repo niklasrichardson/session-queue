@@ -42,6 +42,10 @@ pub fn move_with_retry(src: &Path, dst: &Path) -> Result<(), MoveError> {
                 if !src.exists() {
                     return Err(MoveError::Gone);
                 }
+                // A retry cannot help; nothing was moved.
+                if e.kind() == io::ErrorKind::Unsupported {
+                    return Err(MoveError::Failed(e));
+                }
                 // Windows can report a taken name as "access denied".
                 if e.kind() == io::ErrorKind::AlreadyExists || dst.exists() {
                     return Err(MoveError::Exists);
