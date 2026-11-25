@@ -45,6 +45,8 @@ The details are in [Commands](COMMANDS.md#rejections).
 | Sender | 60 messages per hour from one sender, to all recipients together |
 | `PAUSE` | while `CQ_ROOT/PAUSE` exists, every send is refused |
 
+The pair, recipient and sender limits count the messages already sent, then write the new one, with no lock. So they bound a sequential loop: one session that sends again and again. They do not bound parallel senders. Many `cq send` processes that start at the same moment can all pass the count.
+
 The limits also apply to the results that `cq done --reply`, `cq done --reject` and `cq claim` (DLQ notice) send, and to the notice that `cq done --reject` sends for an info or result. If a limit blocks that notice, the reject still succeeds and stderr says the sender was not told. Invalid messages go to the DLQ instead of looping. If `cq send` exits 5, do not retry in a loop: tell the user.
 
 ## Lifecycle by agent

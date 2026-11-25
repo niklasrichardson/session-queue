@@ -1,6 +1,6 @@
 //! Process helpers: stop an old watcher, check whether a process still
 //! runs, check stdin for input without blocking, and connect to a Claude
-//! Code session's inbox.
+//! Code session's inbox. Also the rename that never replaces a file.
 //!
 //! Windows and macOS are the targets; the Unix version also works on Linux.
 
@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use crate::error::{CqError, Result};
 
-pub use imp::{InboxConn, file_id, open_inbox, process_alive, stdin_has_input, terminate};
+pub use imp::{
+    InboxConn, file_id, open_inbox, process_alive, rename_no_replace, stdin_has_input, terminate,
+};
 
 /// How long `stdin_has_input` waits for the first byte on an open, empty
 /// pipe. A pipeline writer (`echo ... | cq done`) can start after `cq`;
@@ -68,6 +70,20 @@ mod imp {
 
     /// A client end of a Claude Code session's inbox named pipe.
     pub type InboxConn = std::fs::File;
+
+    /// Rename `src` to `dst` in one call that fails with `AlreadyExists`
+    /// when `dst` exists: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`.
+    pub fn rename_no_replace(src: &Path, dst: &Path) -> std::io::Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() };
+        let (src, dst) = (wide(src), wide(dst));
+        // SAFETY: both are NUL-terminated UTF-16 strings that live for the call.
+        if unsafe { MoveFileExW(src.as_ptr(), dst.as_ptr(), 0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
 
     /// The volume serial number and file index of an open file. NTFS gives
     /// a file made again under a removed file's name a new index.
@@ -241,6 +257,39 @@ mod imp {
 
     /// A connection to a Claude Code session's inbox socket.
     pub type InboxConn = std::os::unix::net::UnixStream;
+
+    /// Rename `src` to `dst`, failing with `AlreadyExists` when `dst`
+    /// exists. macOS uses `renamex_np(RENAME_EXCL)`, one call. Other systems,
+    /// and macOS file systems without it, make a hard link (which never
+    /// replaces a file) and then remove `src`; for that moment both names
+    /// exist.
+    pub fn rename_no_replace(src: &Path, dst: &Path) -> io::Result<()> {
+        #[cfg(target_vendor = "apple")]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let c = |p: &Path| {
+                CString::new(p.as_os_str().as_bytes())
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+            };
+            let (from, to) = (c(src)?, c(dst)?);
+            // SAFETY: both are NUL-terminated C strings that live for the call.
+            if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            if !matches!(e.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EINVAL)) {
+                return Err(e);
+            }
+        }
+        std::fs::hard_link(src, dst)?;
+        if let Err(e) = std::fs::remove_file(src) {
+            // Undo, so one message never keeps two names.
+            let _ = std::fs::remove_file(dst);
+            return Err(e);
+        }
+        Ok(())
+    }
 
     /// The device and inode of an open file. A removed file's inode can be
     /// given to the next new file, so callers add the modified time.

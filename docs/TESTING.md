@@ -15,6 +15,15 @@ These were not tested by `cargo test`, or not yet tested live:
 
 Tested live in the desktop app on Windows: re-arming after each 30-minute watcher exit (hundreds of re-arms across 10 sessions), the rejoin hook after `/clear`, replies, rejections and multi-hop forwarding.
 
+## Moves that never replace a file on Windows, 25 November 2026
+
+cq 1.17.2: finding M3 of [issue #83](https://github.com/niklasrichardson/session-queue/issues/83), and the docs for P1 and L1. Checked on Windows 11 with `cargo build`, `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` (522 tests with cq-top, 0 failed, 1 ignored). Nothing was run live.
+
+- Unit tests in `src/fsutil.rs`: a move to a taken name fails as `Exists` and both files keep their text; a move to a free name moves the file; a missing source is `Gone` even when the name is taken; 8 threads that move their own file to one name at the same moment, with no lock, give exactly 1 winner, and the other 7 keep their file.
+- `tests/queue.rs`: `cq done` and `cq done --reject` with a file of the same name already in `done/` or `rejected/` exit 70, replace nothing, and leave the message in `.processing/`.
+
+Not verified: the macOS `renamex_np` path and the Unix hard-link path (no Unix target here; CI builds them).
+
 ## Antigravity session mode on Windows, 13 November 2026
 
 `cq watch --to-agy-session` (cq 1.17.0, [issue #104](https://github.com/niklasrichardson/session-queue/issues/104)). Checked on Windows 11 with `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --workspace`. The live runs, including an end-to-end run of the watcher in the CLI, are below.

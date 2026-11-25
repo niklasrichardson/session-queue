@@ -825,6 +825,32 @@ fn claim_twice_exits_1() {
     assert_eq!(code(&env.claim("b", &fake_id("a", "ffff"))), 1);
 }
 
+/// `cq done` never replaces a file of the same name in `done/` or
+/// `rejected/`: it fails with exit 70 and the message stays claimed.
+#[test]
+fn done_never_replaces_a_finished_message() {
+    let env = Env::new();
+    let reason = Some(r#"{"reason":"no"}"#);
+    for (flag, dir, stdin) in [(None, "done", None), (Some("--reject"), "rejected", reason)] {
+        let id = env.send("a", "b", "info", "s", "x");
+        assert_eq!(code(&env.claim("b", &id)), 0);
+        fs::create_dir_all(env.path(&format!("{dir}/b"))).unwrap();
+        let taken = env.path(&format!("{dir}/b/{id}.json"));
+        fs::write(&taken, "older").unwrap();
+        let mut args = vec!["done", "--as", "b", id.as_str()];
+        args.extend(flag);
+        let out = env.run(&args, stdin);
+        assert_eq!(code(&out), 70, "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("nothing was replaced"),
+            "{}",
+            stderr(&out)
+        );
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "older");
+        assert!(env.ids("inbox/b/.processing").contains(&id));
+    }
+}
+
 // Schema tests.
 
 fn schema() -> Value {

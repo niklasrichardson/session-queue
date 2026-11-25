@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
 
+use crate::platform;
+
 pub const RETRIES: u32 = 3;
 pub const RETRY_DELAY: Duration = Duration::from_millis(333);
 
@@ -24,7 +26,9 @@ pub enum MoveError {
     Failed(io::Error),
 }
 
-/// Rename `src` to `dst` without replacing an existing `dst`.
+/// Rename `src` to `dst` without replacing an existing `dst`. The check and
+/// the rename are one call (`platform::rename_no_replace`), so two moves to
+/// one name cannot both succeed, even without a lock.
 pub fn move_with_retry(src: &Path, dst: &Path) -> Result<(), MoveError> {
     let mut last = None;
     for attempt in 0..=RETRIES {
@@ -32,14 +36,15 @@ pub fn move_with_retry(src: &Path, dst: &Path) -> Result<(), MoveError> {
         if !src.exists() {
             return Err(MoveError::Gone);
         }
-        if dst.exists() {
-            return Err(MoveError::Exists);
-        }
-        match fs::rename(src, dst) {
+        match platform::rename_no_replace(src, dst) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if !src.exists() {
                     return Err(MoveError::Gone);
+                }
+                // Windows can report a taken name as "access denied".
+                if e.kind() == io::ErrorKind::AlreadyExists || dst.exists() {
+                    return Err(MoveError::Exists);
                 }
                 last = Some(e);
             }
@@ -232,4 +237,78 @@ pub fn random_u16() -> u16 {
     }
     let v = h.finish();
     (v ^ (v >> 16) ^ (v >> 32) ^ (v >> 48)) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MoveError, move_with_retry};
+    use std::fs;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn a_move_never_replaces_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("a.json"), dir.path().join("b.json"));
+        fs::write(&src, "new").unwrap();
+        fs::write(&dst, "old").unwrap();
+        assert!(matches!(
+            move_with_retry(&src, &dst),
+            Err(MoveError::Exists)
+        ));
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
+        assert_eq!(fs::read_to_string(&src).unwrap(), "new");
+    }
+
+    #[test]
+    fn a_move_to_a_free_name_moves_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("a.json"), dir.path().join("b.json"));
+        fs::write(&src, "new").unwrap();
+        move_with_retry(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
+    }
+
+    #[test]
+    fn a_missing_source_is_gone_even_when_the_destination_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("a.json"), dir.path().join("b.json"));
+        fs::write(&dst, "old").unwrap();
+        assert!(matches!(move_with_retry(&src, &dst), Err(MoveError::Gone)));
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
+    }
+
+    /// Threads move their own file to one name at the same moment, with no
+    /// lock. Exactly one wins; the others keep their file.
+    #[test]
+    fn parallel_moves_to_one_name_have_one_winner() {
+        const N: usize = 8;
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("taken.json");
+        let barrier = Arc::new(Barrier::new(N));
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let src = dir.path().join(format!("{i}.tmp"));
+                fs::write(&src, i.to_string()).unwrap();
+                let (dst, barrier) = (dst.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (i, move_with_retry(&src, &dst))
+                })
+            })
+            .collect();
+        let mut winners = Vec::new();
+        for h in handles {
+            match h.join().unwrap() {
+                (i, Ok(())) => winners.push(i),
+                (_, Err(MoveError::Exists)) => {}
+                (i, Err(e)) => panic!("move {i} failed: {e:?}"),
+            }
+        }
+        assert_eq!(winners.len(), 1, "winners: {winners:?}");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), winners[0].to_string());
+        for i in (0..N).filter(|i| *i != winners[0]) {
+            assert!(dir.path().join(format!("{i}.tmp")).exists());
+        }
+    }
 }

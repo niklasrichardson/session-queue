@@ -19,3 +19,5 @@ This is a personal project, so replies are best effort. The reply comes in the p
 In scope: the `cq` and `cq-top` binaries, how they read and write the queue folder, message validation, and the watcher's inbox and Codex wake paths.
 
 Out of scope: what an agent does with a message it receives. `cq` treats every message as data, and each session's own rules and permissions decide what it may do. See the [safety model](docs/OVERVIEW.md#safety-model).
+
+Not a boundary: the control files in the queue root (`coordinators`, `idle-alerts`, `sleep/`, `PAUSE` and `config.toml`). All sessions run as one OS user, so any session can edit them. They have the same trust level as a message. A session that edits them is not a vulnerability in `cq`.
