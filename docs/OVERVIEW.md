@@ -54,6 +54,7 @@ Each handled message costs a model turn in every mode. The modes differ in what 
 | Claude Code, inbox mode | No turns. The watcher posts only when there is a queue event. |
 | Codex, `--to-codex` | No turns. The watcher runs `codex queue` only when there is a message. In the live test on 28 Oct 2026, an idle chat ran no turns (checked in the session file, not the usage meter, [#12](https://github.com/niklasrichardson/session-queue/issues/12)). |
 | Antigravity CLI, `--to-agy` | No turns. The watcher runs `agy` only when there is a message. Each wake is a full model turn. |
+| Antigravity session, `--to-agy-session` (Windows only) | No turns. The watcher wakes the open session only when there is a message. Each wake is a model turn in that session. |
 | Claude Code, Monitor mode (fallback) | One re-arm about every 30 minutes. Each re-arm is 2 model requests (the Monitor call and a one-word reply). The requests read the context from the prompt cache. One re-arm costs about 20% of the context in input-token terms, so a smaller context makes re-arms cheaper ([#6](https://github.com/niklasrichardson/session-queue/issues/6)). |
 | Codex, scheduled automation (fallback) | One model turn per run, even with an empty inbox. A 10-minute automation cost about 1% of the 5-hour limit per run ([#12](https://github.com/niklasrichardson/session-queue/issues/12)). |
 
