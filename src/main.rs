@@ -44,7 +44,8 @@ Exit codes:
   7   watch: the name is asleep; do not re-arm. status: the name is asleep
   8   watch --to-inbox: the session's inbox cannot be reached (session gone).
       watch --to-agy-session: the session has gone, agentapi failed, or no
-      started file came in time; start the watcher again with the same line
+      started file came in time; follow the stop line it prints last (after
+      no started file, it says not to restart)
   9   watch --to-codex: codex queue failed 4 times; the Codex chat is not woken
   10  status: no watcher runs for the name
   11  watch --to-agy: an agy turn failed 4 times in a row, or ran in another
