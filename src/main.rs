@@ -39,15 +39,19 @@ Exit codes:
       to a result or info, watcher running, sleeping another name without
       being a coordinator, an agy broker job record that needs review or is
       torn)
-  6  done: the message is not claimed by this session; requeue: the
+  6   done: the message is not claimed by this session; requeue: the
       message is not in this session's rejected/
   7   watch: the name is asleep; do not re-arm. status: the name is asleep
-  8   watch --to-inbox: the session's inbox cannot be reached (session gone)
+  8   watch --to-inbox: the session's inbox cannot be reached (session gone).
+      watch --to-agy-session: the session has gone, agentapi failed, or no
+      started file came in time; follow the stop line it prints last (after
+      no started file, it says not to restart)
   9   watch --to-codex: codex queue failed 4 times; the Codex chat is not woken
   10  status: no watcher runs for the name
   11  watch --to-agy: an agy turn failed 4 times in a row, or ran in another
       conversation; the conversation is not woken. With --agy-broker: a job
-      needs review (see its record), or agy could not start 4 times
+      needs review (see its record), or agy could not start 4 times. With
+      --to-agy-session: a job needs review
   64  bad arguments or bad JSON input
   70  any other error (I/O, CQ_ROOT missing or not initialised)";
 
@@ -189,13 +193,14 @@ enum Cmd {
         input: Option<PathBuf>,
     },
 
-    /// Print one CQ-NEW line per new message in your inbox. Run it under a
-    /// Monitor. Never prints message bodies. While your name is asleep, it
+    /// Print one CQ-NEW line per new message in your inbox. With no mode
+    /// flag, run it under a Monitor. Never prints message bodies. While your name is asleep, it
     /// prints CQ-SLEEP and exits 7. A coordinator's watcher also prints one
     /// CQ-WAKE line per message that has waited 2 minutes for a sleeping
     /// name. Experimental: --to-inbox posts the lines into this Claude Code
-    /// session's inbox instead, --to-codex wakes a Codex chat, and --to-agy
-    /// wakes an Antigravity CLI conversation. When your
+    /// session's inbox instead, --to-codex wakes a Codex chat, --to-agy
+    /// wakes an Antigravity CLI conversation, and --to-agy-session (Windows
+    /// only) wakes the open Antigravity session that started it. When your
     /// name is listed in CQ_ROOT/idle-alerts, it also sends the idle alert
     /// after a turn end recorded by `cq turn-end`, if the session stays idle.
     #[command(after_help = exit_help())]
