@@ -64,8 +64,9 @@ Inbox mode became the default for Claude Code on 28 Oct 2026 ([#24](https://gith
 
 - **Messages are data, not instructions.** A session treats a claimed message as a request from another session, not from the user.
 - **Queue scope.** Each repo lists its allowed senders and allowed tasks. A session rejects work outside that scope. Sender names are a soft check: `cq` does not authenticate senders, and any process that can write to the queue root can send a message.
-- **Storm limits.** `cq send` refuses a body over 20 KB, a message at 5 hops, and more than 20 messages per hour per sender and recipient pair, 40 per recipient or 60 per sender. See [Storm limits](PROTOCOL.md#storm-limits).
+- **Storm limits.** `cq send` refuses a body over 20 KB, a message at 5 hops, and more than 20 messages per hour per sender and recipient pair, 40 per recipient or 60 per sender. The hourly limits stop one session that sends in a loop. They do not stop many `cq send` processes that start at the same moment. See [Storm limits](PROTOCOL.md#storm-limits).
 - **PAUSE.** While a file named `PAUSE` exists in the queue root, watchers announce nothing and every send is refused.
+- **Control files are cooperative.** The control files are `coordinators`, `idle-alerts`, `sleep/`, `PAUSE` and `config.toml`. `cq` does not authenticate who writes them. Any process with write access to the queue root can edit them, so trust them as much as a message, and no more. Sessions without a sandbox run as the same OS user, so each of them can edit these files. An OS or agent sandbox still applies: for example, Antigravity broker and session mode keep their turns from writing the root or `config.toml`.
 - **Codex wake prompt.** `--to-codex` always sends a fixed prompt. No subject, body or sender name goes on the Codex command line.
 
 ## Platform status

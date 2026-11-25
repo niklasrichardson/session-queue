@@ -131,7 +131,7 @@ pub fn done(root: &Root, req: DoneRequest) -> Result<DoneReport> {
         }
         Err(MoveError::Exists) => {
             return Err(CqError::error(format!(
-                "{moved_to}/{name}/{id}.json already exists"
+                "{moved_to}/{name}/{id}.json already exists; nothing was replaced, and {id} stays in inbox/{name}/.processing/"
             )));
         }
         Err(MoveError::Failed(e)) => {

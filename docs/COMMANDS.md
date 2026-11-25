@@ -409,6 +409,10 @@ CQ_ROOT/
 
 `cq` and `cq-top` read only the files and folders listed above. They ignore any other file or folder in the root, so your own files, such as `SESSION-RULES.md` and `watchers.json`, can live there.
 
+The control files (`coordinators`, `idle-alerts`, `sleep/`, `PAUSE` and `config.toml`) are cooperative. `cq` does not authenticate who writes them: any process with write access to the root can edit them, so trust them as much as a message. Sessions without a sandbox run as the same OS user and can all edit them. An OS or agent sandbox, such as Antigravity broker and session mode, still applies. See the [safety model](OVERVIEW.md#safety-model).
+
+Moves into and between these folders never replace an existing file. See [Messages](DESIGN.md#messages).
+
 Message format: [`schema/message.v1.json`](../schema/message.v1.json). One file per message, `<id>.json`, UTF-8 without BOM. IDs are `<UTC yyyymmddThhmmssZ>-<from>-<4 hex>`. Readers ignore unknown fields.
 
 To stop all queue traffic at once, create a file named `PAUSE` in the queue root (for example `touch "$CQ_ROOT/PAUSE"`). While it exists, watchers announce nothing, and every `cq send` and `cq lock take` is refused (exit 5). Release, break, status, list and wait still work. Remove the file to resume; waiting messages are then announced. `cq list`, `cq list --overdue` and `cq-top` still work under `PAUSE`, because they only read.

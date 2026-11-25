@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "cq"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "clap",
  "jiff",
