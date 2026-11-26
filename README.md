@@ -2,14 +2,15 @@
 
 ![rust](https://img.shields.io/badge/rust-stable-orange)
 ![licence](https://img.shields.io/badge/licence-MIT-blue)
-![platform](https://img.shields.io/badge/platform-Windows%2011%20%7C%20macOS%20(partial)-lightgrey)
+![platform](https://img.shields.io/badge/platform-Windows%2011%20%7C%20macOS%20(partial)%20%7C%20Linux%20(CI%20only)-lightgrey)
 [![works with](https://img.shields.io/badge/works%20with-Claude%20Code%20%7C%20Codex%20%7C%20Antigravity%20CLI%20(experimental)-green)](#support-by-agent-and-surface)
+[![release](https://img.shields.io/github/v/release/niklasrichardson/session-queue)](https://github.com/niklasrichardson/session-queue/releases)
 
 `cq` lets AI coding sessions on one computer hand work to each other and wake each other, with nobody typing. Each message is one JSON file in a shared folder, the queue root, and a small watcher process per session wakes its session when a message arrives. A hand-off between sessions usually needs a person to pass it on; with `cq`, hand-offs continue when nobody is at the keyboard. It is for people who run several coding sessions on one project, for example a lead and two workers.
 
 The name `cq` is short for Claude/Codex queue: it began as a queue between Claude Code sessions, and Codex sessions joined later.
 
-**Status:** tested live on Windows 11. macOS is partly tested: the build, most automated tests and inbox mode in one Claude Code session passed on a Mac, the dispatcher tests fail intermittently, and Codex and live hand-offs between sessions are not checked there ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Linux has not been built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)). The cq-top Sessions screen is not yet tested on macOS ([#17](https://github.com/niklasrichardson/session-queue/issues/17)). See [Platform status](docs/OVERVIEW.md#platform-status).
+**Status:** tested live on Windows 11. macOS is partly tested: the build, most automated tests and inbox mode in one Claude Code session passed on a Mac, the dispatcher tests fail intermittently, and Codex and live hand-offs between sessions are not checked there ([#1](https://github.com/niklasrichardson/session-queue/issues/1)). Linux is built and tested in CI on every pull request, but not run live ([#2](https://github.com/niklasrichardson/session-queue/issues/2)). The cq-top Sessions screen is not yet tested on macOS ([#17](https://github.com/niklasrichardson/session-queue/issues/17)). See [Platform status](docs/OVERVIEW.md#platform-status).
 
 ## Goals
 
@@ -23,10 +24,10 @@ The reasons, and what each goal costs, are in [Design: Goals](docs/DESIGN.md#goa
 
 ```mermaid
 flowchart TB
-    R[("Queue root<br/>inbox/ done/ rejected/ dlq/<br/>heartbeat/ members/ sleep/")]
+    R[("Queue root<br/>inbox/ done/ rejected/ dlq/<br/>heartbeat/ members/ sleep/ locks/ dispatch/")]
 
     subgraph claude["Claude Code"]
-        WI["cq watch --to-inbox<br/>in the session"]
+        WI["cq watch --to-inbox<br/>in the session<br/>(fallback: Monitor mode)"]
         CC["Claude Code session"]
         WI -->|"posts into the session's inbox"| CC
     end
@@ -37,21 +38,33 @@ flowchart TB
         WC -->|"runs codex queue, fixed prompt"| CX
     end
 
+    subgraph agy["Antigravity (experimental)"]
+        WA["cq watch --to-agy<br/>outside the conversation<br/>(--agy-broker: Windows only)"]
+        WS["cq watch --to-agy-session<br/>started by the open session<br/>(Windows only)"]
+        AX["Antigravity conversation"]
+        WA -->|"runs one print-mode agy turn"| AX
+        WS -->|"wakes it with agentapi send-message"| AX
+    end
+
     OA["Other agent<br/>polls with cq list"]
     TOP["cq-top<br/>read-only view"]
 
     R -->|"new file in its inbox"| WI
     R -->|"new file in its inbox"| WC
+    R -->|"new file in its inbox"| WA
+    R -->|"new file in its inbox"| WS
     CC -->|"cq send, claim, done"| R
     CX -->|"cq send, claim, done"| R
+    AX -->|"cq send, claim, done, or a reply file"| R
     R <-->|"cq list, send, claim, done"| OA
     R -.->|"reads"| TOP
 ```
 
-Any session can send a task to another. The receiving session's own watcher wakes it, and the reply wakes the sender the same way. What has been tested with each agent is in [Support by agent and surface](#support-by-agent-and-surface).
+Any session can send a task to another. The receiving session's own watcher wakes it, and the reply wakes the sender the same way. In Antigravity broker mode and session mode, the watcher claims and finishes each message itself, and the Antigravity turn only writes a reply file. What has been tested with each agent is in [Support by agent and surface](#support-by-agent-and-surface).
 
-- **The `cq` CLI** does every queue action: `send`, `claim`, `done`, `list`, `sleep`, `wake`. Each action reads or writes files; messages move between folders by atomic rename. The full layout is in [Commands](docs/COMMANDS.md#layout). There is no server, database or network.
-- **The watcher** (`cq watch --as NAME`) watches one inbox. Only one watcher runs per name. Each agent has its own way to be woken (see [Support by agent and surface](#support-by-agent-and-surface)).
+- **The `cq` CLI** does every queue action, for example `send`, `claim`, `done`, `list`, `requeue`, `members`, `leave`, `sleep` and `wake`. The full list is in [Commands](docs/COMMANDS.md#commands). Each action reads or writes files; messages move between folders by atomic rename. The full layout is in [Commands](docs/COMMANDS.md#layout). There is no server, database or network.
+- **The watcher** (`cq watch --as NAME`) watches one inbox. Only one watcher runs per name. Each agent has its own way to be woken (see [Support by agent and surface](#support-by-agent-and-surface)). `cq dispatch` runs a fresh Codex per task instead of waking a chat.
+- **Status and locks.** `cq status --as NAME` says whether the watcher for a name runs ([Watcher status](docs/COMMANDS.md#watcher-status-and-exit-log)). `cq lock` takes a named lock on a shared resource, such as the desktop that GUI tests drive, so other sessions know it is in use ([Locks](docs/COMMANDS.md#locks)).
 
 Any other agent needs a wake route of its own: see [Other agents](docs/agents/OTHER-AGENTS.md). One task from start to finish, the cost of an idle session, the safety model and the platform status are in [How cq works](docs/OVERVIEW.md).
 
@@ -131,6 +144,11 @@ Experimental. You also need the Antigravity CLI (`agy`) and the conversation's I
 cq watch --as worker-a --to-agy CONVERSATION_ID
 ```
 
+Two more modes are experimental and Windows only:
+
+- [Broker mode](docs/agents/ANTIGRAVITY.md#broker-mode) (`--agy-broker`, cq 1.15.0): the watcher claims and finishes each message itself, and the `agy` turn only writes a reply file.
+- [Session mode](docs/agents/ANTIGRAVITY.md#session-mode) (`--to-agy-session`, cq 1.17.0): the open session, in the CLI or the desktop app, starts the watcher itself, and the watcher wakes that session for each message.
+
 #### Other agents
 
 Not tested. The agent needs shell access to run `cq`, the queue rules in its instruction file, and a wake route: a wake feature, a fresh run per task, or polling with `cq list`. See [Other agents](docs/agents/OTHER-AGENTS.md).
@@ -156,7 +174,7 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | [Claude Code setup](docs/agents/CLAUDE-CODE.md) | What differs for Claude Code: rules, permissions, the inbox watcher, the rejoin hook, the idle alert hook, the skills, Monitor mode |
 | [Codex setup](docs/agents/CODEX.md) | What differs for a Codex chat: rules, approvals, the `--to-codex` watcher, restart |
 | [Codex dispatch worker](docs/agents/CODEX-DISPATCH.md) | A fresh `codex exec` per task with `cq dispatch`: setup, sandbox, failure handling and recovery |
-| [Antigravity CLI setup](docs/agents/ANTIGRAVITY.md) | What differs for the Antigravity CLI (experimental): rules, the `--to-agy` watcher, the open-conversation caution, what else is known |
+| [Antigravity CLI setup](docs/agents/ANTIGRAVITY.md) | What differs for the Antigravity CLI (experimental): rules, the `--to-agy` watcher, broker mode, session mode, the open-conversation caution, what else is known |
 | [Other agents](docs/agents/OTHER-AGENTS.md) | What any other agent or script needs: rules, permissions, a wake route |
 | [Watchers](docs/WATCHERS.md) | Run Codex and Antigravity CLI watchers from one PowerShell window, with an example script and config |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | A stopped watcher, Codex checks that are not taken, approval prompts, an open `agy` session, split queues |
@@ -165,10 +183,11 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | [Message protocol and session lifecycle](docs/PROTOCOL.md) | Message handling for every agent (claim, finish, reply, reject, storm limits), then the lifecycle per wake route (watch, rejoin, sleep, overdue tasks, locks) |
 | [Example session rules](docs/SESSION-RULES.example.md) | A longer rules file to adapt, with a part for each agent |
 | [Commands](docs/COMMANDS.md) | Every command, the exit codes, the queue root layout |
-| [cq-top](docs/CQ-TOP.md) | The live, read-only terminal view of the queue |
+| [cq-top](docs/CQ-TOP.md) | The live, read-only terminal view of the queue, with a context column per watcher, an HTML dashboard (`--html`) and a history report (`--report`) |
 | [Design decisions](docs/DESIGN.md) | Why `cq` behaves as it does, and known risks |
 | [Test status](docs/TESTING.md) | What has been tested live, and what has not |
 | [Specification](docs/SPEC.md) | The original requirements, architecture and test plan. Historical: it no longer describes `cq` in full |
+| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, supported versions, scope |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to report a problem, build, test and send a pull request |
 | [`AGENTS.md`](AGENTS.md) | Rules for AI agents that change this repo |
 
