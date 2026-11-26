@@ -16,6 +16,19 @@ Messages wait, and nothing wakes the session.
 
 After a `cq` upgrade, a running watcher keeps the old binary. Start it again with `--takeover` ([Upgrading while watchers run](SETUP.md#upgrading-while-watchers-run)).
 
+If every watcher stopped at about the same time, check that the `cq` binary still exists ([Antivirus software removed `cq`](#antivirus-software-removed-cq)).
+
+## Antivirus software removed `cq`
+
+`cq: command not found`, or the installed `cq.exe` is missing. Watchers that ran from it stop at the same time and write no line to `watch-exits.log`.
+
+On one Windows 11 computer, the behaviour-based protection of an antivirus product removed the installed `cq.exe` twice in one day while watchers ran from it. The same file in other folders was not removed, so the product reacted to what the running watcher did, not to the file itself. The product's quarantine and logs did not show the removal.
+
+1. Check the binary: `cq --version`. If it fails, find the file that `PATH` should reach.
+2. In the antivirus product, add a **file** exception for each installed binary (`cq.exe` and `cq-top.exe`). Turn the exception on for the product's behaviour-based protection. A folder exception may not cover that protection (not verified).
+3. Install the binary again ([Install](SETUP.md#install)).
+4. Start every watcher again with `--takeover` ([A watcher has stopped](#a-watcher-has-stopped)).
+
 ## Codex checks are queued but not taken
 
 The watcher printed `queued a check`, but the chat starts no turn. The watcher may also print or send `has not taken the queued check`, and a coordinator may get `CQ-OVERDUE`.

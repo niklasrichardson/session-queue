@@ -40,6 +40,8 @@ What has been tested with each, and its limits, is in the README's [support tabl
 
    This puts `cq` (`cq.exe` on Windows) in `~/.cargo/bin`, which the Rust installer adds to your `PATH`. If you prefer `cargo build --release`, add `target/release` to your `PATH` instead.
 
+   Antivirus software can remove `cq.exe` while a watcher runs from it. If that happens, add a file exception for each installed binary ([Antivirus software removed `cq`](TROUBLESHOOTING.md#antivirus-software-removed-cq)).
+
 2. Make sure the agent can find `cq`. An agent reads `PATH` only when it starts.
 
    | Agent | What to do |

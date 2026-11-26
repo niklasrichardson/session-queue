@@ -3,7 +3,7 @@
 ![rust](https://img.shields.io/badge/rust-stable-orange)
 ![licence](https://img.shields.io/badge/licence-MIT-blue)
 ![platform](https://img.shields.io/badge/platform-Windows%2011%20%7C%20macOS%20(partial)%20%7C%20Linux%20(CI%20only)-lightgrey)
-[![works with](https://img.shields.io/badge/works%20with-Claude%20Code%20%7C%20Codex%20%7C%20Antigravity%20CLI%20(experimental)-green)](#support-by-agent-and-surface)
+[![works with](https://img.shields.io/badge/works%20with-Claude%20Code%20%7C%20Codex%20%7C%20Antigravity%20CLI%20and%20App%20(experimental)-green)](#support-by-agent-and-surface)
 [![release](https://img.shields.io/github/v/release/niklasrichardson/session-queue)](https://github.com/niklasrichardson/session-queue/releases)
 
 `cq` lets AI coding sessions on one computer hand work to each other and wake each other, with nobody typing. Each message is one JSON file in a shared folder, the queue root, and a small watcher process per session wakes its session when a message arrives. A hand-off between sessions usually needs a person to pass it on; with `cq`, hand-offs continue when nobody is at the keyboard. It is for people who run several coding sessions on one project, for example a lead and two workers.
@@ -177,7 +177,7 @@ Expected result: `worker-a` starts a turn within seconds. A Claude Code session 
 | [Antigravity CLI setup](docs/agents/ANTIGRAVITY.md) | What differs for the Antigravity CLI (experimental): rules, the `--to-agy` watcher, broker mode, session mode, the open-conversation caution, what else is known |
 | [Other agents](docs/agents/OTHER-AGENTS.md) | What any other agent or script needs: rules, permissions, a wake route |
 | [Watchers](docs/WATCHERS.md) | Run Codex and Antigravity CLI watchers from one PowerShell window, with an example script and config |
-| [Troubleshooting](docs/TROUBLESHOOTING.md) | A stopped watcher, Codex checks that are not taken, approval prompts, an open `agy` session, split queues |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | A stopped watcher, antivirus software that removes `cq`, Codex checks that are not taken, approval prompts, an open `agy` session, split queues |
 | [Queue rules](docs/QUEUE-RULES.md) | Rules to paste into any agent's instruction file |
 | [`CLAUDE-SNIPPETS.md`](docs/agents/CLAUDE-SNIPPETS.md) | Claude Code blocks and session prompts to paste |
 | [Message protocol and session lifecycle](docs/PROTOCOL.md) | Message handling for every agent (claim, finish, reply, reject, storm limits), then the lifecycle per wake route (watch, rejoin, sleep, overdue tasks, locks) |
