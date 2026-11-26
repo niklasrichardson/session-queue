@@ -10,9 +10,11 @@ Measured on Windows: in an overnight test with the earlier Monitor mode, a sessi
 
 ## Agent support
 
-`cq` is the same for every agent: the queue root, the commands, the queue rules and the safety model. What differs is how a session is woken, its rules file, how it avoids approval prompts and how it recovers after `/clear`, a new chat or a restart. The status, wake route and idle cost of each agent and surface are in the README's [support table](../README.md#support-by-agent-and-surface). The steps are on each agent's page: [Claude Code setup](agents/CLAUDE-CODE.md), [Codex setup](agents/CODEX.md), [Antigravity CLI setup](agents/ANTIGRAVITY.md) and [Other agents](agents/OTHER-AGENTS.md).
+`cq` is the same for every agent: the queue root, the commands, the queue rules and the safety model. What differs is how a session is woken, its rules file, how it avoids approval prompts and how it recovers after `/clear`, a new chat or a restart. The status, wake route and idle cost of each agent and surface are in the README's [support table](../README.md#support-by-agent-and-surface). The steps are on each agent's page: [Claude Code setup](agents/CLAUDE-CODE.md), [Codex setup](agents/CODEX.md), [Antigravity CLI setup](agents/ANTIGRAVITY.md) and [Other agents](agents/OTHER-AGENTS.md). On Windows, Antigravity also has [broker mode](agents/ANTIGRAVITY.md#broker-mode) (`--agy-broker`), where the watcher claims and finishes each message and the `agy` turn only writes a reply file, and [session mode](agents/ANTIGRAVITY.md#session-mode) (`--to-agy-session`). Both are experimental.
 
 [cq-top](CQ-TOP.md) is a live terminal view of the queue: 1 Overview, 2 Sessions, 3 Flow, 4 Rejected. It never writes to the queue root. The folder layout is in [Commands](COMMANDS.md#layout).
+
+Two commands help sessions share work without messages: [`cq status`](COMMANDS.md#watcher-status-and-exit-log) says whether the watcher for a name runs, and [`cq lock`](COMMANDS.md#locks) takes a named lock on a shared resource, such as the desktop that GUI tests drive.
 
 ## One task, start to finish
 
@@ -75,6 +77,6 @@ Inbox mode became the default for Claude Code on 28 Oct 2026 ([#24](https://gith
 | --- | --- | --- |
 | Windows 11 | Tested live with Claude Code (the Claude desktop app's Code tab) and Codex (the Codex Desktop app and the interactive Codex CLI). A short live use with the Antigravity CLI on 6 Nov 2026 | Tested |
 | macOS | Partly tested on 29 Oct 2026 ([#1](https://github.com/niklasrichardson/session-queue/issues/1)): the build and all test suites except `tests/dispatch.rs` passed, and inbox mode posted into one Claude Code session in the desktop app. `tests/dispatch.rs` fails intermittently. Codex, live hand-offs between sessions and the Monitor fallback are not checked. | An earlier two-screen version ran on a Mac; the current screens are not tested there ([#17](https://github.com/niklasrichardson/session-queue/issues/17)) |
-| Linux | Not built ([#2](https://github.com/niklasrichardson/session-queue/issues/2)) | Not tested |
+| Linux | Built and tested in CI (`ubuntu-latest`) on every pull request; not run live ([#2](https://github.com/niklasrichardson/session-queue/issues/2)) | Built and tested in CI; not run live |
 
 What has been tested with each agent and surface is in the README's [support table](../README.md#support-by-agent-and-surface). The dated details are in [Test status](TESTING.md).

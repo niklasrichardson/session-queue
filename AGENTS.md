@@ -30,7 +30,7 @@ The person you work for may have Claude Code sessions running `cq watch` from th
 
 ## Code
 
-- Platform-specific code lives in `src/platform.rs` (stopping an old watcher, the non-blocking stdin check) and `src/root.rs` (the default queue root). Windows is tested live. macOS is partly tested ([#1](https://github.com/niklasrichardson/session-queue/issues/1)): most tests pass there, `tests/dispatch.rs` fails intermittently, and only inbox mode in one session was checked live. Linux has not been built.
+- Platform-specific code lives in `src/platform.rs` (stopping an old watcher, the non-blocking stdin check) and `src/root.rs` (the default queue root). Windows is tested live. macOS is partly tested ([#1](https://github.com/niklasrichardson/session-queue/issues/1)): most tests pass there, `tests/dispatch.rs` fails intermittently, and only inbox mode in one session was checked live. Linux is built and tested in CI on every pull request, but not run live ([#2](https://github.com/niklasrichardson/session-queue/issues/2)).
 - Keep exit codes stable. Sessions act on them (for example, `claim` exit 1 means "already handled"). A new failure needs a code from the table in `docs/COMMANDS.md`, never exit 1 for a general error.
 - Keep the `CQ-NEW` event line format stable. Sessions parse it.
 - Add or update tests for every behaviour change.
@@ -61,7 +61,7 @@ Several queue names work in this repo. Follow only the subsection that names you
 
 ### queue-admin
 
-- Queue name: `queue-admin`. Owns cq, cq-top, `docs/SESSION-RULES.md` and `docs/QUEUE-NAMES.md` (decision 211, 28 Oct 2026).
+- Queue name: `queue-admin`. Owns cq, cq-top, `docs/SESSION-RULES.md` and `docs/QUEUE-NAMES.md` (decision 211, 28 Oct 2026). These two files are local and git-ignored, so a fresh clone does not have them. The live copies are in the queue data folder, outside this repo.
 - Allowed senders: every name in `docs/QUEUE-NAMES.md`.
 - Allowed tasks: answer cq questions; take cq and cq-top bug reports and briefs (track them in GitHub issues); review a diff; summarise a file; announce cq rule changes to all sessions as `info`.
 - Not this role: project decisions (the project's lead session or the owner); relaying the owner's approval as approval; changing another repo's queue scope without the owner's own OK.
