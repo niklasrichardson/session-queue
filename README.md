@@ -55,12 +55,16 @@ flowchart TB
     R -->|"new file in its inbox"| WS
     CC -->|"cq send, claim, done"| R
     CX -->|"cq send, claim, done"| R
-    AX -->|"cq send, claim, done, or a reply file"| R
+    AX -->|"print mode: cq send, claim, done"| R
+    AX -->|"broker mode: reply file"| WA
+    AX -->|"session mode: started file, then reply file"| WS
+    WA -->|"broker mode: claims and finishes"| R
+    WS -->|"claims and finishes"| R
     R <-->|"cq list, send, claim, done"| OA
     R -.->|"reads"| TOP
 ```
 
-Any session can send a task to another. The receiving session's own watcher wakes it, and the reply wakes the sender the same way. In Antigravity broker mode and session mode, the watcher claims and finishes each message itself, and the Antigravity turn only writes a reply file. What has been tested with each agent is in [Support by agent and surface](#support-by-agent-and-surface).
+A session can send a task to another. The receiving session's own watcher wakes it, and the reply wakes the sender the same way. In Antigravity broker mode and session mode, the watcher claims and finishes each message itself. In broker mode, the Antigravity turn only writes a reply file. In session mode, it first creates a `started` file, then writes the reply file. A name in either mode can only reply: it cannot send a new task. What has been tested with each agent is in [Support by agent and surface](#support-by-agent-and-surface).
 
 - **The `cq` CLI** does every queue action, for example `send`, `claim`, `done`, `list`, `requeue`, `members`, `leave`, `sleep` and `wake`. The full list is in [Commands](docs/COMMANDS.md#commands). Each action reads or writes files; messages move between folders by atomic rename. The full layout is in [Commands](docs/COMMANDS.md#layout). There is no server, database or network.
 - **The watcher** (`cq watch --as NAME`) watches one inbox. Only one watcher runs per name. Each agent has its own way to be woken (see [Support by agent and surface](#support-by-agent-and-surface)). `cq dispatch` runs a fresh Codex per task instead of waking a chat.
