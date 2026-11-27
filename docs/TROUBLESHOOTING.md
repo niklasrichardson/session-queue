@@ -16,6 +16,21 @@ Messages wait, and nothing wakes the session.
 
 After a `cq` upgrade, a running watcher keeps the old binary. Start it again with `--takeover` ([Upgrading while watchers run](SETUP.md#upgrading-while-watchers-run)).
 
+If every watcher stopped at about the same time, check that the `cq` binary still exists ([Antivirus software removed `cq`](#antivirus-software-removed-cq)).
+
+## Antivirus software removed `cq`
+
+`cq: command not found`, or the installed `cq.exe` is missing. Watchers that ran from it stop at the same time and write no line to `watch-exits.log`.
+
+What was seen, on one Windows 11 computer: the installed `cq.exe` disappeared twice in one day while watchers ran from it. `cq-top.exe` in the same folder, and copies of the same `cq.exe` in other folders, stayed. The antivirus product's quarantine and logs did not show a removal.
+
+What is suspected, not verified: the product's behaviour-based protection reacted to the running watcher, not to the file itself.
+
+1. Check the exact path that each watcher was started with. `cq --version` is not enough: it can run another copy on `PATH`.
+2. Find out what removed the file: look in the antivirus product's history, quarantine and logs. Only add an exception when the product shows that it removed `cq.exe`, and the file is one you built from this repo or got from its releases. Then add a **file** exception for that `cq.exe`, for the protection that removed it. A folder exception may not cover behaviour-based protection (not verified).
+3. Install the binary again ([Install](SETUP.md#install)).
+4. Run `cq status --as NAME` for each name. Start only the watchers that show `stopped`, without `--takeover`. If one exits 5, check which process holds the name before you use `--takeover` ([A watcher has stopped](#a-watcher-has-stopped)).
+
 ## Codex checks are queued but not taken
 
 The watcher printed `queued a check`, but the chat starts no turn. The watcher may also print or send `has not taken the queued check`, and a coordinator may get `CQ-OVERDUE`.
