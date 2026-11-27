@@ -22,12 +22,14 @@ If every watcher stopped at about the same time, check that the `cq` binary stil
 
 `cq: command not found`, or the installed `cq.exe` is missing. Watchers that ran from it stop at the same time and write no line to `watch-exits.log`.
 
-On one Windows 11 computer, the behaviour-based protection of an antivirus product removed the installed `cq.exe` twice in one day while watchers ran from it. The same file in other folders was not removed, so the product reacted to what the running watcher did, not to the file itself. The product's quarantine and logs did not show the removal.
+What was seen, on one Windows 11 computer: the installed `cq.exe` disappeared twice in one day while watchers ran from it. `cq-top.exe` in the same folder, and copies of the same `cq.exe` in other folders, stayed. The antivirus product's quarantine and logs did not show a removal.
 
-1. Check the binary: `cq --version`. If it fails, find the file that `PATH` should reach.
-2. In the antivirus product, add a **file** exception for each installed binary (`cq.exe` and `cq-top.exe`). Turn the exception on for the product's behaviour-based protection. A folder exception may not cover that protection (not verified).
+What is suspected, not verified: the product's behaviour-based protection reacted to the running watcher, not to the file itself.
+
+1. Check the exact path that each watcher was started with. `cq --version` is not enough: it can run another copy on `PATH`.
+2. Find out what removed the file: look in the antivirus product's history, quarantine and logs. Only add an exception when the product shows that it removed `cq.exe`, and the file is one you built from this repo or got from its releases. Then add a **file** exception for that `cq.exe`, for the protection that removed it. A folder exception may not cover behaviour-based protection (not verified).
 3. Install the binary again ([Install](SETUP.md#install)).
-4. Start every watcher again with `--takeover` ([A watcher has stopped](#a-watcher-has-stopped)).
+4. Run `cq status --as NAME` for each name. Start only the watchers that show `stopped`, without `--takeover`. If one exits 5, check which process holds the name before you use `--takeover` ([A watcher has stopped](#a-watcher-has-stopped)).
 
 ## Codex checks are queued but not taken
 
